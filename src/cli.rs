@@ -59,6 +59,8 @@ pub enum Command {
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
     },
+    /// Register current repo in config
+    Register,
     /// List configured repos
     List,
     /// Alias for list
@@ -75,11 +77,16 @@ impl Command {
             Command::Fetch => "fetch",
             Command::Checkout | Command::Co => "checkout",
             Command::Run { .. } => "run",
+            Command::Register => "register",
             Command::List | Command::Ls => "list",
         }
     }
 
     pub fn is_list(&self) -> bool {
         matches!(self, Command::List | Command::Ls)
+    }
+
+    pub fn is_register(&self) -> bool {
+        matches!(self, Command::Register)
     }
 }

@@ -8,6 +8,7 @@ mod tui;
 use clap::Parser;
 use cli::Cli;
 use std::path::PathBuf;
+use std::process::Command as StdCommand;
 
 fn resolve_config_path(cli: &Cli) -> PathBuf {
     if let Some(ref p) = cli.config {
@@ -42,6 +43,12 @@ async fn main() {
     let base_dir = resolve_base_dir(&cli, &config_path);
     let repos = config::parse_config(&config_path, &base_dir);
 
+    // Register command: add current dir to config
+    if cli.command.is_register() {
+        register(&config_path, &base_dir);
+        return;
+    }
+
     // List command: just print and exit
     if cli.command.is_list() {
         for repo in &repos {
@@ -66,4 +73,71 @@ async fn main() {
     let success = tui::run(repos, &cli.command, rx).expect("TUI error");
 
     std::process::exit(if success { 0 } else { 1 });
+}
+
+fn register(config_path: &PathBuf, base_dir: &PathBuf) {
+    let cwd = std::env::current_dir().expect("cannot determine current directory");
+
+    // Get the remote URL
+    let output = StdCommand::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(&cwd)
+        .output();
+
+    let url = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => {
+            eprintln!("error: not a git repo or no 'origin' remote");
+            std::process::exit(1);
+        }
+    };
+
+    let repo_name = cwd
+        .file_name()
+        .expect("cannot determine directory name")
+        .to_string_lossy();
+
+    // Compute relative section path from base_dir
+    let section = match cwd.strip_prefix(base_dir) {
+        Ok(rel) => rel.to_string_lossy().to_string(),
+        Err(_) => {
+            eprintln!(
+                "error: {} is not under base dir {}",
+                cwd.display(),
+                base_dir.display()
+            );
+            std::process::exit(1);
+        }
+    };
+
+    // Check if already registered
+    let existing = std::fs::read_to_string(config_path).unwrap_or_default();
+    let section_header = format!("[{}]", section);
+    if existing.contains(&section_header) {
+        eprintln!("already registered: {}", section);
+        return;
+    }
+
+    // Append to config
+    let entry = format!(
+        "\n[{}]\ncheckout = git clone '{}' '{}'\n",
+        section, url, repo_name
+    );
+
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(config_path)
+        .unwrap_or_else(|e| {
+            eprintln!("error: cannot write {}: {}", config_path.display(), e);
+            std::process::exit(1);
+        });
+
+    file.write_all(entry.as_bytes()).unwrap_or_else(|e| {
+        eprintln!("error: write failed: {}", e);
+        std::process::exit(1);
+    });
+
+    println!("registered {} ({})", section, url);
 }

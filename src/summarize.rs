@@ -17,7 +17,7 @@ pub fn summarize(command: &Command, stdout: &str, stderr: &str, exit_code: i32) 
         Command::Fetch => summarize_fetch(stdout, stderr),
         Command::Checkout | Command::Co => summarize_clone(stderr),
         Command::Run { .. } => summarize_run(stdout),
-        Command::List | Command::Ls => String::new(),
+        Command::List | Command::Ls | Command::Register => String::new(),
     }
 }
 

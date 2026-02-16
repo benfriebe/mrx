@@ -34,6 +34,7 @@ mrx <command> [options]
 | `mrx fetch` | Fetch from remotes |
 | `mrx checkout` / `co` | Clone repos (skip if already exists) |
 | `mrx run <cmd>` | Run an arbitrary shell command in each repo |
+| `mrx register` | Register current repo in `~/.mrconfig` |
 | `mrx list` / `ls` | List configured repos (no TUI) |
 
 ### Options

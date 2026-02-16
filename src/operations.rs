@@ -112,8 +112,8 @@ pub fn plan(command: &Command, repo: &Repo) -> Operation {
             }
         }
 
-        Command::List | Command::Ls => {
-            unreachable!("list command doesn't use operations")
+        Command::List | Command::Ls | Command::Register => {
+            unreachable!("command doesn't use operations")
         }
     }
 }
