@@ -10,6 +10,7 @@ pub struct Repo {
 pub fn parse_config(config_path: &Path, base_dir: &Path) -> Vec<Repo> {
     let content = match std::fs::read_to_string(config_path) {
         Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(e) => {
             eprintln!("error: cannot read {}: {}", config_path.display(), e);
             std::process::exit(1);
