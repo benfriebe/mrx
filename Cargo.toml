@@ -1,0 +1,17 @@
+[package]
+name = "mrx"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+configparser = "3"
+tokio = { version = "1", features = ["full"] }
+ratatui = "0.30"
+crossterm = "0.29"
+num_cpus = "1"
+dirs = "6"
+
+[profile.release]
+lto = true
+strip = true
