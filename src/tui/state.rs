@@ -1,4 +1,5 @@
 use crate::config::Repo;
+use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RepoStatus {
@@ -28,6 +29,7 @@ impl RepoStatus {
 pub struct AppState {
     pub repos: Vec<Repo>,
     pub statuses: Vec<RepoStatus>,
+    pub branches: Vec<Option<String>>,
     pub selected: usize,
     pub expanded: Option<usize>,
     pub scroll_offset: usize,
@@ -39,9 +41,23 @@ pub struct AppState {
 impl AppState {
     pub fn new(repos: Vec<Repo>, command_name: &str) -> Self {
         let n = repos.len();
+        let branches = repos
+            .iter()
+            .map(|r| {
+                Command::new("git")
+                    .args(["branch", "--show-current"])
+                    .current_dir(&r.path)
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+            .collect();
         Self {
             repos,
             statuses: vec![RepoStatus::Pending; n],
+            branches,
             selected: 0,
             expanded: None,
             scroll_offset: 0,
@@ -122,6 +138,13 @@ impl AppState {
             RepoStatus::Running => Some("(still running...)".into()),
             RepoStatus::Pending => Some("(pending...)".into()),
             RepoStatus::Skipped { reason } => Some(format!("(skipped: {})", reason)),
+        }
+    }
+
+    pub fn branch_label(&self, idx: usize) -> &str {
+        match self.branches.get(idx).and_then(|b| b.as_deref()) {
+            Some(b) => b,
+            None => "-",
         }
     }
 
