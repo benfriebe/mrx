@@ -1,23 +1,20 @@
-use crate::cli::Command;
-
-pub fn summarize(command: &Command, stdout: &str, stderr: &str, exit_code: i32) -> String {
+pub fn summarize(action: &str, stdout: &str, stderr: &str, exit_code: i32) -> String {
     if exit_code != 0 {
-        // Try to extract a useful error message
         let msg = first_meaningful_line(stderr)
             .or_else(|| first_meaningful_line(stdout))
             .unwrap_or_else(|| format!("exit code {}", exit_code));
         return msg;
     }
 
-    match command {
-        Command::Update | Command::Pull => summarize_pull(stdout, stderr),
-        Command::Status => summarize_status(stdout),
-        Command::Diff => summarize_diff(stdout),
-        Command::Push => summarize_push(stdout, stderr),
-        Command::Fetch => summarize_fetch(stdout, stderr),
-        Command::Checkout | Command::Co => summarize_clone(stderr),
-        Command::Run { .. } => summarize_run(stdout),
-        Command::List | Command::Ls | Command::Register => String::new(),
+    match action {
+        "update" => summarize_pull(stdout, stderr),
+        "status" => summarize_status(stdout),
+        "diff" => summarize_diff(stdout),
+        "push" => summarize_push(stdout, stderr),
+        "fetch" => summarize_fetch(stdout, stderr),
+        "checkout" => summarize_clone(stderr),
+        "list" | "register" => String::new(),
+        _ => summarize_generic(stdout, stderr),
     }
 }
 
@@ -129,10 +126,14 @@ fn summarize_clone(stderr: &str) -> String {
     }
 }
 
-fn summarize_run(stdout: &str) -> String {
-    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+fn summarize_generic(stdout: &str, stderr: &str) -> String {
+    let lines: Vec<&str> = stdout
+        .lines()
+        .chain(stderr.lines())
+        .filter(|l| !l.trim().is_empty())
+        .collect();
     match lines.len() {
-        0 => "done (no output)".into(),
+        0 => "done".into(),
         1 => lines[0].trim().to_string(),
         n => format!("{} ({}+ lines)", lines[0].trim(), n),
     }

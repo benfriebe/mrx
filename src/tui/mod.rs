@@ -41,14 +41,15 @@ pub fn run(
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let mut state = AppState::new(repos, command.display_name());
+    let action = command.display_name().to_string();
+    let mut state = AppState::new(repos, &action);
     let mut all_succeeded = true;
 
     loop {
         // Drain pending events from executor
         loop {
             match rx.try_recv() {
-                Ok(evt) => apply_event(&mut state, &evt, command),
+                Ok(evt) => apply_event(&mut state, &evt, &action),
                 Err(_) => break,
             }
         }
@@ -128,7 +129,7 @@ pub fn run(
     Ok(all_succeeded)
 }
 
-fn apply_event(state: &mut AppState, event: &TaskEvent, command: &Command) {
+fn apply_event(state: &mut AppState, event: &TaskEvent, action: &str) {
     match event {
         TaskEvent::Started { index } => {
             state.statuses[*index] = RepoStatus::Running;
@@ -139,7 +140,7 @@ fn apply_event(state: &mut AppState, event: &TaskEvent, command: &Command) {
             stderr,
             exit_code,
         } => {
-            let summary = summarize::summarize(command, stdout, stderr, *exit_code);
+            let summary = summarize::summarize(action, stdout, stderr, *exit_code);
             state.statuses[*index] = RepoStatus::Done {
                 summary,
                 stdout: stdout.clone(),

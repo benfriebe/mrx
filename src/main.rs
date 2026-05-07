@@ -6,29 +6,41 @@ mod summarize;
 mod tui;
 
 use clap::Parser;
-use cli::Cli;
-use std::path::PathBuf;
+use cli::{Cli, Command};
+use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
+fn absolutize(p: &Path) -> PathBuf {
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|d| d.join(p))
+            .unwrap_or_else(|_| p.to_path_buf())
+    }
+}
+
 fn resolve_config_path(cli: &Cli) -> PathBuf {
-    if let Some(ref p) = cli.config {
+    let raw = if let Some(ref p) = cli.config {
         p.clone()
     } else {
         dirs::home_dir()
             .expect("cannot determine home directory")
             .join(".mrconfig")
-    }
+    };
+    absolutize(&raw)
 }
 
-fn resolve_base_dir(cli: &Cli, config_path: &PathBuf) -> PathBuf {
-    if let Some(ref d) = cli.directory {
+fn resolve_base_dir(cli: &Cli, config_path: &Path) -> PathBuf {
+    let raw = if let Some(ref d) = cli.directory {
         d.clone()
     } else {
         config_path
             .parent()
             .expect("config has no parent dir")
             .to_path_buf()
-    }
+    };
+    absolutize(&raw)
 }
 
 fn max_jobs(cli: &Cli) -> usize {
@@ -41,7 +53,7 @@ async fn main() {
 
     let config_path = resolve_config_path(&cli);
     let base_dir = resolve_base_dir(&cli, &config_path);
-    let repos = config::parse_config(&config_path, &base_dir);
+    let (repos, defaults) = config::parse_config(&config_path, &base_dir);
 
     // Register command: add current dir to config
     if cli.command.is_register() {
@@ -59,15 +71,30 @@ async fn main() {
         return;
     }
 
+    // Reject unknown actions before dispatch so typos like `mrx statsu` don't
+    // silently succeed-by-skipping every repo.
+    if let Command::Custom(parts) = &cli.command {
+        let name = parts.first().map(String::as_str).unwrap_or("");
+        let known = !name.is_empty()
+            && (defaults.contains_key(name) || repos.iter().any(|r| r.keys.contains_key(name)));
+        if !known {
+            eprintln!(
+                "error: unknown action '{}' (not defined in any repo or [DEFAULT])",
+                name
+            );
+            std::process::exit(2);
+        }
+    }
+
     // Plan operations
     let ops: Vec<operations::Operation> = repos
         .iter()
-        .map(|r| operations::plan(&cli.command, r))
+        .map(|r| operations::plan(&cli.command, r, &defaults))
         .collect();
 
     // Execute
     let jobs = max_jobs(&cli);
-    let rx = executor::execute_all(&repos, ops, jobs);
+    let rx = executor::execute_all(&repos, ops, jobs, config_path.clone());
 
     // Run TUI
     let success = tui::run(repos, &cli.command, rx).expect("TUI error");

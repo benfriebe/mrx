@@ -65,10 +65,13 @@ pub enum Command {
     List,
     /// Alias for list
     Ls,
+    /// Any subcommand defined in .mrconfig (per-repo or [DEFAULT])
+    #[command(external_subcommand)]
+    Custom(Vec<String>),
 }
 
 impl Command {
-    pub fn display_name(&self) -> &'static str {
+    pub fn display_name(&self) -> &str {
         match self {
             Command::Update | Command::Pull => "update",
             Command::Status => "status",
@@ -79,6 +82,7 @@ impl Command {
             Command::Run { .. } => "run",
             Command::Register => "register",
             Command::List | Command::Ls => "list",
+            Command::Custom(args) => args.first().map(String::as_str).unwrap_or(""),
         }
     }
 
