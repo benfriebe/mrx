@@ -7,14 +7,21 @@ use super::state::{AppState, RepoStatus};
 pub fn draw(frame: &mut Frame, state: &AppState) {
     let area = frame.area();
 
-    let max_name_len = state.repos.iter().map(|r| r.name.len()).max().unwrap_or(10);
+    let max_name_len = state
+        .repos
+        .iter()
+        .map(|r| r.name.len())
+        .max()
+        .unwrap_or(10)
+        .max("REPO".len());
     let max_branch_len = (0..state.total())
         .map(|i| state.branch_label(i).len())
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max("BRANCH".len());
 
     // Calculate visible area for repo list
-    let list_height = area.height.saturating_sub(4) as usize; // header + 2 separators + footer
+    let list_height = area.height.saturating_sub(5) as usize; // header + 2 separators + column headers + footer
 
     // Determine scroll window
     let (view_start, expanded_rows) = calculate_scroll(state, list_height);
@@ -36,6 +43,19 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
         "─".repeat(area.width as usize),
         Style::default().fg(Color::DarkGray),
     )));
+
+    // Column headers
+    let header_name_padding = max_name_len.saturating_sub("REPO".len()) + 2;
+    let header_branch_padding = max_branch_len.saturating_sub("BRANCH".len()) + 2;
+    let header_style = Style::default().fg(Color::DarkGray).bold();
+    lines.push(Line::from(vec![
+        Span::raw("      "),
+        Span::styled("REPO", header_style),
+        Span::raw(" ".repeat(header_name_padding)),
+        Span::styled("BRANCH", header_style),
+        Span::raw(" ".repeat(header_branch_padding)),
+        Span::styled("STATUS", header_style),
+    ]));
 
     // Repo rows
     let visible_end = state
