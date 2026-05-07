@@ -804,6 +804,7 @@ dependencies = [
  "num_cpus",
  "ratatui",
  "tokio",
+ "unicode-width",
 ]
 
 [[package]]

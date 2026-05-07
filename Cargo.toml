@@ -11,6 +11,7 @@ ratatui = "0.30"
 crossterm = "0.29"
 num_cpus = "1"
 dirs = "6"
+unicode-width = "0.2"
 
 [profile.release]
 lto = true
