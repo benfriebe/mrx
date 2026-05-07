@@ -1,6 +1,6 @@
 [package]
 name = "mrx"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
@@ -11,6 +11,7 @@ ratatui = "0.30"
 crossterm = "0.29"
 num_cpus = "1"
 dirs = "6"
+unicode-width = "0.2"
 
 [profile.release]
 lto = true
