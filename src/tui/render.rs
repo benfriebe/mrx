@@ -8,6 +8,10 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
     let area = frame.area();
 
     let max_name_len = state.repos.iter().map(|r| r.name.len()).max().unwrap_or(10);
+    let max_branch_len = (0..state.total())
+        .map(|i| state.branch_label(i).len())
+        .max()
+        .unwrap_or(0);
 
     // Calculate visible area for repo list
     let list_height = area.height.saturating_sub(4) as usize; // header + 2 separators + footer
@@ -59,6 +63,8 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
         };
 
         let padding = max_name_len.saturating_sub(name.len()) + 2;
+        let branch = state.branch_label(i).to_string();
+        let branch_padding = max_branch_len.saturating_sub(branch.len()) + 2;
 
         lines.push(Line::from(vec![
             Span::styled(format!("  {} ", selector), selector_style),
@@ -66,6 +72,8 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
             Span::raw(" "),
             Span::styled(name.clone(), name_style),
             Span::raw(" ".repeat(padding)),
+            Span::styled(branch, Style::default().fg(Color::DarkGray)),
+            Span::raw(" ".repeat(branch_padding)),
             Span::styled(summ, summ_style),
         ]));
 
