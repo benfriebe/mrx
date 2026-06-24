@@ -70,7 +70,7 @@ async fn main() {
     let rx = executor::execute_all(&repos, ops, jobs);
 
     // Run TUI
-    let success = tui::run(repos, &cli.command, rx).expect("TUI error");
+    let success = tui::run(repos, &cli.command, rx, jobs).expect("TUI error");
 
     std::process::exit(if success { 0 } else { 1 });
 }

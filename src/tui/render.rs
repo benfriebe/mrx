@@ -175,7 +175,7 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
     let footer = if state.expanded.is_some() {
         "  [↑↓] scroll  [esc] collapse  [q] quit"
     } else {
-        "  [↑↓/jk] navigate  [enter] expand  [q] quit"
+        "  [↑↓/jk] navigate  [enter] expand  [r] re-run  [q] quit"
     };
     lines.push(Line::from(Span::styled(
         footer,

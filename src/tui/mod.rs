@@ -16,7 +16,8 @@ use tokio::sync::mpsc;
 
 use crate::cli::Command;
 use crate::config::Repo;
-use crate::executor::TaskEvent;
+use crate::executor::{self, TaskEvent};
+use crate::operations;
 use crate::summarize;
 
 pub fn install_panic_hook() {
@@ -32,6 +33,7 @@ pub fn run(
     repos: Vec<Repo>,
     command: &Command,
     mut rx: mpsc::UnboundedReceiver<TaskEvent>,
+    jobs: usize,
 ) -> io::Result<bool> {
     install_panic_hook();
 
@@ -95,6 +97,16 @@ pub fn run(
                             KeyCode::Home | KeyCode::Char('g') => state.selected = 0,
                             KeyCode::End | KeyCode::Char('G') => {
                                 state.selected = state.total().saturating_sub(1)
+                            }
+                            // Re-run the current command once the previous run finished.
+                            KeyCode::Char('r') if state.all_done => {
+                                let ops = state
+                                    .repos
+                                    .iter()
+                                    .map(|r| operations::plan(command, r))
+                                    .collect();
+                                rx = executor::execute_all(&state.repos, ops, jobs);
+                                state.reset_for_rerun();
                             }
                             _ => {}
                         }

@@ -38,22 +38,28 @@ pub struct AppState {
     pub all_done: bool,
 }
 
+/// Detect the current branch for each repo via `git branch --show-current`.
+/// Returns `None` for repos that aren't checked out or report no branch.
+fn compute_branches(repos: &[Repo]) -> Vec<Option<String>> {
+    repos
+        .iter()
+        .map(|r| {
+            Command::new("git")
+                .args(["branch", "--show-current"])
+                .current_dir(&r.path)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .collect()
+}
+
 impl AppState {
     pub fn new(repos: Vec<Repo>, command_name: &str) -> Self {
         let n = repos.len();
-        let branches = repos
-            .iter()
-            .map(|r| {
-                Command::new("git")
-                    .args(["branch", "--show-current"])
-                    .current_dir(&r.path)
-                    .output()
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .filter(|s| !s.is_empty())
-            })
-            .collect();
+        let branches = compute_branches(&repos);
         Self {
             repos,
             statuses: vec![RepoStatus::Pending; n],
@@ -77,6 +83,21 @@ impl AppState {
 
     pub fn total(&self) -> usize {
         self.repos.len()
+    }
+
+    /// Reset all per-repo state so the command can be executed again. Statuses
+    /// return to `Pending`, branches are re-detected (an update may have created
+    /// new clones or switched branches), and any expanded view is collapsed.
+    pub fn reset_for_rerun(&mut self) {
+        let n = self.repos.len();
+        self.statuses = vec![RepoStatus::Pending; n];
+        self.branches = compute_branches(&self.repos);
+        self.expanded = None;
+        self.scroll_offset = 0;
+        self.all_done = false;
+        if n > 0 {
+            self.selected = self.selected.min(n - 1);
+        }
     }
 
     pub fn move_up(&mut self) {
@@ -157,5 +178,59 @@ impl AppState {
         } else {
             format!("{}/{} done", done, total)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn repo(name: &str) -> Repo {
+        Repo {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/nonexistent/{}", name)),
+            clone_url: None,
+        }
+    }
+
+    fn done(exit_code: i32) -> RepoStatus {
+        RepoStatus::Done {
+            summary: "done".into(),
+            stdout: "out".into(),
+            stderr: String::new(),
+            exit_code,
+        }
+    }
+
+    #[test]
+    fn reset_for_rerun_clears_state() {
+        let mut state = AppState::new(vec![repo("a"), repo("b"), repo("c")], "update");
+        state.statuses = vec![done(0), done(1), RepoStatus::Skipped { reason: "x".into() }];
+        state.selected = 2;
+        state.expanded = Some(2);
+        state.scroll_offset = 5;
+        state.all_done = true;
+
+        state.reset_for_rerun();
+
+        assert!(
+            state.statuses.iter().all(|s| *s == RepoStatus::Pending),
+            "statuses should all reset to Pending"
+        );
+        assert_eq!(state.statuses.len(), 3);
+        assert_eq!(state.expanded, None);
+        assert_eq!(state.scroll_offset, 0);
+        assert!(!state.all_done);
+        // selection stays put when still in range
+        assert_eq!(state.selected, 2);
+    }
+
+    #[test]
+    fn reset_for_rerun_clamps_out_of_range_selection() {
+        let mut state = AppState::new(vec![repo("a"), repo("b")], "status");
+        state.selected = 5; // somehow out of range
+        state.reset_for_rerun();
+        assert_eq!(state.selected, 1); // clamped to last index
     }
 }
