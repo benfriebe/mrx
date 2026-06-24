@@ -194,9 +194,9 @@ fn format_status(
     match status {
         RepoStatus::Pending => (
             " ".into(),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
             "waiting...".into(),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         ),
         RepoStatus::Running => (
             spinner::frame(tick).to_string(),
@@ -370,6 +370,25 @@ fn running_text(command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waiting_is_lighter_grey_than_finished() {
+        let (_, _, _, pending_style) = format_status(&RepoStatus::Pending, 0, "update");
+        let done = RepoStatus::Done {
+            summary: "clean".into(),
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+        };
+        let (_, _, _, done_style) = format_status(&done, 0, "update");
+
+        assert_eq!(pending_style.fg, Some(Color::Gray));
+        assert_eq!(done_style.fg, Some(Color::DarkGray));
+        assert_ne!(
+            pending_style.fg, done_style.fg,
+            "waiting should be visually distinct from finished"
+        );
+    }
 
     #[test]
     fn natural_widths_used_when_they_fit() {
