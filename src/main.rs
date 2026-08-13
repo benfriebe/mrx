@@ -2,12 +2,14 @@ mod cli;
 mod config;
 mod executor;
 mod operations;
+mod render_plain;
 mod sets;
 mod summarize;
 mod tui;
 
 use clap::Parser;
 use cli::{Cli, Command};
+use std::io::{stdout, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
@@ -137,8 +139,11 @@ async fn main() {
     let jobs = max_jobs(&cli);
     let rx = executor::execute_all(&repos, ops, jobs, config_path.clone());
 
-    // Run TUI
-    let success = tui::run(repos, &cli.command, rx).expect("TUI error");
+    let success = if stdout().is_terminal() && !cli.plain {
+        tui::run(repos, &cli.command, rx, cli.exit_on_done).expect("TUI error")
+    } else {
+        render_plain::run(repos, cli.command.display_name(), rx).await
+    };
 
     std::process::exit(if success { 0 } else { 1 });
 }

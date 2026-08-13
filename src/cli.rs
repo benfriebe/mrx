@@ -37,6 +37,14 @@ pub struct Cli {
     /// Force operation
     #[arg(short = 'f', long, global = true)]
     pub force: bool,
+
+    /// Quit once every repo has finished, instead of waiting for `q`
+    #[arg(long, global = true)]
+    pub exit_on_done: bool,
+
+    /// Never use the TUI, even on a terminal
+    #[arg(long, global = true)]
+    pub plain: bool,
 }
 
 #[derive(Subcommand, Clone)]
