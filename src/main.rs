@@ -31,18 +31,6 @@ fn resolve_config_path(cli: &Cli) -> PathBuf {
     absolutize(&raw)
 }
 
-fn resolve_base_dir(cli: &Cli, config_path: &Path) -> PathBuf {
-    let raw = if let Some(ref d) = cli.directory {
-        d.clone()
-    } else {
-        config_path
-            .parent()
-            .expect("config has no parent dir")
-            .to_path_buf()
-    };
-    absolutize(&raw)
-}
-
 fn max_jobs(cli: &Cli) -> usize {
     cli.jobs.unwrap_or_else(|| num_cpus::get().min(8))
 }
@@ -52,12 +40,16 @@ async fn main() {
     let cli = Cli::parse();
 
     let config_path = resolve_config_path(&cli);
-    let base_dir = resolve_base_dir(&cli, &config_path);
-    let (repos, defaults) = config::parse_config(&config_path, &base_dir);
+    let dir_override = cli.directory.as_deref().map(absolutize);
+    let config::Config {
+        repos,
+        defaults,
+        base,
+    } = config::load(&config_path, dir_override.as_deref());
 
     // Register command: add current dir to config
     if cli.command.is_register() {
-        register(&config_path, &base_dir);
+        register(&config_path, &base);
         return;
     }
 
