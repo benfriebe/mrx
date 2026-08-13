@@ -78,6 +78,10 @@ pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
     // lowercased by hand below so `Branch` and `branch` still mean the same thing.
     let mut ini = configparser::ini::Ini::new_cs();
     ini.set_multiline(true);
+    // Values are shell command bodies, where `;` and `#` are ordinary characters.
+    // Inline comment stripping would silently truncate `update = a; b` to `a`.
+    // An empty list disables it; whole-line `;` and `#` comments still work.
+    ini.set_inline_comment_symbols(Some(&[]));
     if let Err(e) = ini.read(content) {
         eprintln!("error: cannot parse {}: {}", config_path.display(), e);
         std::process::exit(1);
@@ -331,4 +335,12 @@ mod tests {
         assert!(body.contains("git fetch -p"), "got {body:?}");
         assert!(body.contains("git pull"), "got {body:?}");
     }
+
+#[test]
+fn semicolon_in_a_command_body_survives() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), "[a]\nupdate = echo one; echo two\n");
+    let body = load(&cfg, None).repos[0].keys["update"].clone();
+    assert_eq!(body, "echo one; echo two", "semicolon treated as a comment");
+}
 }
