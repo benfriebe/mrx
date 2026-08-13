@@ -158,7 +158,7 @@ pub fn plan(command: &Command, repo: &Repo, defaults: &BTreeMap<String, String>)
             }
         }
 
-        Command::List | Command::Ls | Command::Register => {
+        Command::List | Command::Ls | Command::Sets | Command::Register => {
             unreachable!("command doesn't use operations")
         }
     }

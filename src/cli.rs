@@ -18,9 +18,13 @@ pub struct Cli {
     #[arg(short = 'd', long, global = true)]
     pub directory: Option<PathBuf>,
 
-    /// Config file (default: ~/.mrconfig)
+    /// Config file. Overrides --set.
     #[arg(short = 'c', long, global = true)]
     pub config: Option<PathBuf>,
+
+    /// Named repo set: ~/.config/mrx/NAME.mrconfig [env: MRX_SET]
+    #[arg(short = 's', long, global = true)]
+    pub set: Option<String>,
 
     /// Max parallel jobs (default: min(cpus, 8))
     #[arg(short = 'j', long, global = true)]
@@ -65,6 +69,8 @@ pub enum Command {
     List,
     /// Alias for list
     Ls,
+    /// List named repo sets
+    Sets,
     /// Any subcommand defined in .mrconfig (per-repo or [DEFAULT])
     #[command(external_subcommand)]
     Custom(Vec<String>),
@@ -82,6 +88,7 @@ impl Command {
             Command::Run { .. } => "run",
             Command::Register => "register",
             Command::List | Command::Ls => "list",
+            Command::Sets => "sets",
             Command::Custom(args) => args.first().map(String::as_str).unwrap_or(""),
         }
     }
