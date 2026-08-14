@@ -194,11 +194,13 @@ pub struct SetEntry {
 }
 
 /// A run waiting on user confirmation because part of its target selection
-/// is dirty (section 11, "destructive actions one keystroke away").
+/// is dirty, or because part of it has no probe result yet and dirtiness is
+/// simply unknown (section 11, "destructive actions one keystroke away").
 pub struct PendingRun {
     pub action: String,
     pub targets: Vec<usize>,
     pub dirty_count: usize,
+    pub unknown_count: usize,
 }
 
 /// A run that's been decided on (no confirmation needed, or confirmed) and
@@ -595,10 +597,10 @@ impl App {
         std::mem::take(&mut self.full_reprobe_requested)
     }
 
-    /// How many of `targets` the last probe found dirty. Used to decide
-    /// whether starting a run needs the confirmation from section 11; a
-    /// repo with no probe result yet counts as clean rather than blocking
-    /// the run on a probe that hasn't come back.
+    /// How many of `targets` the last probe found dirty. A repo with no
+    /// probe result yet is not counted here, it is unknown rather than
+    /// clean; see [`unprobed_count`](Self::unprobed_count) for that half of
+    /// the confirmation decision.
     pub fn dirty_count(&self, targets: &[usize]) -> usize {
         targets
             .iter()
@@ -611,26 +613,47 @@ impl App {
             .count()
     }
 
+    /// How many of `targets` have no probe result at all yet: right after
+    /// startup, a set switch, or a config reload, every repo starts this
+    /// way. Treated the same as dirty for the confirmation in
+    /// [`request_run`](Self::request_run), since a repo the app hasn't
+    /// actually looked at could be dirty and running unconfirmed against it
+    /// would defeat the point of the confirmation (section 11).
+    pub fn unprobed_count(&self, targets: &[usize]) -> usize {
+        targets
+            .iter()
+            .filter(|&&i| self.probes.get(i).and_then(|p| p.as_ref()).is_none())
+            .count()
+    }
+
     /// Ask to run `action_name` over the effective selection. Debug-asserts
     /// the action is actually defined somewhere: the palette must never
-    /// have offered it otherwise (section 08). Goes straight to
-    /// `run_requested` when nothing in the target selection is dirty, or
-    /// when `force` is set; otherwise waits on confirmation.
+    /// have offered it otherwise (section 08). Refuses while another run is
+    /// already live, the same guard `open_set_picker`/`reload_config` use.
+    /// Goes straight to `run_requested` when nothing in the target
+    /// selection is dirty or unprobed, or when `force` is set; otherwise
+    /// waits on confirmation.
     pub fn request_run(&mut self, action_name: &str) {
         debug_assert!(
             self.actions.iter().any(|a| a.name == action_name),
             "the palette must never offer an action nothing defines: {action_name}"
         );
+        if self.run_action.is_some() {
+            self.status_message = Some("can't start a run while one is already live".into());
+            return;
+        }
         let targets = self.effective_selection();
         if targets.is_empty() {
             return;
         }
         let dirty = self.dirty_count(&targets);
-        if dirty > 0 && !self.force {
+        let unknown = self.unprobed_count(&targets);
+        if (dirty > 0 || unknown > 0) && !self.force {
             self.pending_run = Some(PendingRun {
                 action: action_name.to_string(),
                 targets,
                 dirty_count: dirty,
+                unknown_count: unknown,
             });
         } else {
             self.run_requested = Some(RunRequest {
@@ -724,9 +747,6 @@ impl App {
         let targets: Vec<usize> = (0..self.repos.len()).collect();
         let generation = self.begin_probe(&targets);
         self.poll_generation = Some(generation);
-        // The poll itself, not any one repo's fetch succeeding, is what
-        // makes the behind column trustworthy again (section 02).
-        self.fetched_this_session = true;
         self.poll_targets_requested = Some(targets);
     }
 
@@ -767,7 +787,20 @@ impl App {
             return;
         }
         self.poll_generation = None;
+        // Only now, with every repo's fetch actually landed, is the behind
+        // column allowed to claim it knows what it's showing (section 02:
+        // "a column that is silently stale is worse than no column"). A
+        // plain probe reaching this point never got here at all, since it
+        // never set `poll_generation` to begin with.
+        self.fetched_this_session = true;
         if !self.auto_update {
+            return;
+        }
+        // A run that started after this poll began but before it finished
+        // suspends the fast-forward pass the same way `on_poll_due` would
+        // have suspended the poll itself from starting (section 02: "both
+        // suspend while a run is live").
+        if self.run_action.is_some() {
             return;
         }
         let targets: Vec<usize> = self
@@ -1469,16 +1502,72 @@ mod tests {
         assert_eq!(
             a.dirty_count(&[2]),
             0,
-            "no probe result yet counts as clean"
+            "dirty_count itself doesn't count an unprobed repo; unprobed_count does"
         );
     }
 
     #[test]
-    fn a_clean_selection_runs_immediately_without_confirmation() {
+    fn unprobed_count_counts_targets_with_no_probe_result_yet() {
+        let mut a = app(&["foo", "bar"]);
+        a.on_probe(0, probed(0, "main"));
+        assert_eq!(a.unprobed_count(&[0]), 0);
+        assert_eq!(a.unprobed_count(&[1]), 1);
+        assert_eq!(a.unprobed_count(&[0, 1]), 1);
+    }
+
+    #[test]
+    fn a_clean_and_probed_selection_runs_immediately_without_confirmation() {
         let mut a = app(&["foo"]);
+        a.on_probe(0, probed(0, "main")); // clean and known
         a.request_run("update");
         assert!(a.pending_run.is_none());
         assert!(a.run_requested.is_some());
+    }
+
+    #[test]
+    fn an_unprobed_selection_waits_on_confirmation_unless_forced() {
+        // No probe result has come back yet, e.g. right after startup, a set
+        // switch, or a config reload: dirtiness is unknown, not clean, and
+        // must not run unconfirmed (section 11).
+        let mut a = app(&["foo"]);
+        a.request_run("update");
+        assert!(
+            a.run_requested.is_none(),
+            "must not run before confirming an unprobed selection"
+        );
+        let pending = a
+            .pending_run
+            .as_ref()
+            .expect("an unprobed run needs confirming");
+        assert_eq!(pending.dirty_count, 0);
+        assert_eq!(pending.unknown_count, 1);
+
+        a.confirm_pending_run();
+        assert_eq!(a.run_requested.as_ref().unwrap().action, "update");
+    }
+
+    #[test]
+    fn force_skips_confirmation_even_on_an_unprobed_selection() {
+        let mut a = app(&["foo"]);
+        a.force = true;
+        a.request_run("update");
+        assert!(a.pending_run.is_none());
+        assert!(a.run_requested.is_some());
+    }
+
+    #[test]
+    fn request_run_refuses_while_a_run_is_already_live() {
+        let mut a = app(&["foo", "bar"]);
+        a.on_probe(0, probed(0, "main"));
+        a.begin_named_run("update".into(), vec![0]);
+
+        a.request_run("status");
+        assert!(
+            a.run_requested.is_none(),
+            "must not start a second run over a live one"
+        );
+        assert!(a.pending_run.is_none());
+        assert!(a.status_message.is_some());
     }
 
     #[test]
@@ -1590,6 +1679,7 @@ mod tests {
     #[test]
     fn palette_confirm_requests_a_run_of_the_highlighted_action() {
         let mut a = app(&["foo"]);
+        a.on_probe(0, probed(0, "main")); // clean and known, so it runs immediately
         a.open_palette();
         a.palette_filter = "status".into();
         a.palette_confirm();
@@ -1896,6 +1986,71 @@ mod tests {
         }
 
         assert_eq!(a.take_auto_update_requested(), Some(vec![0]));
+    }
+
+    #[test]
+    fn a_run_starting_mid_poll_suppresses_that_polls_auto_update() {
+        // The poll begins while nothing is running, so `on_poll_due` lets it
+        // start; a run then begins before every repo's fetch has landed.
+        // The fast-forward pass that poll cycle would otherwise queue must
+        // not fire underneath the live run (section 02: "both suspend while
+        // a run is live").
+        let mut a = app(&["clean-behind"]);
+        a.poll_enabled = true;
+        a.auto_update = true;
+
+        a.on_poll_due();
+        let targets = a.take_poll_requested().expect("poll started");
+        let generation = a.probe_generation;
+
+        a.begin_named_run("update".into(), vec![0]);
+
+        for &index in &targets {
+            a.on_probe(
+                generation,
+                RepoState {
+                    index,
+                    branch: Some("main".into()),
+                    upstream: Some("origin/main".into()),
+                    ahead: 0,
+                    behind: 2,
+                    changed: 0,
+                    present: true,
+                    timed_out: false,
+                },
+            );
+        }
+
+        assert!(
+            a.take_auto_update_requested().is_none(),
+            "a run that started mid-poll must suppress that poll's auto-update pass"
+        );
+    }
+
+    #[test]
+    fn fetched_this_session_only_becomes_true_once_the_poll_cycle_actually_completes() {
+        let mut a = app(&["foo", "bar"]);
+        a.poll_enabled = true;
+
+        a.on_poll_due();
+        assert!(
+            !a.fetched_this_session,
+            "dispatching a poll cycle must not itself claim anything has fetched"
+        );
+        let targets = a.take_poll_requested().expect("poll started");
+        let generation = a.probe_generation;
+
+        a.on_probe(generation, probed(targets[0], "main"));
+        assert!(
+            !a.fetched_this_session,
+            "still not every repo in the cycle has reported back"
+        );
+
+        a.on_probe(generation, probed(targets[1], "main"));
+        assert!(
+            a.fetched_this_session,
+            "the whole cycle has now landed, so the behind column can be trusted"
+        );
     }
 
     #[test]

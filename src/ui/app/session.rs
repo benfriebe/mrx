@@ -12,6 +12,7 @@
 //! always wins over whatever set was stored (enforced by the caller in
 //! `main.rs`, not here).
 
+use super::poll;
 use super::state::App;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -96,7 +97,19 @@ fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
                     .collect()
             }
             "cursor" => session.cursor = value.into_string(),
-            "poll" => session.poll_interval = value.into_u64().map(Duration::from_secs),
+            // A value beyond `MAX_POLL_INTERVAL` is treated as if the field
+            // were absent (poll off) rather than clamped down to the max: a
+            // hand-edited or corrupted `ui.json` must degrade gracefully,
+            // not resurrect the poll at a value nobody asked for. Without
+            // this bound, a hostile or fat-fingered value here reaches
+            // `Instant::now() + poll_interval` unconditionally at startup
+            // and panics the whole app before the first frame draws.
+            "poll" => {
+                session.poll_interval = value
+                    .into_u64()
+                    .filter(|&secs| secs <= poll::MAX_POLL_INTERVAL.as_secs())
+                    .map(Duration::from_secs)
+            }
             "auto_update" => session.auto_update = value.into_bool().unwrap_or(false),
             _ => {}
         }
@@ -464,6 +477,32 @@ mod tests {
             let loaded = load();
             assert_eq!(loaded.poll_interval, None);
             assert!(!loaded.auto_update);
+        });
+    }
+
+    #[test]
+    fn a_poll_value_beyond_the_sane_bound_loads_as_the_poll_being_off() {
+        with_state_home(|dir| {
+            let path = dir.join("mrx").join("ui.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{\"poll\": 18446744073709551615}").unwrap();
+            let loaded = load();
+            assert_eq!(
+                loaded.poll_interval, None,
+                "a hostile or fat-fingered poll value must degrade to poll off, \
+                 not resurrect the poll at some clamped value"
+            );
+        });
+    }
+
+    #[test]
+    fn a_sane_poll_value_still_loads_normally() {
+        with_state_home(|dir| {
+            let path = dir.join("mrx").join("ui.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{\"poll\": 300}").unwrap();
+            let loaded = load();
+            assert_eq!(loaded.poll_interval, Some(Duration::from_secs(300)));
         });
     }
 }

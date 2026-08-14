@@ -19,6 +19,22 @@ use tokio::sync::{mpsc, Semaphore};
 /// baked into the timer, so it can vary per session (section 07).
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(300);
 
+/// Upper bound on a poll interval from any external source (a hand-edited
+/// or corrupted `ui.json`, chiefly). Comfortably larger than anyone would
+/// actually want to wait between polls, but far enough below the range
+/// `Instant` can represent that `Instant::now() + interval` can never
+/// overflow: `tokio::time::Instant::now() + Duration::from_secs(u64::MAX)`
+/// panics outright, and that panic would otherwise crash the app at
+/// startup before a single frame draws.
+pub const MAX_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
+
+/// Clamp `interval` into `[1s, MAX_POLL_INTERVAL]`, the last line of
+/// defense before it's used to build the poll timer, regardless of where it
+/// came from.
+pub fn clamp_interval(interval: Duration) -> Duration {
+    interval.clamp(Duration::from_secs(1), MAX_POLL_INTERVAL)
+}
+
 /// A fetch is a network round trip rather than a local status read, so it
 /// gets more slack than the probe's own five-second timeout before the poll
 /// gives up on one repo and leaves it for the next cycle.
@@ -218,5 +234,30 @@ mod tests {
         assert_eq!(format_interval(Duration::from_secs(300)), "5m");
         assert_eq!(format_interval(Duration::from_secs(90)), "90s");
         assert_eq!(format_interval(Duration::from_secs(0)), "0s");
+    }
+
+    #[test]
+    fn clamp_interval_leaves_a_sane_value_untouched() {
+        assert_eq!(
+            clamp_interval(Duration::from_secs(300)),
+            Duration::from_secs(300)
+        );
+    }
+
+    #[test]
+    fn clamp_interval_caps_a_value_that_would_overflow_an_instant() {
+        let clamped = clamp_interval(Duration::from_secs(u64::MAX));
+        assert_eq!(clamped, MAX_POLL_INTERVAL);
+        // The actual failure mode this guards against: adding the clamped
+        // interval to `now` must not panic.
+        let _ = tokio::time::Instant::now() + clamped;
+    }
+
+    #[test]
+    fn clamp_interval_floors_a_zero_value() {
+        assert_eq!(
+            clamp_interval(Duration::from_secs(0)),
+            Duration::from_secs(1)
+        );
     }
 }

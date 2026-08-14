@@ -49,12 +49,10 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     if app.palette_open {
-        on_palette_key(app, key);
-        return false;
+        return on_palette_key(app, key);
     }
     if app.filtering {
-        on_filter_key(app, key);
-        return false;
+        return on_filter_key(app, key);
     }
     if app.detail_open {
         return on_detail_key(app, key);
@@ -64,18 +62,23 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
 
 fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
-        match key.code {
-            KeyCode::Char('c') => return app.request_quit(),
+        // A held Ctrl that isn't one of these three must not fall through to
+        // the plain-letter shortcuts below: crossterm reports Ctrl+U as
+        // `Char('u')` with the modifier set, and `KeyCode::Char('u')` alone
+        // would otherwise match it, running `update` (or worse, `s`/`f`/`d`)
+        // on a common readline chord like Ctrl-U with no confirmation.
+        return match key.code {
+            KeyCode::Char('c') => app.request_quit(),
             KeyCode::Char('r') => {
                 app.reload_config();
-                return false;
+                false
             }
             KeyCode::Char('a') => {
                 app.toggle_auto_update();
-                return false;
+                false
             }
-            _ => {}
-        }
+            _ => false,
+        };
     }
 
     match key.code {
@@ -133,8 +136,13 @@ fn on_set_picker_key(app: &mut App, key: KeyEvent) {
 
 /// Keys while `/` is capturing text. Everything but Esc, Enter, and
 /// Backspace is literal filter text, including letters that are shortcuts in
-/// the normal mode.
-fn on_filter_key(app: &mut App, key: KeyEvent) {
+/// the normal mode, except Ctrl-C: the plan lists `q`/`Ctrl-C` as quitting in
+/// "any" mode, and text capture must not swallow the one binding that's
+/// meant to be universal. Returns true when the app should quit.
+fn on_filter_key(app: &mut App, key: KeyEvent) -> bool {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return app.request_quit();
+    }
     match key.code {
         KeyCode::Esc => app.cancel_filter(),
         KeyCode::Enter => app.commit_filter(),
@@ -142,11 +150,16 @@ fn on_filter_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(c) => app.filter_push(c),
         _ => {}
     }
+    false
 }
 
 /// Keys while the action palette is open. Same shape as filter capture:
-/// only navigation and the exits are special, everything else is text.
-fn on_palette_key(app: &mut App, key: KeyEvent) {
+/// only navigation, the exits, and Ctrl-C are special, everything else is
+/// text. Returns true when the app should quit.
+fn on_palette_key(app: &mut App, key: KeyEvent) -> bool {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return app.request_quit();
+    }
     match key.code {
         KeyCode::Esc => app.close_palette(),
         KeyCode::Enter => app.palette_confirm(),
@@ -156,6 +169,7 @@ fn on_palette_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(c) => app.palette_push(c),
         _ => {}
     }
+    false
 }
 
 /// Keys while the dirty-selection confirmation is up (section 11): a modal
@@ -385,8 +399,52 @@ mod tests {
     #[test]
     fn u_requests_an_update_run_on_a_clean_selection() {
         let mut a = app(&["foo"]);
+        a.on_probe(
+            0,
+            crate::ui::app::probe::RepoState {
+                index: 0,
+                branch: Some("main".into()),
+                upstream: None,
+                ahead: 0,
+                behind: 0,
+                changed: 0,
+                present: true,
+                timed_out: false,
+            },
+        );
         on_input(&mut a, press(KeyCode::Char('u')));
         assert_eq!(a.run_requested.unwrap().action, "update");
+    }
+
+    #[test]
+    fn ctrl_u_does_not_trigger_the_update_shortcut() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, ctrl(KeyCode::Char('u')));
+        assert!(
+            a.run_requested.is_none() && a.pending_run.is_none(),
+            "Ctrl-U must not fall through to the plain u shortcut"
+        );
+    }
+
+    #[test]
+    fn ctrl_f_does_not_trigger_the_fetch_shortcut() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, ctrl(KeyCode::Char('f')));
+        assert!(a.run_requested.is_none() && a.pending_run.is_none());
+    }
+
+    #[test]
+    fn ctrl_s_does_not_trigger_the_status_shortcut() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, ctrl(KeyCode::Char('s')));
+        assert!(a.run_requested.is_none() && a.pending_run.is_none());
+    }
+
+    #[test]
+    fn ctrl_d_does_not_trigger_the_diff_shortcut() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, ctrl(KeyCode::Char('d')));
+        assert!(a.run_requested.is_none() && a.pending_run.is_none());
     }
 
     #[test]
@@ -406,6 +464,23 @@ mod tests {
             a.palette_open,
             "typing must not also trigger the u shortcut"
         );
+    }
+
+    #[test]
+    fn ctrl_c_quits_while_the_palette_is_open() {
+        let mut a = app(&["foo"]);
+        a.open_palette();
+        assert!(
+            on_input(&mut a, ctrl(KeyCode::Char('c'))),
+            "Ctrl-C is the one binding the plan calls universal"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_quits_while_filtering() {
+        let mut a = app(&["foo"]);
+        a.start_filter();
+        assert!(on_input(&mut a, ctrl(KeyCode::Char('c'))));
     }
 
     #[test]

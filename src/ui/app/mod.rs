@@ -17,6 +17,8 @@ use crossterm::execute;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -26,20 +28,71 @@ use crate::operations;
 use probe::Probed;
 use state::App;
 
-/// crossterm's `read()` blocks, so it gets its own thread rather than the
+/// How often the input thread checks whether it's allowed to touch the tty
+/// while [`InputGate::suspend`] has paused it for `$EDITOR`. Small enough
+/// that resuming feels instant, large enough not to spin.
+const GATE_POLL_INTERVAL: Duration = Duration::from_millis(30);
+
+/// Lets the run loop stop the input thread from reading stdin while
+/// `$EDITOR` owns the terminal, so mrx and the editor are never both
+/// blocked on the same tty at once (`o`, section 03). `crossterm::read()`
+/// itself can't be interrupted once it's blocked in a syscall, so the
+/// thread never calls it unless the gate is open: suspending only stops it
+/// from *starting* another read, it can't reach into one already in
+/// flight. In practice that's the same guarantee, since the thread only
+/// ever blocks for up to [`GATE_POLL_INTERVAL`] at a time (see
+/// [`input_thread`]) rather than indefinitely.
+#[derive(Clone)]
+struct InputGate(Arc<AtomicBool>);
+
+impl InputGate {
+    fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+
+    fn suspend(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+
+    fn resume(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    fn is_open(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// crossterm's `read()` blocks, so input gets its own thread rather than the
 /// `event-stream` feature and a futures dependency. The thread outlives the
-/// app: it parks in `read()` until the next input, then the send fails and
-/// it ends.
-fn input_thread() -> mpsc::UnboundedReceiver<Event> {
+/// app, but never blocks for longer than [`GATE_POLL_INTERVAL`]: it polls
+/// with that timeout and only reads when something is actually ready, so it
+/// can notice the returned [`InputGate`] closing (for `$EDITOR`, mirrors
+/// `probe_requested`) instead of parking in a read that could otherwise
+/// race a child process for the same keystrokes.
+fn input_thread() -> (mpsc::UnboundedReceiver<Event>, InputGate) {
     let (tx, rx) = mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        while let Ok(ev) = crossterm::event::read() {
-            if tx.send(ev).is_err() {
-                break;
-            }
+    let gate = InputGate::new();
+    let thread_gate = gate.clone();
+    std::thread::spawn(move || loop {
+        if !thread_gate.is_open() {
+            std::thread::sleep(GATE_POLL_INTERVAL);
+            continue;
+        }
+        match crossterm::event::poll(GATE_POLL_INTERVAL) {
+            Ok(true) => match crossterm::event::read() {
+                Ok(ev) => {
+                    if tx.send(ev).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            },
+            Ok(false) => continue,
+            Err(_) => break,
         }
     });
-    rx
+    (rx, gate)
 }
 
 fn apply_mouse_capture(enabled: bool) -> io::Result<()> {
@@ -50,34 +103,65 @@ fn apply_mouse_capture(enabled: bool) -> io::Result<()> {
     }
 }
 
-/// `o`: suspend the alternate screen, raw mode, and (if it was on) mouse
-/// capture, run `$EDITOR` (falling back to `vi`) on `path` to completion,
-/// then restore all three exactly as they were. A blocking wait is the
-/// point: there is nothing useful for the app to do while the editor has
-/// the terminal, and any probe or run events that arrive in the meantime
-/// just sit in their channels until the next draw picks them up, the same
-/// eventually-consistent handling every other background result gets.
-fn open_editor(terminal: &mut super::Term, path: &Path, mouse_captured: bool) -> io::Result<()> {
-    if mouse_captured {
-        apply_mouse_capture(false)?;
-    }
-    super::teardown_terminal()?;
+/// What happened when `$EDITOR` was run, once the terminal itself is known
+/// to be back in a good state. Kept separate from `open_editor`'s `Err`
+/// case, which means the terminal restoration itself failed and the
+/// caller can no longer trust `terminal` at all.
+enum EditorOutcome {
+    Ok,
+    /// The editor process couldn't run (a bad `$EDITOR`, typically); the
+    /// terminal was still fully restored before this is returned.
+    EditorFailed(io::Error),
+}
 
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    let mut parts = editor.split_whitespace();
-    let bin = parts.next().unwrap_or("vi");
-    let result = std::process::Command::new(bin)
-        .args(parts)
-        .arg(path)
-        .status();
+/// `o`: suspend the alternate screen, raw mode, mouse capture (if it was
+/// on), and the input thread (via `gate`, so it stops competing with the
+/// editor for stdin), run `$EDITOR` (falling back to `vi`) on `path` to
+/// completion, then restore all of it exactly as it was. A blocking wait is
+/// the point: there is nothing useful for the app to do while the editor
+/// has the terminal, and any probe or run events that arrive in the
+/// meantime just sit in their channels until the next draw picks them up,
+/// the same eventually-consistent handling every other background result
+/// gets.
+///
+/// An `Err` return means re-entering raw mode or the alternate screen
+/// failed and the real terminal is left in whatever state that partial
+/// attempt produced; callers must not keep drawing against `terminal` as
+/// though nothing happened; see [`run`]'s call site.
+fn open_editor(
+    terminal: &mut super::Term,
+    path: &Path,
+    mouse_captured: bool,
+    gate: &InputGate,
+) -> io::Result<EditorOutcome> {
+    gate.suspend();
+    let outcome = (|| {
+        if mouse_captured {
+            apply_mouse_capture(false)?;
+        }
+        super::teardown_terminal()?;
 
-    *terminal = super::setup_terminal()?;
-    if mouse_captured {
-        apply_mouse_capture(true)?;
-    }
-    terminal.clear()?;
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+        let mut parts = editor.split_whitespace();
+        let bin = parts.next().unwrap_or("vi");
+        let spawn_result = std::process::Command::new(bin)
+            .args(parts)
+            .arg(path)
+            .status();
 
-    result.map(|_| ())
+        *terminal = super::setup_terminal()?;
+        if mouse_captured {
+            apply_mouse_capture(true)?;
+        }
+        terminal.clear()?;
+
+        Ok(match spawn_result {
+            Ok(_) => EditorOutcome::Ok,
+            Err(e) => EditorOutcome::EditorFailed(e),
+        })
+    })();
+    gate.resume();
+    outcome
 }
 
 /// Begin a new probe generation over `targets` and spawn it.
@@ -156,7 +240,12 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
         dir_override,
     );
     app.restore_session(&session);
-    let mut input = input_thread();
+    // A corrupted or hostile `ui.json` is caught at the point it's parsed
+    // (`session::from_fields`); this is the last line of defense so that no
+    // path into `poll_interval`, present or future, can build an `Instant`
+    // that overflows below.
+    app.poll_interval = poll::clamp_interval(app.poll_interval);
+    let (mut input, input_gate) = input_thread();
     let mut ticker = tokio::time::interval(Duration::from_millis(200));
     // The interval arm always ticks, whether or not the poll is on
     // (section 05); `on_poll_due` is what actually decides. Delayed a full
@@ -217,8 +306,18 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
                     apply_mouse_capture(app.mouse_captured)?;
                 }
                 if let Some(path) = app.take_open_editor_requested() {
-                    if let Err(e) = open_editor(&mut terminal, &path, app.mouse_captured) {
-                        app.status_message = Some(format!("could not open $EDITOR: {e}"));
+                    match open_editor(&mut terminal, &path, app.mouse_captured, &input_gate) {
+                        Ok(EditorOutcome::Ok) => {}
+                        Ok(EditorOutcome::EditorFailed(e)) => {
+                            app.status_message = Some(format!("could not open $EDITOR: {e}"));
+                        }
+                        // The terminal itself could not be restored; drawing
+                        // another frame against `terminal` would just paint
+                        // over a real shell that mrx no longer controls.
+                        // Propagate so `main.rs`'s `.expect()` panics and the
+                        // installed panic hook gets one last attempt at
+                        // putting the terminal back.
+                        Err(e) => return Err(e),
                     }
                 }
             }
@@ -258,4 +357,33 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
     apply_mouse_capture(false)?;
     super::teardown_terminal()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_input_gate_starts_open() {
+        assert!(InputGate::new().is_open());
+    }
+
+    #[test]
+    fn suspend_and_resume_toggle_the_gate() {
+        let gate = InputGate::new();
+        gate.suspend();
+        assert!(!gate.is_open());
+        gate.resume();
+        assert!(gate.is_open());
+    }
+
+    #[test]
+    fn a_cloned_gate_shares_state_with_the_original() {
+        // The input thread holds a clone; suspending from the run loop's
+        // copy must be visible to the thread's.
+        let gate = InputGate::new();
+        let clone = gate.clone();
+        gate.suspend();
+        assert!(!clone.is_open(), "a clone must observe the same state");
+    }
 }

@@ -508,11 +508,11 @@ fn draw_confirm(frame: &mut Frame, pending: &PendingRun, area: Rect) {
 
     let text = vec![
         Line::from(format!(
-            "run '{}' on {} repo{}, {} of them dirty?",
+            "run '{}' on {} repo{}, {}?",
             pending.action,
             pending.targets.len(),
             if pending.targets.len() == 1 { "" } else { "s" },
-            pending.dirty_count,
+            confirm_reason(pending),
         )),
         Line::default(),
         Line::from(Span::styled(
@@ -522,6 +522,18 @@ fn draw_confirm(frame: &mut Frame, pending: &PendingRun, area: Rect) {
     ];
     let block = Block::default().borders(Borders::ALL).title(" confirm ");
     frame.render_widget(Paragraph::new(text).block(block), popup);
+}
+
+/// The confirmation's reason clause: dirty and unprobed repos are both
+/// worth pausing over (section 11), but they are not the same claim, so a
+/// selection that is only unprobed says so rather than calling it dirty.
+fn confirm_reason(pending: &PendingRun) -> String {
+    match (pending.dirty_count, pending.unknown_count) {
+        (0, 0) => "confirm".to_string(),
+        (dirty, 0) => format!("{dirty} of them dirty"),
+        (0, unknown) => format!("{unknown} of them not yet checked"),
+        (dirty, unknown) => format!("{dirty} of them dirty, {unknown} not yet checked"),
+    }
 }
 
 #[cfg(test)]
