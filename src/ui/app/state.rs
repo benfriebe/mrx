@@ -481,26 +481,49 @@ impl App {
         self.quit_pending = false;
     }
 
-    /// Whether an auto-update pass has merges in flight. Blocks set
-    /// switching and config reload the same way a live run does (finding
-    /// A2): an auto-update result carries a repo index, and a set switch
-    /// invalidates every index the moment it replaces `repos`.
+    /// Whether an auto-update pass has merges in flight: an auto-update
+    /// result carries a repo index, and anything that replaces `repos` or
+    /// starts a second `git` invocation against the same working tree would
+    /// race it.
     fn auto_update_in_flight(&self) -> bool {
         self.auto_update_total > 0
     }
 
-    /// `tab`: open the set picker. Blocked while a run is live, the same
-    /// guard [`reload_config`](Self::reload_config) uses, since switching
-    /// the repo list out from under a live run's indices would attribute
-    /// its results to the wrong rows. Also blocked while auto-update has
-    /// merges in flight, for the same reason.
-    pub fn open_set_picker(&mut self) {
+    /// Whichever mutating operation currently owns the repos on disk, if
+    /// any. A live run, an in-flight auto-update pass, a set switch, a
+    /// config reload, and an editor suspension all either write to a
+    /// working tree or replace the repo list out from under indices another
+    /// of them is still using, so at most one may be underway at a time.
+    /// The single source of truth for that rule: every entry point that
+    /// commits one of these actions calls this at the moment it actually
+    /// commits, not only when it opens a modal, since another one can start
+    /// in the gap between the two.
+    fn mutation_blocker(&self) -> Option<&'static str> {
         if self.run_action.is_some() {
-            self.status_message = Some("can't switch sets while a run is live".into());
-            return;
+            Some("another run is already live")
+        } else if self.auto_update_in_flight() {
+            Some("auto-update is running")
+        } else {
+            None
         }
-        if self.auto_update_in_flight() {
-            self.status_message = Some("can't switch sets while auto-update is running".into());
+    }
+
+    /// Refuses `verb` with a status message naming what's blocking it, if
+    /// anything is; returns whether it refused.
+    fn refuse_if_mutation_blocked(&mut self, verb: &str) -> bool {
+        if let Some(reason) = self.mutation_blocker() {
+            self.status_message = Some(format!("can't {verb} while {reason}"));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// `tab`: open the set picker. Blocked by [`mutation_blocker`](Self::mutation_blocker),
+    /// since switching the repo list out from under a live run's or
+    /// auto-update's indices would attribute its results to the wrong rows.
+    pub fn open_set_picker(&mut self) {
+        if self.refuse_if_mutation_blocked("switch sets") {
             return;
         }
         let mut entries: Vec<SetEntry> = sets::discover()
@@ -541,6 +564,13 @@ impl App {
     /// a full re-probe (section 03, "switching reloads the config and
     /// restarts the probe").
     ///
+    /// Re-checks [`mutation_blocker`](Self::mutation_blocker) here rather
+    /// than trusting the check [`open_set_picker`](Self::open_set_picker)
+    /// made when the picker opened: a run or an auto-update pass can start
+    /// in the time the picker sat open waiting for Enter, and switching sets
+    /// out from under either would hand their in-flight results indices
+    /// belonging to the wrong repo list.
+    ///
     /// Uses [`config::try_load`] rather than `config::load`: this runs with
     /// raw mode, the alternate screen, and mouse capture all
     /// active, so a `std::process::exit` here would skip teardown and the
@@ -553,6 +583,9 @@ impl App {
             return;
         };
         self.close_set_picker();
+        if self.refuse_if_mutation_blocked("switch sets") {
+            return;
+        }
         match config::try_load(&entry.path, self.dir_override.as_deref()) {
             Ok(config::Config {
                 repos, defaults, ..
@@ -567,9 +600,9 @@ impl App {
     }
 
     /// `Ctrl-R`: re-read the active config from disk without changing which
-    /// config is active. Blocked while a run is live, or while auto-update
-    /// has merges in flight, for the same reason
-    /// [`open_set_picker`](Self::open_set_picker) is.
+    /// config is active. Blocked by
+    /// [`mutation_blocker`](Self::mutation_blocker), the same guard
+    /// [`open_set_picker`](Self::open_set_picker) uses.
     ///
     /// Uses [`config::try_load`] rather than `config::load` for the same
     /// reason [`confirm_set_picker`](Self::confirm_set_picker) does: this runs
@@ -577,12 +610,7 @@ impl App {
     /// process here bypasses teardown. A bad edit mid-save keeps the current
     /// config loaded and reports the error rather than killing the app.
     pub fn reload_config(&mut self) {
-        if self.run_action.is_some() {
-            self.status_message = Some("can't reload while a run is live".into());
-            return;
-        }
-        if self.auto_update_in_flight() {
-            self.status_message = Some("can't reload while auto-update is running".into());
+        if self.refuse_if_mutation_blocked("reload") {
             return;
         }
         match config::try_load(&self.config_path, self.dir_override.as_deref()) {
@@ -684,18 +712,19 @@ impl App {
 
     /// Ask to run `action_name` over the effective selection. Debug-asserts
     /// the action is actually defined somewhere: the palette must never
-    /// have offered it otherwise (section 08). Refuses while another run is
-    /// already live, the same guard `open_set_picker`/`reload_config` use.
-    /// Goes straight to `run_requested` when nothing in the target
-    /// selection is dirty or unprobed, or when `force` is set; otherwise
-    /// waits on confirmation.
+    /// have offered it otherwise (section 08). Refused by
+    /// [`mutation_blocker`](Self::mutation_blocker), the same guard
+    /// `open_set_picker`/`reload_config` use, since a manual run sharing a
+    /// repo with a live auto-update pass would run `git` against it through
+    /// two different semaphores at once. Goes straight to `run_requested`
+    /// when nothing in the target selection is dirty or unprobed, or when
+    /// `force` is set; otherwise waits on confirmation.
     pub fn request_run(&mut self, action_name: &str) {
         debug_assert!(
             self.actions.iter().any(|a| a.name == action_name),
             "the palette must never offer an action nothing defines: {action_name}"
         );
-        if self.run_action.is_some() {
-            self.status_message = Some("can't start a run while one is already live".into());
+        if self.refuse_if_mutation_blocked("start a run") {
             return;
         }
         let targets = self.effective_selection();
@@ -720,13 +749,23 @@ impl App {
         }
     }
 
+    /// Confirm a pending run. Re-checks
+    /// [`mutation_blocker`](Self::mutation_blocker) rather than trusting the
+    /// check [`request_run`](Self::request_run) made when the confirmation
+    /// prompt opened: an auto-update pass can start while the prompt sat
+    /// waiting for an answer, and the pending run is dropped rather than
+    /// launched into a repo an auto-update pass already owns.
     pub fn confirm_pending_run(&mut self) {
-        if let Some(p) = self.pending_run.take() {
-            self.run_requested = Some(RunRequest {
-                action: p.action,
-                targets: p.targets,
-            });
+        let Some(p) = self.pending_run.take() else {
+            return;
+        };
+        if self.refuse_if_mutation_blocked("start a run") {
+            return;
         }
+        self.run_requested = Some(RunRequest {
+            action: p.action,
+            targets: p.targets,
+        });
     }
 
     pub fn cancel_pending_run(&mut self) {
@@ -1158,10 +1197,17 @@ impl App {
     /// `o`: open `$EDITOR` on the cursor row's repo, from either the plain
     /// list or the detail view (section 03, "o is worth including early").
     /// A no-op with a status message when the filter hides every row, for
-    /// the same reason [`open_detail`](Self::open_detail) is.
+    /// the same reason [`open_detail`](Self::open_detail) is. Also refused
+    /// by [`mutation_blocker`](Self::mutation_blocker): a live run or
+    /// auto-update pass keeps writing to repos in the background while the
+    /// editor has the terminal, and the user should not open one on a repo
+    /// something else is mid-write to.
     pub fn request_open_editor(&mut self) {
         if self.visible_indices().is_empty() {
             self.status_message = Some(self.no_visible_rows_message());
+            return;
+        }
+        if self.refuse_if_mutation_blocked("open the editor") {
             return;
         }
         self.open_editor_requested = true;
@@ -1291,9 +1337,15 @@ impl App {
     }
 
     /// Toggle the cursor row's selection, then advance the cursor so
-    /// repeated presses of the key walk down the list.
+    /// repeated presses of the key walk down the list. A no-op when the
+    /// cursor isn't on a row the filter currently shows: a filter that
+    /// narrows to zero matches can leave `cursor` pointing at a hidden repo
+    /// (`clamp_cursor_to_visible` has nothing visible to clamp it to), and
+    /// toggling that would manufacture an explicit selection the user never
+    /// saw on screen, which `effective_selection` then honors on purpose for
+    /// selections made while visible.
     pub fn toggle_selection_at_cursor(&mut self) {
-        if self.repos.is_empty() {
+        if !self.visible_indices().contains(&self.cursor) {
             return;
         }
         if !self.selected.remove(&self.cursor) {
@@ -1516,6 +1568,42 @@ mod tests {
         a.request_open_editor();
         assert!(!a.open_editor_requested);
         assert!(a.status_message.is_some());
+    }
+
+    /// A live run keeps writing to repos in the background while the
+    /// editor has the terminal; opening one is refused rather than handing
+    /// the user an editor on a repo something else is mid-write to.
+    #[test]
+    fn requesting_the_editor_is_refused_while_a_run_is_live() {
+        let mut a = app(&["foo"]);
+        a.begin_named_run("update".into(), vec![0]);
+        a.request_open_editor();
+        assert!(!a.open_editor_requested);
+        assert!(a.status_message.is_some());
+    }
+
+    /// Same hazard, same guard, for an in-flight auto-update pass.
+    #[test]
+    fn requesting_the_editor_is_refused_while_auto_update_is_in_flight() {
+        let mut a = app(&["foo"]);
+        a.auto_update_total = 1;
+        a.request_open_editor();
+        assert!(!a.open_editor_requested);
+        assert!(a.status_message.is_some());
+    }
+
+    /// Cursor on a repo, then a filter that matches nothing, then space:
+    /// toggling must not manufacture an explicit selection out of a row the
+    /// user can no longer see, since an explicit selection is honored across
+    /// a filter change on purpose.
+    #[test]
+    fn toggling_selection_on_a_zero_match_filter_is_a_no_op() {
+        let mut a = app(&["foo"]);
+        a.cursor = 0;
+        a.filter = "zzz".into();
+        a.toggle_selection_at_cursor();
+        assert!(a.selected.is_empty());
+        assert_eq!(a.effective_selection(), Vec::<usize>::new());
     }
 
     #[test]
@@ -1795,6 +1883,45 @@ mod tests {
             "must not start a second run over a live one"
         );
         assert!(a.pending_run.is_none());
+        assert!(a.status_message.is_some());
+    }
+
+    /// A manual run sharing a repo with a live auto-update pass would run
+    /// `git` against it through two different semaphores at once.
+    #[test]
+    fn request_run_refuses_while_auto_update_is_in_flight() {
+        let mut a = app(&["foo"]);
+        a.on_probe(0, probed(0, "main"));
+        a.auto_update_total = 1;
+
+        a.request_run("status");
+        assert!(a.run_requested.is_none());
+        assert!(a.pending_run.is_none());
+        assert!(a.status_message.is_some());
+    }
+
+    /// The confirmation prompt can sit open with nothing blocking it, then
+    /// an auto-update pass can start while the user is still deciding: a
+    /// poll completing doesn't wait on a modal. Confirming must re-check at
+    /// that point rather than trusting the now-stale check `request_run`
+    /// made when the prompt opened.
+    #[test]
+    fn confirm_pending_run_refuses_when_auto_update_starts_while_the_prompt_is_open() {
+        let mut a = app(&["foo"]);
+        let mut dirty = probed(0, "main");
+        dirty.changed = 1;
+        a.on_probe(0, dirty);
+
+        a.request_run("update");
+        assert!(a.pending_run.is_some(), "a dirty run needs confirming");
+
+        a.auto_update_total = 1; // starts while the prompt is still open
+        a.confirm_pending_run();
+
+        assert!(
+            a.run_requested.is_none(),
+            "must not launch into a repo an in-flight auto-update pass owns"
+        );
         assert!(a.status_message.is_some());
     }
 
@@ -2135,6 +2262,52 @@ mod tests {
         a.begin_named_run("update".into(), vec![0]);
         a.open_set_picker();
         assert!(!a.set_picker_open);
+        assert!(a.status_message.is_some());
+    }
+
+    /// The picker can sit open with nothing blocking it, then an auto-update
+    /// pass can start while the user is still choosing: a poll completing
+    /// and starting a fast-forward cycle doesn't wait on a modal. Confirming
+    /// must re-check at that point rather than trusting the now-stale check
+    /// `open_set_picker` made, or the switch would hand the in-flight
+    /// auto-update's results indices into a repo list it no longer applies to.
+    #[test]
+    fn confirm_set_picker_is_blocked_when_auto_update_starts_after_the_picker_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("current.mrconfig");
+        write_config(&current, "[foo]\n");
+        let other = dir.path().join("other.mrconfig");
+        write_config(&other, "[bar]\n");
+
+        let config::Config {
+            repos, defaults, ..
+        } = config::load(&current, None);
+        let mut a = App::new(
+            repos,
+            "work".into(),
+            4,
+            defaults,
+            current.clone(),
+            false,
+            None,
+        );
+
+        a.set_entries = vec![SetEntry {
+            name: "other".into(),
+            path: other,
+        }];
+        a.set_picker_cursor = 0;
+        a.set_picker_open = true; // picker opened while nothing was blocking it
+
+        a.auto_update_total = 1; // then a poll cycle started fast-forwarding
+        a.confirm_set_picker();
+
+        assert!(!a.set_picker_open);
+        assert_eq!(
+            a.config_path, current,
+            "must not have switched sets out from under the in-flight auto-update"
+        );
+        assert_eq!(a.repos.len(), 1);
         assert!(a.status_message.is_some());
     }
 

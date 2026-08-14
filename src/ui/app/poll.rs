@@ -151,6 +151,14 @@ pub enum AutoUpdateOutcome {
 /// each task re-probes its repo immediately before merging and skips the
 /// merge if it no longer passes `can_fast_forward`, rather than trusting
 /// the snapshot the poll took.
+///
+/// That re-probe narrows the window from minutes to milliseconds but cannot
+/// close it: the probe and the merge are two separate `git` invocations, and
+/// nothing stops an edit made outside mrx, in another terminal or an editor,
+/// from landing in the gap between them. Two external processes can't be
+/// made atomic against each other without a lock this app doesn't take. This
+/// is why auto-update only ever fast-forwards, never merges or rebases
+/// anything a conflict could touch, and stays off until turned on.
 pub fn spawn_auto_update(
     repos: &[Repo],
     which: Vec<usize>,
