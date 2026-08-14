@@ -324,7 +324,13 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
             Some(probed) = probe_rx.recv() => {
                 app.on_probe(probed.generation, probed.state);
                 if let Some(targets) = app.take_auto_update_requested() {
-                    poll::spawn_auto_update(&app.repos, targets, app.jobs, auto_tx.clone());
+                    poll::spawn_auto_update(
+                        &app.repos,
+                        targets,
+                        app.jobs,
+                        app.auto_update_generation(),
+                        auto_tx.clone(),
+                    );
                 }
             }
             Some(evt) = run_rx.recv() => {

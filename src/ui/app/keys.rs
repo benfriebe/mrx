@@ -410,6 +410,7 @@ mod tests {
                 changed: 0,
                 present: true,
                 timed_out: false,
+                fetched: false,
             },
         );
         on_input(&mut a, press(KeyCode::Char('u')));
@@ -536,6 +537,7 @@ mod tests {
             changed: 0,
             present: true,
             timed_out: false,
+            fetched: false,
         };
         dirty.changed = 1;
         a.on_probe(0, dirty);

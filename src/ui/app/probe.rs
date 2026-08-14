@@ -35,6 +35,12 @@ pub struct RepoState {
     /// The probe hit its per-repo timeout before `git status` returned;
     /// every other field is a default and should not be trusted.
     pub timed_out: bool,
+    /// Whether this result came from a poll cycle whose `git fetch` for this
+    /// specific repo actually succeeded. Always `false` for a plain probe,
+    /// which never fetches. A poll cycle can have some repos fetch
+    /// successfully and others fail (offline, VPN, auth), so this is a
+    /// per-repo fact, not a session-wide one.
+    pub fetched: bool,
 }
 
 impl RepoState {
@@ -48,6 +54,7 @@ impl RepoState {
             changed: 0,
             present: false,
             timed_out: false,
+            fetched: false,
         }
     }
 
@@ -170,10 +177,13 @@ fn working_tree_text(state: &RepoState) -> String {
 
 /// Working-tree summary: clean or a modified count, plus ahead/behind when
 /// there is an upstream to compare against. `behind` reads `?` rather than a
-/// number until something has fetched this session: the count compares
-/// against the local remote-tracking ref, so a stale one would otherwise
-/// read as "up to date" instead of "unknown" (section 02).
-pub fn dirty_text(state: &RepoState, fetched_this_session: bool) -> String {
+/// number until this specific repo has had a fetch actually succeed: the
+/// count compares against the local remote-tracking ref, so a stale one
+/// would otherwise read as "up to date" instead of "unknown", and a repo
+/// whose own fetch failed (offline, VPN, auth) must not borrow another
+/// repo's success (section 02, and finding A4: "up to date" and "not asked
+/// recently" must not render identically).
+pub fn dirty_text(state: &RepoState, repo_has_fetched: bool) -> String {
     if state.timed_out {
         return "timed out".into();
     }
@@ -187,7 +197,7 @@ pub fn dirty_text(state: &RepoState, fetched_this_session: bool) -> String {
         if state.ahead > 0 {
             text.push_str(&format!("  ↑{}", state.ahead));
         }
-        if fetched_this_session {
+        if repo_has_fetched {
             if state.behind > 0 {
                 text.push_str(&format!("  ↓{}", state.behind));
             }

@@ -258,6 +258,7 @@ mod tests {
             changed: 0,
             present: true,
             timed_out: false,
+            fetched: false,
         }
     }
 
