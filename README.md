@@ -89,18 +89,18 @@ Press **Enter** on a repo to expand its full output in a bordered panel. Arrow k
 ## The resident app
 
 `mrx ui` is a different shape from the TUI above: it stays open across runs instead of
-exiting after one. This is the first stage of it, a browsable, filterable repo table;
-running actions from inside it lands in a later stage.
+exiting after one. Branch and working-tree state fill in from a background probe as
+soon as the table paints, and any action from `.mrconfig` can run against the
+selection without leaving the screen.
 
 ```
-  mrx · work                                              6 repos · 2 selected
- ──────────────────────────────────────────────────────────────────────────────
-  ▸ ●  bill-api               /Users/me/dev/bill-api
-    ●  crew-db-schema         /Users/me/dev/crew-db-schema
-       mr-yum                 /Users/me/dev/mr-yum
-       menu-api               /Users/me/dev/menu-api
- ──────────────────────────────────────────────────────────────────────────────
-  j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter  q quit
+  mrx · work                                    update 1/2 · 1 failed
+ ──────────────────────────────────────────────────────────────────────────
+  ▸ ●  bill-api      main    clean            already up to date
+    ●  crew-db-schema main   2 modified       git pull
+ ──────────────────────────────────────────────────────────────────────────
+  j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter
+  u update  s/f/d status/fetch/diff  : action  r reprobe  m mouse  q quit
 ```
 
 `j`/`k` (or the arrow keys) move the cursor, `g`/`G` jump to the first or last row.
@@ -113,6 +113,26 @@ least 1 selected: it's telling you what an action would target right now.
 `Esc` drops the filter, `Enter` keeps it. Filtering narrows what's on screen but never
 touches the selection, so selecting some repos, then filtering, then selecting again
 adds to what was already picked.
+
+`u` runs `update` on the selection; `s`, `f`, `d` run `status`, `fetch`, `diff`. `:`
+opens the action palette, a filtered list of every runnable action for the set
+(built-in and custom alike), each shown with where it's defined and how many repos
+actually have it: `deploy  per-repo, 3 of 42`. If the selection includes a repo the
+last probe found dirty, running anything asks for confirmation first, showing how
+many; pass `-f`/`--force` to skip that. `r` re-probes the selection (or everything,
+with nothing selected).
+
+`Enter` opens the detail view for the cursor row: the table collapses to a sidebar
+(full-width below about 100 columns) and `j`/`k` keep moving the cursor with the
+detail view following. Each step of a run is its own labelled section rather than one
+scrollback. `Ctrl-D`/`Ctrl-U` scroll half a page, kept per repo; `y` copies the
+visible step's output, falling back to a temp file when there's no clipboard binary
+on `PATH`. `Esc` goes back to the full-width list.
+
+Clicking a row moves the cursor to it; clicking the row already under the cursor
+opens its detail view. The wheel scrolls whichever region is under the pointer. `m`
+toggles mouse capture off and on, since capture disables the terminal's own text
+selection; holding Option/Shift while dragging still selects natively without it.
 
 Needs a real terminal: `mrx ui` with stdout piped, or combined with `--plain`, exits 2
 with a pointer at `mrx status` or another non-interactive subcommand instead.

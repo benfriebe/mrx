@@ -2,11 +2,14 @@
 //! Every decision worth testing lives here as a method that returns data;
 //! `render.rs` only turns that data into widgets.
 
+use super::actions::{self, Action};
+use super::detail;
 use super::probe::{self, RepoState};
 use crate::config::Repo;
 use crate::executor::{StepResult, TaskEvent};
 use crate::summarize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 /// Shown for a repo that has never taken part in a run this session, per
 /// section 02: "a repo that has never been run shows `·` rather than a fake
@@ -51,6 +54,83 @@ pub struct App {
     /// Each repo's outcome from the most recent run it took part in, `None`
     /// for a repo that has never run this session.
     pub run_results: Vec<Option<RunStatus>>,
+    /// `[DEFAULT]` keys for the active config, so a run started from inside
+    /// the app can plan an operation the same way the CLI does.
+    pub defaults: BTreeMap<String, String>,
+    /// The active config's path, passed through to the executor for
+    /// `MR_CONFIG` and unrelated to which set is on screen.
+    pub config_path: PathBuf,
+    /// Skip the dirty-selection confirmation (section 11); mirrors the
+    /// CLI's `--force`, since both mean "I already know what I'm doing".
+    pub force: bool,
+    /// Every runnable action for the active set, discovered once at
+    /// startup so the palette has something to filter (section 08).
+    pub actions: Vec<Action>,
+
+    /// Whether the action palette (`:`) is capturing keystrokes.
+    pub palette_open: bool,
+    pub palette_filter: String,
+    pub palette_cursor: usize,
+
+    /// A run waiting on the dirty-selection confirmation; `None` once it's
+    /// been answered either way.
+    pub pending_run: Option<PendingRun>,
+    /// Set once a run should actually start; the run loop owns spawning it,
+    /// since state has no runtime handle of its own (mirrors
+    /// `probe_requested`).
+    pub run_requested: Option<RunRequest>,
+
+    /// The live run's action name, `None` once it finishes so the header
+    /// falls back to the plain selection count.
+    pub run_action: Option<String>,
+    /// Global indices the live (or just-finished) run covers.
+    pub run_targets: Vec<usize>,
+    pub run_total: usize,
+    pub run_completed: usize,
+    pub run_failed: usize,
+    /// Set once a run finishes, to the repos it covered; the run loop owns
+    /// spawning the re-probe over them (section 06, "post-run re-probe").
+    pub post_run_targets: Option<Vec<usize>>,
+
+    /// Whether Enter has opened the detail view for the cursor row. The
+    /// view always follows `cursor`, so no separate "which repo" field.
+    pub detail_open: bool,
+    /// Each repo's scroll position in its own detail view, kept per repo
+    /// (keyed by global index) so paging through rows with j/k doesn't
+    /// lose your place when you come back.
+    pub detail_scroll: BTreeMap<usize, usize>,
+
+    /// Whether the mouse is currently captured; starts `true` (section 03).
+    pub mouse_captured: bool,
+    /// Set by `m`; the run loop applies the actual capture toggle, since
+    /// that's a terminal write and state has no I/O of its own.
+    pub mouse_capture_dirty: bool,
+    /// Whether the modifier-drag escape hatch has already been mentioned
+    /// this session, so it's shown once rather than on every drag.
+    pub drag_hint_shown: bool,
+
+    /// A one-line transient message shown in the status bar in place of the
+    /// keymap hint, e.g. what `y` just did.
+    pub status_message: Option<String>,
+    /// The frame size as of the last draw, so half-page scrolling in the
+    /// detail view approximates the page actually on screen.
+    pub terminal_width: u16,
+    pub terminal_height: u16,
+}
+
+/// A run waiting on user confirmation because part of its target selection
+/// is dirty (section 11, "destructive actions one keystroke away").
+pub struct PendingRun {
+    pub action: String,
+    pub targets: Vec<usize>,
+    pub dirty_count: usize,
+}
+
+/// A run that's been decided on (no confirmation needed, or confirmed) and
+/// is ready for the run loop to plan and spawn.
+pub struct RunRequest {
+    pub action: String,
+    pub targets: Vec<usize>,
 }
 
 /// A repo's outcome from the most recent run it took part in.
@@ -72,8 +152,16 @@ pub enum RunStatus {
 }
 
 impl App {
-    pub fn new(repos: Vec<Repo>, set_label: String, jobs: usize) -> Self {
+    pub fn new(
+        repos: Vec<Repo>,
+        set_label: String,
+        jobs: usize,
+        defaults: BTreeMap<String, String>,
+        config_path: PathBuf,
+        force: bool,
+    ) -> Self {
         let n = repos.len();
+        let actions = actions::discover(&repos, &defaults);
         Self {
             repos,
             set_label,
@@ -90,6 +178,29 @@ impl App {
             probe_requested: false,
             run_id: 0,
             run_results: vec![None; n],
+            defaults,
+            config_path,
+            force,
+            actions,
+            palette_open: false,
+            palette_filter: String::new(),
+            palette_cursor: 0,
+            pending_run: None,
+            run_requested: None,
+            run_action: None,
+            run_targets: Vec::new(),
+            run_total: 0,
+            run_completed: 0,
+            run_failed: 0,
+            post_run_targets: None,
+            detail_open: false,
+            detail_scroll: BTreeMap::new(),
+            mouse_captured: true,
+            mouse_capture_dirty: false,
+            drag_hint_shown: false,
+            status_message: None,
+            terminal_width: 80,
+            terminal_height: 24,
         }
     }
 
@@ -100,8 +211,22 @@ impl App {
         self.run_id
     }
 
+    /// Begin a named run over `targets`: bumps the run id and resets the
+    /// live counters the header reads, so the caller only has to plan and
+    /// spawn the operations themselves.
+    pub fn begin_named_run(&mut self, action: String, targets: Vec<usize>) -> u64 {
+        let run_id = self.begin_run();
+        self.run_action = Some(action);
+        self.run_total = targets.len();
+        self.run_completed = 0;
+        self.run_failed = 0;
+        self.run_targets = targets;
+        run_id
+    }
+
     /// Apply one executor event, unless it belongs to a run a later one has
-    /// since superseded.
+    /// since superseded. Once every target has reported in, clears the live
+    /// run and records its targets in `post_run_targets` for a re-probe.
     pub fn on_task(&mut self, run_id: u64, event: TaskEvent) {
         if run_id != self.run_id {
             return;
@@ -116,9 +241,99 @@ impl App {
             } => (index, RunStatus::Finished { steps, exit_code }),
             TaskEvent::Skipped { index, reason } => (index, RunStatus::Skipped { reason }),
         };
+
+        let counts_toward_completion = matches!(
+            status,
+            RunStatus::Finished { .. } | RunStatus::Skipped { .. }
+        );
+        let failed = matches!(&status, RunStatus::Finished { exit_code, .. } if *exit_code != 0);
+
         if let Some(slot) = self.run_results.get_mut(index) {
             *slot = Some(status);
         }
+
+        if counts_toward_completion {
+            self.run_completed += 1;
+            if failed {
+                self.run_failed += 1;
+            }
+            if self.run_total > 0 && self.run_completed == self.run_total {
+                self.post_run_targets = Some(std::mem::take(&mut self.run_targets));
+                self.run_action = None;
+            }
+        }
+    }
+
+    /// Set by `on_task` once a run's last target reports in; consumed by
+    /// the run loop, the only thing with a runtime handle to spawn the
+    /// resulting probe with.
+    pub fn take_post_run_targets(&mut self) -> Option<Vec<usize>> {
+        self.post_run_targets.take()
+    }
+
+    /// How many of `targets` the last probe found dirty. Used to decide
+    /// whether starting a run needs the confirmation from section 11; a
+    /// repo with no probe result yet counts as clean rather than blocking
+    /// the run on a probe that hasn't come back.
+    pub fn dirty_count(&self, targets: &[usize]) -> usize {
+        targets
+            .iter()
+            .filter(|&&i| {
+                self.probes
+                    .get(i)
+                    .and_then(|p| p.as_ref())
+                    .is_some_and(|s| s.changed > 0)
+            })
+            .count()
+    }
+
+    /// Ask to run `action_name` over the effective selection. Debug-asserts
+    /// the action is actually defined somewhere: the palette must never
+    /// have offered it otherwise (section 08). Goes straight to
+    /// `run_requested` when nothing in the target selection is dirty, or
+    /// when `force` is set; otherwise waits on confirmation.
+    pub fn request_run(&mut self, action_name: &str) {
+        debug_assert!(
+            self.actions.iter().any(|a| a.name == action_name),
+            "the palette must never offer an action nothing defines: {action_name}"
+        );
+        let targets = self.effective_selection();
+        if targets.is_empty() {
+            return;
+        }
+        let dirty = self.dirty_count(&targets);
+        if dirty > 0 && !self.force {
+            self.pending_run = Some(PendingRun {
+                action: action_name.to_string(),
+                targets,
+                dirty_count: dirty,
+            });
+        } else {
+            self.run_requested = Some(RunRequest {
+                action: action_name.to_string(),
+                targets,
+            });
+        }
+    }
+
+    pub fn confirm_pending_run(&mut self) {
+        if let Some(p) = self.pending_run.take() {
+            self.run_requested = Some(RunRequest {
+                action: p.action,
+                targets: p.targets,
+            });
+        }
+    }
+
+    pub fn cancel_pending_run(&mut self) {
+        self.pending_run = None;
+    }
+
+    /// Set by a confirmed or unconfirmed-but-clean [`request_run`]; consumed
+    /// by the run loop, the only thing with a runtime handle to plan and
+    /// spawn the resulting operations with.
+    pub fn take_run_requested(&mut self) -> Option<RunRequest> {
+        self.run_requested.take()
     }
 
     /// The result column's text for a row: a summary once the repo's most
@@ -174,6 +389,148 @@ impl App {
     /// runtime handle to spawn the resulting probe with.
     pub fn take_probe_request(&mut self) -> bool {
         std::mem::take(&mut self.probe_requested)
+    }
+
+    pub fn open_palette(&mut self) {
+        self.palette_open = true;
+        self.palette_filter.clear();
+        self.palette_cursor = 0;
+    }
+
+    pub fn close_palette(&mut self) {
+        self.palette_open = false;
+    }
+
+    /// Actions matching the palette's filter, in the same order `discover`
+    /// returned them.
+    pub fn palette_visible(&self) -> Vec<&Action> {
+        if self.palette_filter.is_empty() {
+            return self.actions.iter().collect();
+        }
+        let needle = self.palette_filter.to_lowercase();
+        self.actions
+            .iter()
+            .filter(|a| a.name.to_lowercase().contains(&needle))
+            .collect()
+    }
+
+    fn clamp_palette_cursor(&mut self) {
+        let n = self.palette_visible().len();
+        if self.palette_cursor >= n {
+            self.palette_cursor = n.saturating_sub(1);
+        }
+    }
+
+    pub fn palette_push(&mut self, c: char) {
+        self.palette_filter.push(c);
+        self.clamp_palette_cursor();
+    }
+
+    pub fn palette_backspace(&mut self) {
+        self.palette_filter.pop();
+        self.clamp_palette_cursor();
+    }
+
+    pub fn palette_move(&mut self, delta: isize) {
+        let n = self.palette_visible().len();
+        if n == 0 {
+            return;
+        }
+        let next = (self.palette_cursor as isize + delta).clamp(0, n as isize - 1) as usize;
+        self.palette_cursor = next;
+    }
+
+    /// Close the palette and request a run of whatever it's currently
+    /// pointing at, if anything matches the filter.
+    pub fn palette_confirm(&mut self) {
+        let chosen = self
+            .palette_visible()
+            .get(self.palette_cursor)
+            .map(|a| a.name.clone());
+        self.close_palette();
+        if let Some(action) = chosen {
+            self.request_run(&action);
+        }
+    }
+
+    /// Open the detail view for the cursor row.
+    pub fn open_detail(&mut self) {
+        if !self.repos.is_empty() {
+            self.detail_open = true;
+        }
+    }
+
+    /// Back to the full-width list.
+    pub fn close_detail(&mut self) {
+        self.detail_open = false;
+    }
+
+    /// Half a screen page for `Ctrl-D`/`Ctrl-U`, floored at one line so a
+    /// very short terminal still scrolls. Approximate: it reads the last
+    /// known frame height rather than the exact viewport, which is close
+    /// enough for a "half page" key.
+    fn half_page(&self) -> usize {
+        ((self.terminal_height as usize).saturating_sub(6) / 2).max(1)
+    }
+
+    /// Move the cursor row's detail scroll by `delta` lines, floored at 0.
+    /// The actual upper bound depends on the open step's length, which
+    /// render.rs clamps to when it draws.
+    pub fn detail_scroll_by(&mut self, delta: isize) {
+        let entry = self.detail_scroll.entry(self.cursor).or_insert(0);
+        *entry = (*entry as isize + delta).max(0) as usize;
+    }
+
+    pub fn detail_scroll_down(&mut self) {
+        let step = self.half_page() as isize;
+        self.detail_scroll_by(step);
+    }
+
+    pub fn detail_scroll_up(&mut self) {
+        let step = -(self.half_page() as isize);
+        self.detail_scroll_by(step);
+    }
+
+    /// Copy the step currently visible in the cursor row's detail view,
+    /// falling back to a file when there's no clipboard (section 03).
+    pub fn copy_visible_step(&mut self) {
+        let Some(Some(RunStatus::Finished { steps, .. })) = self.run_results.get(self.cursor)
+        else {
+            self.status_message = Some("nothing to copy yet".into());
+            return;
+        };
+        let lines = detail::detail_lines(steps);
+        let scroll = self.detail_scroll.get(&self.cursor).copied().unwrap_or(0);
+        let idx = detail::step_at_line(&lines, scroll);
+        let Some(step) = steps.get(idx) else {
+            return;
+        };
+        let text = format!("{}\n{}", step.stdout, step.stderr);
+        let repo_name = self
+            .repos
+            .get(self.cursor)
+            .map(|r| r.name.as_str())
+            .unwrap_or("repo");
+        self.status_message = Some(detail::copy_or_save(&text, repo_name, &step.label));
+    }
+
+    pub fn toggle_mouse_capture(&mut self) {
+        self.mouse_captured = !self.mouse_captured;
+        self.mouse_capture_dirty = true;
+    }
+
+    /// Set by `m`; consumed by the run loop, the only thing that can
+    /// actually write the terminal escape sequence.
+    pub fn take_mouse_capture_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.mouse_capture_dirty)
+    }
+
+    /// The global repo index at on-screen row `row` within the table body
+    /// (0-based, below the header), given `scroll_offset`: the same lookup
+    /// `move_cursor` uses, so a click and a keystroke can't disagree about
+    /// which repo a row is.
+    pub fn repo_at_row(&self, row: usize, scroll_offset: usize) -> Option<usize> {
+        self.visible_indices().get(scroll_offset + row).copied()
     }
 
     /// Branch and working-tree text for a row, resolved once so `render.rs`
@@ -340,7 +697,14 @@ mod tests {
     }
 
     fn app(names: &[&str]) -> App {
-        App::new(names.iter().map(|n| repo(n)).collect(), "work".into(), 4)
+        App::new(
+            names.iter().map(|n| repo(n)).collect(),
+            "work".into(),
+            4,
+            BTreeMap::new(),
+            PathBuf::from("/dev/null"),
+            false,
+        )
     }
 
     #[test]
@@ -570,5 +934,205 @@ mod tests {
             NEVER_RUN,
             "an event tagged with an old run id must not be applied"
         );
+    }
+
+    #[test]
+    fn dirty_count_counts_only_targets_the_probe_found_changed() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        let mut dirty = probed(0, "main");
+        dirty.changed = 2;
+        a.on_probe(0, dirty);
+        a.on_probe(0, probed(1, "main")); // clean
+        assert_eq!(a.dirty_count(&[0, 1]), 1);
+        assert_eq!(a.dirty_count(&[1]), 0);
+        assert_eq!(
+            a.dirty_count(&[2]),
+            0,
+            "no probe result yet counts as clean"
+        );
+    }
+
+    #[test]
+    fn a_clean_selection_runs_immediately_without_confirmation() {
+        let mut a = app(&["foo"]);
+        a.request_run("update");
+        assert!(a.pending_run.is_none());
+        assert!(a.run_requested.is_some());
+    }
+
+    #[test]
+    fn a_dirty_selection_waits_on_confirmation_unless_forced() {
+        let mut a = app(&["foo"]);
+        let mut dirty = probed(0, "main");
+        dirty.changed = 3;
+        a.on_probe(0, dirty);
+
+        a.request_run("update");
+        assert!(a.run_requested.is_none(), "must not run before confirming");
+        let pending = a
+            .pending_run
+            .as_ref()
+            .expect("a dirty run needs confirming");
+        assert_eq!(pending.dirty_count, 1);
+
+        a.confirm_pending_run();
+        assert!(a.pending_run.is_none());
+        assert_eq!(a.run_requested.as_ref().unwrap().action, "update");
+    }
+
+    #[test]
+    fn cancelling_a_pending_run_drops_it_without_running() {
+        let mut a = app(&["foo"]);
+        let mut dirty = probed(0, "main");
+        dirty.changed = 1;
+        a.on_probe(0, dirty);
+
+        a.request_run("update");
+        a.cancel_pending_run();
+        assert!(a.pending_run.is_none());
+        assert!(a.run_requested.is_none());
+    }
+
+    #[test]
+    fn force_skips_confirmation_even_on_a_dirty_selection() {
+        let mut a = app(&["foo"]);
+        a.force = true;
+        let mut dirty = probed(0, "main");
+        dirty.changed = 1;
+        a.on_probe(0, dirty);
+
+        a.request_run("update");
+        assert!(a.pending_run.is_none());
+        assert!(a.run_requested.is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "nothing defines")]
+    fn requesting_an_action_nothing_defines_is_a_bug() {
+        let mut a = app(&["foo"]);
+        a.request_run("does-not-exist-anywhere");
+    }
+
+    #[test]
+    fn a_completed_run_clears_the_live_action_and_requests_a_reprobe() {
+        let mut a = app(&["foo", "bar"]);
+        let run_id = a.begin_named_run("update".into(), vec![0, 1]);
+
+        a.on_task(run_id, TaskEvent::Started { index: 0 });
+        assert_eq!(a.run_action.as_deref(), Some("update"));
+        assert!(a.take_post_run_targets().is_none(), "still running");
+
+        a.on_task(
+            run_id,
+            TaskEvent::Finished {
+                index: 0,
+                steps: vec![],
+                exit_code: 1,
+            },
+        );
+        assert_eq!(a.run_failed, 1);
+        a.on_task(
+            run_id,
+            TaskEvent::Skipped {
+                index: 1,
+                reason: "not checked out".into(),
+            },
+        );
+
+        assert_eq!(a.run_completed, 2);
+        assert_eq!(
+            a.run_action, None,
+            "the header stops showing a finished run"
+        );
+        let targets = a
+            .take_post_run_targets()
+            .expect("a finished run reprobes its targets");
+        assert_eq!(targets, vec![0, 1]);
+        assert!(a.take_post_run_targets().is_none(), "only taken once");
+    }
+
+    #[test]
+    fn palette_filter_narrows_the_action_list() {
+        let a = app(&["foo"]);
+        let all = a.palette_visible().len();
+        let mut a = a;
+        a.palette_filter = "upda".into();
+        let filtered: Vec<&str> = a
+            .palette_visible()
+            .iter()
+            .map(|x| x.name.as_str())
+            .collect();
+        assert_eq!(filtered, vec!["update"]);
+        assert!(filtered.len() < all);
+    }
+
+    #[test]
+    fn palette_confirm_requests_a_run_of_the_highlighted_action() {
+        let mut a = app(&["foo"]);
+        a.open_palette();
+        a.palette_filter = "status".into();
+        a.palette_confirm();
+        assert!(!a.palette_open);
+        assert_eq!(a.run_requested.unwrap().action, "status");
+    }
+
+    #[test]
+    fn toggle_mouse_capture_flips_the_flag_and_marks_it_dirty() {
+        let mut a = app(&["foo"]);
+        assert!(a.mouse_captured, "capture starts on");
+        a.toggle_mouse_capture();
+        assert!(!a.mouse_captured);
+        assert!(a.take_mouse_capture_dirty());
+        assert!(!a.take_mouse_capture_dirty(), "only taken once");
+    }
+
+    #[test]
+    fn detail_scroll_is_kept_per_repo() {
+        let mut a = app(&["foo", "bar"]);
+        a.cursor = 0;
+        a.detail_scroll_down();
+        a.cursor = 1;
+        assert_eq!(
+            a.detail_scroll.get(&1).copied().unwrap_or(0),
+            0,
+            "a different repo starts unscrolled"
+        );
+        a.cursor = 0;
+        assert!(a.detail_scroll[&0] > 0);
+    }
+
+    #[test]
+    fn detail_scroll_up_does_not_go_negative() {
+        let mut a = app(&["foo"]);
+        a.detail_scroll_up();
+        assert_eq!(a.detail_scroll[&0], 0);
+    }
+
+    #[test]
+    fn copying_before_anything_has_run_reports_nothing_to_copy() {
+        let mut a = app(&["foo"]);
+        a.copy_visible_step();
+        assert_eq!(a.status_message.as_deref(), Some("nothing to copy yet"));
+    }
+
+    #[test]
+    fn a_click_row_resolves_to_the_same_repo_the_cursor_would_under_a_filter_and_scroll() {
+        let mut a = app(&[
+            "aardvark", "bar-1", "bar-2", "bar-3", "bar-4", "bar-5", "bar-6", "bar-7",
+        ]);
+        a.filter = "bar".into(); // "aardvark" is filtered out
+        a.cursor = 7; // "bar-7", scrolled past the top of a short list
+
+        let visible = a.visible_indices();
+        let list_height = 3;
+        let cursor_pos = visible.iter().position(|&i| i == a.cursor).unwrap();
+        let scroll = super::super::render::scroll_offset(cursor_pos, visible.len(), list_height);
+        assert!(
+            scroll > 0,
+            "the cursor must actually be scrolled for this test to mean anything"
+        );
+
+        let on_screen_row = cursor_pos - scroll;
+        assert_eq!(a.repo_at_row(on_screen_row, scroll), Some(a.cursor));
     }
 }

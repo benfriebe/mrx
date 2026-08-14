@@ -2,6 +2,7 @@
 //! `.mrconfig` into a menu instead of the CLI's "only if you already know
 //! the name" (section 08).
 
+use crate::cli::Command;
 use crate::config::Repo;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,6 +77,21 @@ pub fn discover(repos: &[Repo], defaults: &BTreeMap<String, String>) -> Vec<Acti
     actions
 }
 
+/// The `Command` `operations::plan` expects for a runnable action's name:
+/// mrx's own verbs get their matching variant, anything else is a custom
+/// action by name, exactly as if it had been typed on the command line.
+pub fn command_for(name: &str) -> Command {
+    match name {
+        "update" => Command::Update,
+        "status" => Command::Status,
+        "diff" => Command::Diff,
+        "push" => Command::Push,
+        "fetch" => Command::Fetch,
+        "checkout" => Command::Checkout,
+        other => Command::Custom(vec![other.to_string()]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +162,21 @@ mod tests {
         let repos = vec![repo("a", &[("checkout", "git clone x a")])];
         let actions = discover(&repos, &BTreeMap::new());
         assert_eq!(actions.iter().filter(|a| a.name == "checkout").count(), 1);
+    }
+
+    #[test]
+    fn builtin_verb_names_map_to_their_command_variant() {
+        assert!(matches!(command_for("update"), Command::Update));
+        assert!(matches!(command_for("status"), Command::Status));
+        assert!(matches!(command_for("fetch"), Command::Fetch));
+        assert!(matches!(command_for("diff"), Command::Diff));
+    }
+
+    #[test]
+    fn an_unrecognised_name_becomes_a_custom_command() {
+        match command_for("deploy") {
+            Command::Custom(parts) => assert_eq!(parts, vec!["deploy".to_string()]),
+            _ => panic!("expected Custom"),
+        }
     }
 }

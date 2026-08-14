@@ -10,6 +10,7 @@ pub mod state;
 pub mod widgets;
 
 use crossterm::{
+    event::DisableMouseCapture,
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -18,14 +19,15 @@ use std::io::{self, stdout, Stdout};
 
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
-/// Restore the terminal (raw mode off, alternate screen closed) before the
-/// default panic handler prints, so a panic mid-render doesn't leave the
-/// user's terminal wrecked.
+/// Restore the terminal (raw mode off, alternate screen closed, mouse
+/// capture released) before the default panic handler prints, so a panic
+/// mid-render doesn't leave the user's terminal wrecked. Releasing mouse
+/// capture is a no-op for the one-shot view, which never enables it.
 pub fn install_panic_hook() {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = terminal::disable_raw_mode();
-        let _ = execute!(stdout(), LeaveAlternateScreen);
+        let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen);
         original_hook(panic_info);
     }));
 }

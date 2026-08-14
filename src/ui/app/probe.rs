@@ -153,6 +153,17 @@ pub fn branch_text(state: &RepoState) -> String {
     state.branch.clone().unwrap_or_else(|| "(detached)".into())
 }
 
+/// The working tree alone: `clean` or a modified count, with no ahead/behind
+/// or timeout/absent handling layered on top. The building block both
+/// [`dirty_text`] and the detail sidebar's briefer column share.
+fn working_tree_text(state: &RepoState) -> String {
+    if state.changed == 0 {
+        "clean".to_string()
+    } else {
+        format!("{} modified", state.changed)
+    }
+}
+
 /// Working-tree summary: clean or a modified count, plus ahead/behind when
 /// there is an upstream to compare against. `behind` reads `?` rather than a
 /// number until something has fetched this session: the count compares
@@ -166,11 +177,7 @@ pub fn dirty_text(state: &RepoState, fetched_this_session: bool) -> String {
         return "not checked out".into();
     }
 
-    let mut text = if state.changed == 0 {
-        "clean".to_string()
-    } else {
-        format!("{} modified", state.changed)
-    };
+    let mut text = working_tree_text(state);
 
     if state.upstream.is_some() {
         if state.ahead > 0 {
@@ -186,6 +193,21 @@ pub fn dirty_text(state: &RepoState, fetched_this_session: bool) -> String {
     }
 
     text
+}
+
+/// The detail sidebar's single state column: working-tree state without
+/// ahead/behind, since the sidebar already dropped the branch column, and
+/// showing `↑2 ↓3` with nothing to compare it against is more confusing
+/// than useful there (section 02, "the sidebar drops to the name and one
+/// state column").
+pub fn dirty_text_brief(state: &RepoState) -> String {
+    if state.timed_out {
+        return "timed out".into();
+    }
+    if !state.present {
+        return "not checked out".into();
+    }
+    working_tree_text(state)
 }
 
 /// A probe result tagged with the generation it belongs to, so a receiver
@@ -307,5 +329,17 @@ mod tests {
         state.present = true;
         assert_eq!(dirty_text(&state, false), "clean  ↓?");
         assert_eq!(dirty_text(&state, true), "clean  ↓3");
+    }
+
+    #[test]
+    fn the_brief_form_drops_ahead_behind() {
+        let mut state = parse_porcelain_v2(concat!(
+            "# branch.oid abc123\n",
+            "# branch.head main\n",
+            "# branch.upstream origin/main\n",
+            "# branch.ab +2 -3\n",
+        ));
+        state.present = true;
+        assert_eq!(dirty_text_brief(&state), "clean");
     }
 }
