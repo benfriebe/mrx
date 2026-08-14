@@ -376,4 +376,32 @@ mod tests {
         let origin_head = git_output(origin.path(), &["rev-parse", "HEAD"]);
         assert_ne!(clone_head, origin_head, "the merge must not have happened");
     }
+
+    /// A repo's own `git fetch` can fail against real state (offline, a
+    /// dead remote, auth); `poll_one` must carry that failure into the
+    /// resulting `RepoState.fetched` rather than reporting the local
+    /// status read that follows as if the fetch itself had succeeded.
+    #[tokio::test]
+    async fn a_fetch_that_fails_leaves_fetched_false_on_the_resulting_repo_state() {
+        let dir = tempfile::tempdir().unwrap();
+        run_git(dir.path(), &["init", "--quiet"]);
+        run_git(dir.path(), &["config", "user.email", "t@example.com"]);
+        run_git(dir.path(), &["config", "user.name", "t"]);
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        run_git(dir.path(), &["add", "a.txt"]);
+        run_git(dir.path(), &["commit", "--quiet", "-m", "one"]);
+        // A remote that can never be reached: `git fetch` fails immediately
+        // (no such repository) rather than hanging on a real network.
+        run_git(
+            dir.path(),
+            &["remote", "add", "origin", "/nonexistent-remote-xyz"],
+        );
+
+        let state = poll_one(0, dir.path()).await;
+
+        assert!(
+            !state.fetched,
+            "a fetch against an unreachable remote must leave fetched false"
+        );
+    }
 }

@@ -2504,9 +2504,7 @@ mod tests {
 
     /// A repo's own fetch can fail (offline, VPN, auth) even while other
     /// repos in the same poll cycle succeed; its behind column must read
-    /// unknown rather than borrowing the cycle's overall completion
-    /// Replaces the old test of the same name against a
-    /// session-wide flag, which this per-repo behaviour supersedes.
+    /// unknown rather than borrowing the cycle's overall completion.
     #[test]
     fn a_repos_behind_column_is_known_only_once_its_own_fetch_has_succeeded() {
         let mut a = app(&["ok", "fails"]);
@@ -2583,8 +2581,7 @@ mod tests {
 
     /// A repo whose own fetch failed must not become an auto-update
     /// candidate on the strength of stale ahead/behind data, even if it
-    /// otherwise passes every other `can_fast_forward` condition (finding
-    /// A4).
+    /// otherwise passes every other `can_fast_forward` condition.
     #[test]
     fn a_repo_whose_fetch_failed_this_cycle_is_not_an_auto_update_candidate() {
         let mut a = app(&["fails"]);

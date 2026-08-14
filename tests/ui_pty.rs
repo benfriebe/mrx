@@ -286,12 +286,18 @@ fn dollar_editor_suspends_and_restores_the_terminal() {
     );
 }
 
-/// Finding B2: an early `Err` return (no panic) between entering the
-/// terminal's raw/alt-screen/mouse-capture state and the app's own teardown
-/// used to skip cleanup entirely, since only the panic hook restored the
-/// terminal. `TerminalGuard`'s `Drop` must do it on its own, independent of
-/// that hook. Distinct from `a_panic_restores_the_terminal_over_a_real_pty`,
-/// which covers the panic path.
+/// An early `Err` return (no panic) between entering the terminal's
+/// raw/alt-screen/mouse-capture state and the app's own teardown used to
+/// skip cleanup entirely, since only the panic hook restored the terminal.
+/// `TerminalGuard`'s `Drop` must do it on its own, independent of that hook.
+/// Distinct from `a_panic_restores_the_terminal_over_a_real_pty`, which
+/// covers the panic path.
+///
+/// This isolates `TerminalGuard` itself: the fixture builds one directly
+/// and never calls `ui::app::run`, so it has no input thread and can't
+/// exercise `InputThreadGuard` or the ordering between the two guards.
+/// `an_early_return_from_run_restores_the_terminal_and_stops_the_input_thread`,
+/// below, drives the real resident entry point for that.
 #[test]
 fn an_early_return_restores_the_terminal_over_a_real_pty_without_panicking() {
     require_script();
@@ -360,6 +366,72 @@ fn an_early_return_restores_the_terminal_over_a_real_pty_without_panicking() {
         count_occurrences(&session.output, ALT_SCREEN_ENTER) >= 1
             && count_occurrences(&session.output, ALT_SCREEN_LEAVE) >= 1,
         "the alternate screen must be left again on the way out, got: {out}"
+    );
+}
+
+/// Unlike `an_early_return_restores_the_terminal_over_a_real_pty_without_panicking`,
+/// this drives the real `ui::app::run` entry point: the `app_run_draw_failure`
+/// fixture breaks stdout from a background thread once the resident app is
+/// up, so the 200ms ticker's next `terminal.draw` fails and `run` takes the
+/// same early `?` return every other draw failure inside its select loop
+/// would, with its real input reader thread still alive and polling the
+/// pty at the moment it happens. Confirms the terminal comes back and the
+/// process exits promptly rather than hanging on `InputThreadGuard`'s join.
+///
+/// Doesn't prove the specific ordering between `InputThreadGuard` and
+/// `TerminalGuard` (that the input thread stops touching the tty strictly
+/// before raw mode comes off): the process exits so quickly after `run`
+/// returns that no observable window exists to check which happened first,
+/// only that both happened and neither hung.
+#[test]
+fn an_early_return_from_run_restores_the_terminal_and_stops_the_input_thread() {
+    require_script();
+    let build = Command::new("cargo")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["build", "--example", "app_run_draw_failure", "--quiet"])
+        .status()
+        .expect("failed to build the app_run_draw_failure fixture");
+    assert!(
+        build.success(),
+        "the app_run_draw_failure fixture must build"
+    );
+
+    let example_bin = Path::new(env!("CARGO_BIN_EXE_mrx"))
+        .parent()
+        .expect("target/debug")
+        .join("examples")
+        .join("app_run_draw_failure");
+    assert!(
+        example_bin.is_file(),
+        "expected the fixture at {}",
+        example_bin.display()
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let before = dir.path().join("before.txt");
+    let after = dir.path().join("after.txt");
+    let command_line = sh_quote(&example_bin.display().to_string());
+    let driver = write_driver_script(dir.path(), &command_line, &before, &after);
+
+    let session = run_in_pty(&driver, &[], &[], Duration::from_secs(10));
+
+    assert!(
+        !session.timed_out,
+        "run() must return and the process must exit promptly once its forced draw failure \
+         hits, rather than hang joining the input thread"
+    );
+    let out = String::from_utf8_lossy(&session.output);
+    assert!(
+        out.contains("run() returned Err as expected"),
+        "the fixture must actually hit the draw failure it means to exercise, got: {out}"
+    );
+
+    let before_txt = std::fs::read_to_string(&before).unwrap_or_default();
+    let after_txt = std::fs::read_to_string(&after).unwrap_or_default();
+    assert_eq!(
+        normalize_stty(&before_txt),
+        normalize_stty(&after_txt),
+        "raw mode must not survive an early Err return from inside run's real select loop, got: {out}"
     );
 }
 

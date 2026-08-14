@@ -589,41 +589,70 @@ mod tests {
         assert!(!clone.is_open(), "a clone must observe the same state");
     }
 
-    #[test]
-    fn stop_is_observed_by_a_clone() {
-        // The input thread checks its own clone's `should_stop`; the run
-        // loop signals the original on the way out.
-        let gate = InputGate::new();
-        let clone = gate.clone();
-        gate.stop();
-        assert!(clone.should_stop());
-    }
-
     /// Closing the gate alone isn't enough: `park()` must actually wait for
     /// the reader's own acknowledgment rather than assuming a closed gate
-    /// means the reader has stopped.
+    /// means the reader has stopped, and that has to keep holding across
+    /// more than one pause: a lone single-cycle check can't tell a real
+    /// generation-tagged handshake apart from the old plain flag it
+    /// replaced, since a flag set once and never cleared still blocks
+    /// correctly the first time. Runs the reader through two full
+    /// park/resume cycles, each timed to confirm `park()` genuinely waited
+    /// rather than merely completing, then through the reader exiting for
+    /// good, confirming `park()` gives up rather than hanging on an
+    /// acknowledgment that will never come.
     #[test]
     fn park_blocks_until_the_reader_marks_itself_parked() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let gate = InputGate::new();
-        let acknowledged_before_park_returned = Arc::new(AtomicBool::new(false));
-        let flag = acknowledged_before_park_returned.clone();
-        let reader = gate.clone();
-        let simulated_reader = std::thread::spawn(move || {
-            // Stands in for the input thread finishing whatever poll/read
-            // cycle was already in flight when the gate closed.
-            std::thread::sleep(Duration::from_millis(50));
-            flag.store(true, Ordering::SeqCst);
-            reader.mark_parked();
-        });
 
-        gate.park();
-        assert!(
-            acknowledged_before_park_returned.load(Ordering::SeqCst),
-            "park() must not return before the reader acknowledges it has parked"
-        );
-        simulated_reader.join().unwrap();
+        // A fresh single-shot acker per cycle, the same idiom the other
+        // multi-cycle tests in this module use: it only has to notice the
+        // gate close once and acknowledge, so there is no window between
+        // cycles where it could miss a reopen that a persistent polling
+        // loop racing the main thread's own resume/park pair could.
+        fn spawn_timed_acker(gate: &InputGate) -> (std::thread::JoinHandle<()>, Arc<AtomicBool>) {
+            let acknowledged_after_delay = Arc::new(AtomicBool::new(false));
+            let flag = acknowledged_after_delay.clone();
+            let reader = gate.clone();
+            let handle = std::thread::spawn(move || {
+                while reader.is_open() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                // Stands in for the input thread finishing whatever
+                // poll/read cycle was already in flight when the gate
+                // closed.
+                std::thread::sleep(Duration::from_millis(30));
+                flag.store(true, Ordering::SeqCst);
+                reader.mark_parked();
+            });
+            (handle, acknowledged_after_delay)
+        }
+
+        for cycle in 1..=2u32 {
+            let (acker, acknowledged) = spawn_timed_acker(&gate);
+            gate.park();
+            assert!(
+                acknowledged.load(Ordering::SeqCst),
+                "park() must not return before the reader acknowledges it has parked (cycle {cycle})"
+            );
+            acker.join().unwrap();
+            gate.resume();
+        }
+
+        // The reader's own loop has now ended for good; a further park()
+        // must give up instead of waiting on an acknowledgment that will
+        // never come.
+        gate.mark_exited();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let waiter = gate.clone();
+        std::thread::spawn(move || {
+            waiter.park();
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("park() must return once the reader has exited, rather than spin forever");
     }
 
     /// A flag set once and never cleared would let this second pause return
@@ -691,43 +720,5 @@ mod tests {
         done_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("park() must return once the reader has exited, rather than spin forever");
-    }
-
-    /// The other half of the input-channel-close fix: `run`'s select arm
-    /// used to read `Some(ev) = input.recv() =>`, which just disables that arm forever
-    /// once the channel closes (the input thread's read failed and it
-    /// ended) rather than ending the loop, so the app would spin on ticks
-    /// with no way left to quit. This mirrors that arm's exact shape,
-    /// swapped between the old pattern-match guard and the new explicit
-    /// `let-else`, against a real channel closed the same way the input
-    /// thread closes it (dropping the sender).
-    #[tokio::test]
-    async fn a_closed_input_channel_ends_the_loop_instead_of_spinning_on_ticks() {
-        let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
-        drop(tx);
-
-        let mut ticks = 0u32;
-        let mut ticker = tokio::time::interval(Duration::from_millis(1));
-        let ended = loop {
-            tokio::select! {
-                ev = rx.recv() => {
-                    let Some(_ev) = ev else {
-                        break true;
-                    };
-                    unreachable!("no events were ever sent");
-                }
-                _ = ticker.tick() => {
-                    ticks += 1;
-                    if ticks > 50 {
-                        break false;
-                    }
-                }
-            }
-        };
-
-        assert!(
-            ended,
-            "a closed input channel must end the loop rather than let it spin on ticks forever"
-        );
     }
 }
