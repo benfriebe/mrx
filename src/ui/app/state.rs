@@ -5,8 +5,9 @@
 use super::actions::{self, Action};
 use super::detail;
 use super::probe::{self, RepoState};
-use crate::config::Repo;
+use crate::config::{self, Repo};
 use crate::executor::{StepResult, TaskEvent};
+use crate::sets;
 use crate::summarize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -60,6 +61,9 @@ pub struct App {
     /// The active config's path, passed through to the executor for
     /// `MR_CONFIG` and unrelated to which set is on screen.
     pub config_path: PathBuf,
+    /// `-d`, carried along so a config reload or set switch resolves repo
+    /// paths the same way the initial load did.
+    pub dir_override: Option<PathBuf>,
     /// Skip the dirty-selection confirmation (section 11); mirrors the
     /// CLI's `--force`, since both mean "I already know what I'm doing".
     pub force: bool,
@@ -116,6 +120,36 @@ pub struct App {
     /// detail view approximates the page actually on screen.
     pub terminal_width: u16,
     pub terminal_height: u16,
+
+    /// Whether the set picker (`tab`) is capturing keystrokes.
+    pub set_picker_open: bool,
+    /// Entries offered by the open picker: every set `sets::discover()`
+    /// finds, plus the active config appended as `(unnamed)` when it isn't
+    /// one of them (section 11, "Unnamed active config"). Rebuilt each time
+    /// the picker opens, so a set created on disk since startup shows up.
+    pub set_entries: Vec<SetEntry>,
+    pub set_picker_cursor: usize,
+
+    /// Set by a config reload or a set switch, both of which replace the
+    /// repo list out from under the probe; the run loop owns spawning the
+    /// resulting full re-probe, since state has no runtime handle of its own.
+    pub full_reprobe_requested: bool,
+
+    /// Set by `Esc` while a run is live; the run loop owns actually flipping
+    /// the executor's cancel flag, since only it holds the `RunHandle`.
+    pub cancel_requested: bool,
+
+    /// Whether `q`/`Ctrl-C` is waiting on confirmation because a run is live
+    /// (section 03, "prompts if a run is live").
+    pub quit_pending: bool,
+}
+
+/// One row in the set picker: a discovered set's name and the config path
+/// it resolves to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetEntry {
+    pub name: String,
+    pub path: PathBuf,
 }
 
 /// A run waiting on user confirmation because part of its target selection
@@ -159,6 +193,7 @@ impl App {
         defaults: BTreeMap<String, String>,
         config_path: PathBuf,
         force: bool,
+        dir_override: Option<PathBuf>,
     ) -> Self {
         let n = repos.len();
         let actions = actions::discover(&repos, &defaults);
@@ -180,6 +215,7 @@ impl App {
             run_results: vec![None; n],
             defaults,
             config_path,
+            dir_override,
             force,
             actions,
             palette_open: false,
@@ -201,6 +237,12 @@ impl App {
             status_message: None,
             terminal_width: 80,
             terminal_height: 24,
+            set_picker_open: false,
+            set_entries: Vec::new(),
+            set_picker_cursor: 0,
+            full_reprobe_requested: false,
+            cancel_requested: false,
+            quit_pending: false,
         }
     }
 
@@ -269,6 +311,202 @@ impl App {
     /// resulting probe with.
     pub fn take_post_run_targets(&mut self) -> Option<Vec<usize>> {
         self.post_run_targets.take()
+    }
+
+    /// `Esc`: ask the live run to stop queueing new work, and say honestly
+    /// what that will and won't do (section 06). A no-op when nothing is
+    /// running, so it's safe to bind unconditionally.
+    ///
+    /// `Command::output().await` has no kill, so a repo already past its
+    /// semaphore permit keeps running to completion; only a repo still
+    /// waiting behind it turns into a skip. Both counts are a snapshot of
+    /// `run_results` as of the keypress, not a promise that stays accurate
+    /// as more events arrive.
+    pub fn request_cancel(&mut self) {
+        if self.run_action.is_none() {
+            return;
+        }
+        let (queued, finishing) = self.cancel_counts();
+        self.status_message = Some(format!(
+            "cancelled, {queued} queued skipped, {finishing} still finishing"
+        ));
+        self.cancel_requested = true;
+    }
+
+    /// How many of the live run's targets haven't reported in yet, split
+    /// into those with no result at all (still queued, about to be skipped)
+    /// and those already `Running`/`Step` (already past their permit, will
+    /// run to completion regardless of the cancel flag).
+    fn cancel_counts(&self) -> (usize, usize) {
+        let mut queued = 0;
+        let mut finishing = 0;
+        for &i in &self.run_targets {
+            match self.run_results.get(i).and_then(|r| r.as_ref()) {
+                None => queued += 1,
+                Some(RunStatus::Running) | Some(RunStatus::Step { .. }) => finishing += 1,
+                _ => {}
+            }
+        }
+        (queued, finishing)
+    }
+
+    /// Set by [`request_cancel`](Self::request_cancel); consumed by the run
+    /// loop, the only thing holding the `RunHandle` that can actually flip
+    /// the executor's cancel flag.
+    pub fn take_cancel_requested(&mut self) -> bool {
+        std::mem::take(&mut self.cancel_requested)
+    }
+
+    /// `q`/`Ctrl-C`: quits immediately, unless a run is live, in which case
+    /// it opens a confirmation first rather than losing sight of whether
+    /// anything was left running (section 03, "prompts if a run is live").
+    /// Returns whether the caller should quit right now.
+    pub fn request_quit(&mut self) -> bool {
+        if self.run_action.is_some() {
+            self.quit_pending = true;
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Confirmed: the caller should quit now.
+    pub fn confirm_quit(&mut self) -> bool {
+        self.quit_pending = false;
+        true
+    }
+
+    /// Declined: stay open.
+    pub fn cancel_quit(&mut self) {
+        self.quit_pending = false;
+    }
+
+    /// `tab`: open the set picker. Blocked while a run is live, the same
+    /// guard [`reload_config`](Self::reload_config) uses, since switching
+    /// the repo list out from under a live run's indices would attribute
+    /// its results to the wrong rows.
+    pub fn open_set_picker(&mut self) {
+        if self.run_action.is_some() {
+            self.status_message = Some("can't switch sets while a run is live".into());
+            return;
+        }
+        let mut entries: Vec<SetEntry> = sets::discover()
+            .into_iter()
+            .map(|(name, path)| SetEntry { name, path })
+            .collect();
+        // `discover` only returns sets that exist on disk under a name; the
+        // active config may be neither, e.g. an implicit default or `-c`.
+        // Matches `print_sets`' handling of the same case.
+        if !entries.iter().any(|e| e.path == self.config_path) {
+            entries.push(SetEntry {
+                name: "(unnamed)".into(),
+                path: self.config_path.clone(),
+            });
+        }
+        self.set_picker_cursor = entries
+            .iter()
+            .position(|e| e.path == self.config_path)
+            .unwrap_or(0);
+        self.set_entries = entries;
+        self.set_picker_open = true;
+    }
+
+    pub fn close_set_picker(&mut self) {
+        self.set_picker_open = false;
+    }
+
+    pub fn set_picker_move(&mut self, delta: isize) {
+        let n = self.set_entries.len();
+        if n == 0 {
+            return;
+        }
+        let next = (self.set_picker_cursor as isize + delta).clamp(0, n as isize - 1) as usize;
+        self.set_picker_cursor = next;
+    }
+
+    /// Confirm the highlighted set: load its config and switch to it, with
+    /// a full re-probe (section 03, "switching reloads the config and
+    /// restarts the probe").
+    pub fn confirm_set_picker(&mut self) {
+        let Some(entry) = self.set_entries.get(self.set_picker_cursor).cloned() else {
+            self.close_set_picker();
+            return;
+        };
+        self.close_set_picker();
+        let config::Config {
+            repos, defaults, ..
+        } = config::load(&entry.path, self.dir_override.as_deref());
+        self.set_label = entry.name;
+        self.reconcile_repos(repos, defaults, entry.path);
+    }
+
+    /// `Ctrl-R`: re-read the active config from disk without changing which
+    /// config is active. Blocked while a run is live, for the same reason
+    /// [`open_set_picker`](Self::open_set_picker) is.
+    pub fn reload_config(&mut self) {
+        if self.run_action.is_some() {
+            self.status_message = Some("can't reload while a run is live".into());
+            return;
+        }
+        let config::Config {
+            repos, defaults, ..
+        } = config::load(&self.config_path, self.dir_override.as_deref());
+        let config_path = self.config_path.clone();
+        self.reconcile_repos(repos, defaults, config_path);
+    }
+
+    /// Replace the repo list after a config reload or set switch, carrying
+    /// the cursor and selection across by repo NAME rather than index: a
+    /// repo added above the one you're on must not silently redirect a
+    /// selection onto its neighbour, and a name the edit removed just drops
+    /// out. Every index-keyed piece of state (probes, run results, detail
+    /// scroll) starts over, since none of it means anything against a
+    /// different repo list.
+    fn reconcile_repos(
+        &mut self,
+        repos: Vec<Repo>,
+        defaults: BTreeMap<String, String>,
+        config_path: PathBuf,
+    ) {
+        let cursor_name = self.repos.get(self.cursor).map(|r| r.name.clone());
+        let selected_names: BTreeSet<String> = self
+            .selected
+            .iter()
+            .filter_map(|&i| self.repos.get(i).map(|r| r.name.clone()))
+            .collect();
+
+        let n = repos.len();
+        self.actions = actions::discover(&repos, &defaults);
+        self.repos = repos;
+        self.defaults = defaults;
+        self.config_path = config_path;
+
+        self.probes = vec![None; n];
+        self.probing.clear();
+        self.run_results = vec![None; n];
+        self.detail_scroll.clear();
+
+        self.selected = self
+            .repos
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| selected_names.contains(&r.name))
+            .map(|(i, _)| i)
+            .collect();
+
+        self.cursor = cursor_name
+            .and_then(|name| self.repos.iter().position(|r| r.name == name))
+            .unwrap_or(0);
+        self.clamp_cursor_to_visible();
+
+        self.full_reprobe_requested = true;
+    }
+
+    /// Set by a config reload or set switch; consumed by the run loop,
+    /// which is the only thing with a runtime handle to spawn the resulting
+    /// probe with.
+    pub fn take_full_reprobe_request(&mut self) -> bool {
+        std::mem::take(&mut self.full_reprobe_requested)
     }
 
     /// How many of `targets` the last probe found dirty. Used to decide
@@ -704,6 +942,7 @@ mod tests {
             BTreeMap::new(),
             PathBuf::from("/dev/null"),
             false,
+            None,
         )
     }
 
@@ -1134,5 +1373,141 @@ mod tests {
 
         let on_screen_row = cursor_pos - scroll;
         assert_eq!(a.repo_at_row(on_screen_row, scroll), Some(a.cursor));
+    }
+
+    fn write_config(path: &std::path::Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn reload_config_keeps_the_selection_by_name_and_drops_removed_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".mrconfig");
+        write_config(&cfg, "[bar]\n[foo]\n[zzz]\n");
+
+        let config::Config {
+            repos, defaults, ..
+        } = config::load(&cfg, None);
+        let mut a = App::new(repos, "work".into(), 4, defaults, cfg.clone(), false, None);
+
+        let foo_before = a.repos.iter().position(|r| r.name == "foo").unwrap();
+        let zzz_before = a.repos.iter().position(|r| r.name == "zzz").unwrap();
+        a.selected.insert(foo_before);
+        a.selected.insert(zzz_before);
+        a.cursor = foo_before;
+
+        // "aab" sorts above every existing name, landing above "foo" in the
+        // reloaded list; "zzz" is gone entirely.
+        write_config(&cfg, "[aab]\n[bar]\n[foo]\n");
+        a.reload_config();
+
+        let names: Vec<&str> = a.repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["aab", "bar", "foo"]);
+
+        let foo_after = a.repos.iter().position(|r| r.name == "foo").unwrap();
+        assert_ne!(
+            foo_before, foo_after,
+            "the repo added above foo must actually have moved its index for this test to mean anything"
+        );
+        assert_eq!(
+            a.selected,
+            BTreeSet::from([foo_after]),
+            "zzz drops out silently, foo is kept by name rather than by its old index"
+        );
+        assert_eq!(
+            a.cursor, foo_after,
+            "the cursor follows foo by name even though a repo was added above it"
+        );
+        assert!(a.full_reprobe_requested);
+    }
+
+    #[test]
+    fn reload_config_is_a_no_op_while_a_run_is_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".mrconfig");
+        write_config(&cfg, "[foo]\n");
+        let config::Config {
+            repos, defaults, ..
+        } = config::load(&cfg, None);
+        let mut a = App::new(repos, "work".into(), 4, defaults, cfg.clone(), false, None);
+        a.begin_named_run("update".into(), vec![0]);
+
+        write_config(&cfg, "[foo]\n[bar]\n");
+        a.reload_config();
+
+        assert_eq!(a.repos.len(), 1, "the reload must not have happened");
+        assert!(a.status_message.is_some());
+    }
+
+    #[test]
+    fn the_set_picker_is_blocked_while_a_run_is_live() {
+        let mut a = app(&["foo"]);
+        a.begin_named_run("update".into(), vec![0]);
+        a.open_set_picker();
+        assert!(!a.set_picker_open);
+        assert!(a.status_message.is_some());
+    }
+
+    #[test]
+    fn opening_the_set_picker_appends_the_active_config_as_unnamed_when_undiscovered() {
+        let mut a = app(&["foo"]); // config_path is /dev/null, never a discovered set
+        a.open_set_picker();
+        assert!(a.set_picker_open);
+        assert!(
+            a.set_entries
+                .iter()
+                .any(|e| e.name == "(unnamed)" && e.path == a.config_path),
+            "got {:?}",
+            a.set_entries
+        );
+    }
+
+    #[test]
+    fn cancelling_a_live_run_reports_queued_versus_still_finishing() {
+        let mut a = app(&["a", "b", "c"]);
+        let run_id = a.begin_named_run("update".into(), vec![0, 1, 2]);
+        a.on_task(run_id, TaskEvent::Started { index: 0 }); // 1 and 2 are still queued
+
+        a.request_cancel();
+        assert_eq!(
+            a.status_message.as_deref(),
+            Some("cancelled, 2 queued skipped, 1 still finishing")
+        );
+        assert!(a.take_cancel_requested());
+        assert!(!a.take_cancel_requested(), "only taken once");
+    }
+
+    #[test]
+    fn cancel_is_a_no_op_when_nothing_is_running() {
+        let mut a = app(&["foo"]);
+        a.request_cancel();
+        assert!(a.status_message.is_none());
+        assert!(!a.take_cancel_requested());
+    }
+
+    #[test]
+    fn quitting_while_a_run_is_live_waits_for_confirmation() {
+        let mut a = app(&["foo"]);
+        a.begin_named_run("update".into(), vec![0]);
+        assert!(!a.request_quit(), "must not quit immediately");
+        assert!(a.quit_pending);
+        assert!(a.confirm_quit());
+        assert!(!a.quit_pending);
+    }
+
+    #[test]
+    fn quitting_with_nothing_running_needs_no_confirmation() {
+        let mut a = app(&["foo"]);
+        assert!(a.request_quit());
+        assert!(!a.quit_pending);
+    }
+
+    #[test]
+    fn declining_the_quit_prompt_closes_it_without_quitting() {
+        let mut a = app(&["foo"]);
+        a.begin_named_run("update".into(), vec![0]);
+        a.request_quit();
+        a.cancel_quit();
+        assert!(!a.quit_pending);
     }
 }

@@ -170,9 +170,17 @@ async fn main() {
     if matches!(cli.command, Command::Ui) {
         let jobs = max_jobs(&cli);
         let label = ui_set_label(&cli);
-        ui::app::run(repos, label, jobs, defaults, config_path.clone(), cli.force)
-            .await
-            .expect("ui error");
+        ui::app::run(
+            repos,
+            label,
+            jobs,
+            defaults,
+            config_path.clone(),
+            cli.force,
+            dir_override.clone(),
+        )
+        .await
+        .expect("ui error");
         return;
     }
 

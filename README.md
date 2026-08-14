@@ -100,7 +100,7 @@ selection without leaving the screen.
     ●  crew-db-schema main   2 modified       git pull
  ──────────────────────────────────────────────────────────────────────────
   j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter
-  u update  s/f/d status/fetch/diff  : action  r reprobe  m mouse  q quit
+  u update  s/f/d status/fetch/diff  : action  r reprobe  tab set  ^r reload  m mouse  q quit
 ```
 
 `j`/`k` (or the arrow keys) move the cursor, `g`/`G` jump to the first or last row.
@@ -133,6 +133,22 @@ Clicking a row moves the cursor to it; clicking the row already under the cursor
 opens its detail view. The wheel scrolls whichever region is under the pointer. `m`
 toggles mouse capture off and on, since capture disables the terminal's own text
 selection; holding Option/Shift while dragging still selects natively without it.
+
+`tab` opens a picker over every set `mrx sets` would list, plus the active config
+labelled `(unnamed)` if it isn't one of them; confirming reloads that config and
+restarts the probe from scratch. `Ctrl-R` re-reads the active config without changing
+which one is active, keeping the cursor and selection by repo NAME (an edit that adds
+a repo above the one you're on doesn't silently redirect the selection onto its
+neighbour, and a name the edit removed just drops out). Both are blocked while a run
+is live, since re-numbering the repo list out from under an in-flight run's indices
+would attribute its results to the wrong row.
+
+`Esc` cancels a live run: everything still queued behind the job limit is skipped,
+but a repo already past its slot keeps running to completion (`Command::output`
+has no kill), and the status line says exactly that: `cancelled, 2 queued skipped, 1
+still finishing`. `q`/`Ctrl-C` quit immediately with nothing running; with a run
+live they ask first, since losing sight of an in-flight action isn't something to
+do by reflex.
 
 Needs a real terminal: `mrx ui` with stdout piped, or combined with `--plain`, exits 2
 with a pointer at `mrx status` or another non-interactive subcommand instead.

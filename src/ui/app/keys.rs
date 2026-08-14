@@ -25,8 +25,15 @@ pub fn on_input(app: &mut App, event: Event) -> bool {
 }
 
 fn on_key(app: &mut App, key: KeyEvent) -> bool {
+    if app.quit_pending {
+        return on_quit_confirm_key(app, key);
+    }
     if app.pending_run.is_some() {
         return on_confirm_key(app, key);
+    }
+    if app.set_picker_open {
+        on_set_picker_key(app, key);
+        return false;
     }
     if app.palette_open {
         on_palette_key(app, key);
@@ -43,12 +50,19 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return true;
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') => return app.request_quit(),
+            KeyCode::Char('r') => {
+                app.reload_config();
+                return false;
+            }
+            _ => {}
+        }
     }
 
     match key.code {
-        KeyCode::Char('q') => return true,
+        KeyCode::Char('q') => return app.request_quit(),
         KeyCode::Char('j') | KeyCode::Down => app.move_cursor(1),
         KeyCode::Char('k') | KeyCode::Up => app.move_cursor(-1),
         KeyCode::Char('g') => app.move_to_first(),
@@ -65,10 +79,37 @@ fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('d') => app.request_run("diff"),
         KeyCode::Char(':') => app.open_palette(),
         KeyCode::Char('m') => app.toggle_mouse_capture(),
+        KeyCode::Tab => app.open_set_picker(),
+        KeyCode::Esc => app.request_cancel(),
         KeyCode::Enter => app.open_detail(),
         _ => {}
     }
     false
+}
+
+/// Keys while `q`/`Ctrl-C` is waiting on a "quit while a run is live?"
+/// confirmation: `y`/Enter confirms, everything else declines.
+fn on_quit_confirm_key(app: &mut App, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Enter => app.confirm_quit(),
+        _ => {
+            app.cancel_quit();
+            false
+        }
+    }
+}
+
+/// Keys while the set picker is open: just navigation and the two exits.
+/// No text capture, unlike the action palette, since the list of sets is
+/// short enough to scan without filtering it.
+fn on_set_picker_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => app.close_set_picker(),
+        KeyCode::Enter => app.confirm_set_picker(),
+        KeyCode::Char('j') | KeyCode::Down => app.set_picker_move(1),
+        KeyCode::Char('k') | KeyCode::Up => app.set_picker_move(-1),
+        _ => {}
+    }
 }
 
 /// Keys while `/` is capturing text. Everything but Esc, Enter, and
@@ -115,7 +156,7 @@ fn on_confirm_key(app: &mut App, key: KeyEvent) -> bool {
 fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
-            KeyCode::Char('c') => return true,
+            KeyCode::Char('c') => return app.request_quit(),
             KeyCode::Char('d') => {
                 app.detail_scroll_down();
                 return false;
@@ -124,11 +165,15 @@ fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
                 app.detail_scroll_up();
                 return false;
             }
+            KeyCode::Char('r') => {
+                app.reload_config();
+                return false;
+            }
             _ => {}
         }
     }
     match key.code {
-        KeyCode::Char('q') => return true,
+        KeyCode::Char('q') => return app.request_quit(),
         KeyCode::Char('j') | KeyCode::Down => app.move_cursor(1),
         KeyCode::Char('k') | KeyCode::Up => app.move_cursor(-1),
         KeyCode::Esc => app.close_detail(),
@@ -155,7 +200,7 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) -> bool {
 /// or while a modal overlay is up, has no target (section 03: "no click
 /// target without a key").
 fn on_click(app: &mut App, column: u16, row: u16) {
-    if app.pending_run.is_some() || app.palette_open {
+    if app.pending_run.is_some() || app.palette_open || app.set_picker_open || app.quit_pending {
         return;
     }
 
@@ -253,6 +298,7 @@ mod tests {
             BTreeMap::new(),
             PathBuf::from("/dev/null"),
             false,
+            None,
         )
     }
 
@@ -475,5 +521,69 @@ mod tests {
             a.status_message.is_none(),
             "the hint is shown once, not every drag"
         );
+    }
+
+    #[test]
+    fn tab_opens_the_set_picker() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, press(KeyCode::Tab));
+        assert!(a.set_picker_open);
+    }
+
+    #[test]
+    fn ctrl_r_triggers_a_config_reload() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, ctrl(KeyCode::Char('r')));
+        assert!(
+            a.full_reprobe_requested,
+            "reloading must ask for a fresh probe"
+        );
+    }
+
+    #[test]
+    fn esc_cancels_a_live_run_in_list_mode() {
+        use crate::executor::TaskEvent;
+
+        let mut a = app(&["foo", "bar"]);
+        let run_id = a.begin_named_run("update".into(), vec![0, 1]);
+        a.on_task(run_id, TaskEvent::Started { index: 0 });
+
+        on_input(&mut a, press(KeyCode::Esc));
+        assert!(
+            a.status_message
+                .as_deref()
+                .is_some_and(|m| m.contains("cancelled")),
+            "got {:?}",
+            a.status_message
+        );
+    }
+
+    #[test]
+    fn q_prompts_before_quitting_while_a_run_is_live() {
+        use crate::executor::TaskEvent;
+
+        let mut a = app(&["foo"]);
+        let run_id = a.begin_named_run("update".into(), vec![0]);
+        a.on_task(run_id, TaskEvent::Started { index: 0 });
+
+        assert!(
+            !on_input(&mut a, press(KeyCode::Char('q'))),
+            "must not quit immediately"
+        );
+        assert!(a.quit_pending);
+        assert!(on_input(&mut a, press(KeyCode::Char('y'))), "y confirms");
+    }
+
+    #[test]
+    fn declining_the_quit_prompt_leaves_the_app_open() {
+        use crate::executor::TaskEvent;
+
+        let mut a = app(&["foo"]);
+        let run_id = a.begin_named_run("update".into(), vec![0]);
+        a.on_task(run_id, TaskEvent::Started { index: 0 });
+
+        on_input(&mut a, press(KeyCode::Char('q')));
+        assert!(!on_input(&mut a, press(KeyCode::Char('n'))));
+        assert!(!a.quit_pending);
     }
 }

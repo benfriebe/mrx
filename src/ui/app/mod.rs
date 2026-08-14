@@ -56,8 +56,12 @@ fn spawn_probe_over(app: &mut App, tx: &mpsc::UnboundedSender<Probed>, targets: 
 
 /// Plan and spawn a run over `req`'s targets, tagging the app with the run
 /// id it needs to attribute incoming `RunEvent`s to and drive the header
-/// with.
-fn spawn_action_run(app: &mut App, tx: &mpsc::UnboundedSender<RunEvent>, req: state::RunRequest) {
+/// with. Returns the handle so the caller can cancel it later.
+fn spawn_action_run(
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<RunEvent>,
+    req: state::RunRequest,
+) -> executor::RunHandle {
     let command = actions::command_for(&req.action);
     let targets: Vec<(usize, operations::Operation)> = req
         .targets
@@ -65,14 +69,14 @@ fn spawn_action_run(app: &mut App, tx: &mpsc::UnboundedSender<RunEvent>, req: st
         .map(|&i| (i, operations::plan(&command, &app.repos[i], &app.defaults)))
         .collect();
     let run_id = app.begin_named_run(req.action, req.targets);
-    let _handle = executor::spawn_run(
+    executor::spawn_run(
         &app.repos,
         targets,
         app.jobs,
         app.config_path.clone(),
         tx.clone(),
         run_id,
-    );
+    )
 }
 
 /// Open the resident app on `repos` and block until the user quits.
@@ -83,12 +87,21 @@ pub async fn run(
     defaults: BTreeMap<String, String>,
     config_path: PathBuf,
     force: bool,
+    dir_override: Option<PathBuf>,
 ) -> io::Result<()> {
     super::install_panic_hook();
     let mut terminal = super::setup_terminal()?;
     apply_mouse_capture(true)?;
 
-    let mut app = App::new(repos, set_label, jobs, defaults, config_path, force);
+    let mut app = App::new(
+        repos,
+        set_label,
+        jobs,
+        defaults,
+        config_path,
+        force,
+        dir_override,
+    );
     let mut input = input_thread();
     let mut ticker = tokio::time::interval(Duration::from_millis(200));
     let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
@@ -105,18 +118,32 @@ pub async fn run(
     app.terminal_width = completed.area.width;
     app.terminal_height = completed.area.height;
 
+    // The live run's handle, held here so `Esc` has something to cancel.
+    // Stale once its run is superseded or finished, but flipping its flag
+    // then is harmless: nothing is left to check it.
+    let mut current_run: Option<executor::RunHandle> = None;
+
     loop {
         tokio::select! {
             Some(ev) = input.recv() => {
                 if keys::on_input(&mut app, ev) {
                     break;
                 }
+                if app.take_full_reprobe_request() {
+                    let targets: Vec<usize> = (0..app.repos.len()).collect();
+                    spawn_probe_over(&mut app, &probe_tx, targets);
+                }
                 if app.take_probe_request() {
                     let targets = app.reprobe_targets();
                     spawn_probe_over(&mut app, &probe_tx, targets);
                 }
                 if let Some(req) = app.take_run_requested() {
-                    spawn_action_run(&mut app, &run_tx, req);
+                    current_run = Some(spawn_action_run(&mut app, &run_tx, req));
+                }
+                if app.take_cancel_requested() {
+                    if let Some(handle) = &current_run {
+                        handle.request_cancel();
+                    }
                 }
                 if app.take_mouse_capture_dirty() {
                     apply_mouse_capture(app.mouse_captured)?;

@@ -41,8 +41,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.palette_open {
         draw_palette(frame, app, area);
     }
+    if app.set_picker_open {
+        draw_set_picker(frame, app, area);
+    }
     if let Some(pending) = &app.pending_run {
         draw_confirm(frame, pending, area);
+    }
+    if app.quit_pending {
+        draw_quit_confirm(frame, area);
     }
 }
 
@@ -349,14 +355,23 @@ fn status_line(app: &App, sidebar: bool) -> Line<'static> {
         ));
     }
     let keys = if app.filtering {
-        "  esc clear  enter keep"
+        "  esc clear  enter keep".to_string()
     } else if app.detail_open {
-        "  j/k move  ^d/^u scroll  y copy  esc back  m mouse  q quit"
+        "  j/k move  ^d/^u scroll  y copy  esc back  ^r reload  m mouse  q quit".to_string()
     } else if sidebar {
-        "  j/k move  esc back"
+        "  j/k move  esc back".to_string()
     } else {
-        "  j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter  \
-         u update  s/f/d status/fetch/diff  : action  r reprobe  m mouse  q quit"
+        let mut keys = String::from(
+            "  j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter  \
+             u update  s/f/d status/fetch/diff  : action  r reprobe  tab set  ^r reload  m mouse",
+        );
+        // Esc only cancels here: while a run is live and the plain list is
+        // showing, not once it's opened the detail view (there, Esc is back).
+        if app.run_action.is_some() {
+            keys.push_str("  esc cancel");
+        }
+        keys.push_str("  q quit");
+        keys
     };
     Line::from(Span::styled(keys, Style::default().fg(Color::DarkGray)))
 }
@@ -453,6 +468,54 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items).block(block), popup);
 }
 
+/// The set picker (`tab`): every set `sets::discover()` finds, plus the
+/// active config appended as `(unnamed)` when it isn't one of them, with a
+/// `*` marking whichever entry is actually on screen right now.
+fn draw_set_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let popup = centered_rect(50, 50, area);
+    frame.render_widget(Clear, popup);
+
+    let items: Vec<ListItem> = app
+        .set_entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let marker = if entry.path == app.config_path {
+                "* "
+            } else {
+                "  "
+            };
+            let style = if i == app.set_picker_cursor {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            ListItem::new(format!("{marker}{}", entry.name)).style(style)
+        })
+        .collect();
+
+    let block = Block::default().borders(Borders::ALL).title(" switch set ");
+    frame.render_widget(List::new(items).block(block), popup);
+}
+
+/// Shown when `q`/`Ctrl-C` is pressed while a run is still live (section 03,
+/// "prompts if a run is live").
+fn draw_quit_confirm(frame: &mut Frame, area: Rect) {
+    let popup = centered_rect(50, 20, area);
+    frame.render_widget(Clear, popup);
+
+    let text = vec![
+        Line::from("a run is still live, quit anyway?"),
+        Line::default(),
+        Line::from(Span::styled(
+            "y/enter quit   anything else cancels",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    let block = Block::default().borders(Borders::ALL).title(" quit? ");
+    frame.render_widget(Paragraph::new(text).block(block), popup);
+}
+
 /// The dirty-selection confirmation from section 11: shown before a run
 /// touches any repo the last probe found dirty, unless `--force` skipped it.
 fn draw_confirm(frame: &mut Frame, pending: &PendingRun, area: Rect) {
@@ -501,6 +564,7 @@ mod tests {
             BTreeMap::new(),
             PathBuf::from("/dev/null"),
             false,
+            None,
         )
     }
 

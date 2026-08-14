@@ -429,4 +429,75 @@ mod tests {
         }
         assert_eq!(labels, vec!["one", "two", "three"]);
     }
+
+    fn shell_at(dir: &std::path::Path, cmd: &str) -> Operation {
+        Operation::Shell {
+            cmd: cmd.into(),
+            work_dir: dir.to_path_buf(),
+            action: "noop".into(),
+            args: vec![],
+            env: vec![],
+        }
+    }
+
+    /// Stage A (section 06): cancelling a run stops everything still queued
+    /// behind the job limit, but a repo already past its semaphore permit
+    /// runs to completion, since `Command::output().await` has no kill.
+    #[tokio::test]
+    async fn cancelling_a_run_skips_queued_targets_but_finishes_the_one_already_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let repos = repos(&["r0", "r1", "r2"], dir.path());
+        // Long enough that the other two are still waiting on the single
+        // permit by the time the test calls `request_cancel`.
+        let targets = vec![
+            (0, shell_at(dir.path(), "sleep 0.2")),
+            (1, shell_at(dir.path(), "true")),
+            (2, shell_at(dir.path(), "true")),
+        ];
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = spawn_run(&repos, targets, 1, PathBuf::from("/dev/null"), tx, 1);
+
+        // Whichever target wins the single permit first; the test doesn't
+        // care which index that is, only that cancelling now must let it
+        // finish while the still-queued other two are skipped.
+        let mut winner = None;
+        while let Some(evt) = rx.recv().await {
+            if let TaskEvent::Started { index } = evt.kind {
+                winner = Some(index);
+                break;
+            }
+        }
+        let winner = winner.expect("one target must have started");
+        handle.request_cancel();
+
+        let mut finished = Vec::new();
+        let mut skipped = Vec::new();
+        while finished.len() + skipped.len() < 3 {
+            match rx
+                .recv()
+                .await
+                .expect("run must report on every target")
+                .kind
+            {
+                TaskEvent::Finished { index, .. } => finished.push(index),
+                TaskEvent::Skipped { index, reason } => skipped.push((index, reason)),
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            finished,
+            vec![winner],
+            "the target already past its permit must run to completion"
+        );
+        let mut skipped_indices: Vec<usize> = skipped.iter().map(|(i, _)| *i).collect();
+        skipped_indices.sort();
+        let mut expected: Vec<usize> = (0..3).filter(|i| *i != winner).collect();
+        expected.sort();
+        assert_eq!(skipped_indices, expected);
+        for (_, reason) in &skipped {
+            assert_eq!(reason, "cancelled");
+        }
+    }
 }
