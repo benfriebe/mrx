@@ -191,6 +191,7 @@ mod tests {
             name: name.to_string(),
             path: PathBuf::from(format!("/nonexistent/{}", name)),
             clone_url: None,
+            keys: Default::default(),
         }
     }
 

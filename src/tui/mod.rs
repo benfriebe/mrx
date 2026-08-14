@@ -10,7 +10,9 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use state::{AppState, RepoStatus};
+use std::collections::BTreeMap;
 use std::io::{self, stdout};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -34,6 +36,9 @@ pub fn run(
     command: &Command,
     mut rx: mpsc::UnboundedReceiver<TaskEvent>,
     jobs: usize,
+    defaults: &BTreeMap<String, String>,
+    config_path: PathBuf,
+    exit_on_done: bool,
 ) -> io::Result<bool> {
     install_panic_hook();
 
@@ -43,14 +48,15 @@ pub fn run(
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let mut state = AppState::new(repos, command.display_name());
+    let action = command.display_name().to_string();
+    let mut state = AppState::new(repos, &action);
     let mut all_succeeded = true;
 
     loop {
         // Drain pending events from executor
         loop {
             match rx.try_recv() {
-                Ok(evt) => apply_event(&mut state, &evt, command),
+                Ok(evt) => apply_event(&mut state, &evt, &action),
                 Err(_) => break,
             }
         }
@@ -60,6 +66,12 @@ pub fn run(
 
         // Render
         terminal.draw(|frame| render::draw(frame, &state))?;
+
+        // Sticking around after the work finishes is the point of the TUI, so this
+        // is opt-in; without the flag the loop still waits for `q`.
+        if state.all_done && exit_on_done {
+            break;
+        }
 
         // Handle input
         if let Some(app_event) = event::poll(Duration::from_millis(80)) {
@@ -103,9 +115,14 @@ pub fn run(
                                 let ops = state
                                     .repos
                                     .iter()
-                                    .map(|r| operations::plan(command, r))
+                                    .map(|r| operations::plan(command, r, defaults))
                                     .collect();
-                                rx = executor::execute_all(&state.repos, ops, jobs);
+                                rx = executor::execute_all(
+                                    &state.repos,
+                                    ops,
+                                    jobs,
+                                    config_path.clone(),
+                                );
                                 state.reset_for_rerun();
                             }
                             _ => {}
@@ -140,7 +157,7 @@ pub fn run(
     Ok(all_succeeded)
 }
 
-fn apply_event(state: &mut AppState, event: &TaskEvent, command: &Command) {
+fn apply_event(state: &mut AppState, event: &TaskEvent, action: &str) {
     match event {
         TaskEvent::Started { index } => {
             state.statuses[*index] = RepoStatus::Running;
@@ -151,7 +168,7 @@ fn apply_event(state: &mut AppState, event: &TaskEvent, command: &Command) {
             stderr,
             exit_code,
         } => {
-            let summary = summarize::summarize(command, stdout, stderr, *exit_code);
+            let summary = summarize::summarize(action, stdout, stderr, *exit_code);
             state.statuses[*index] = RepoStatus::Done {
                 summary,
                 stdout: stdout.clone(),
