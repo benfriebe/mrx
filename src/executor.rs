@@ -16,6 +16,8 @@ pub enum TaskEvent {
         stdout: String,
         stderr: String,
         exit_code: i32,
+        /// Which step ended the chain, when there was more than one to choose from.
+        failed_step: Option<String>,
     },
     Skipped {
         index: usize,
@@ -75,14 +77,21 @@ pub fn execute_all(
                         single => vec![single],
                     };
 
+                    // Naming the step only earns its keep when the row could be
+                    // reporting any of several.
+                    let name_steps = steps.len() > 1;
+
                     let (mut stdout, mut stderr, mut code) = (String::new(), String::new(), 0);
+                    let mut failed_step = None;
                     for step in steps {
+                        let label = step.label();
                         let result = run_step(step, &ctx).await;
                         stdout.push_str(&result.stdout);
                         stderr.push_str(&result.stderr);
                         if result.code != 0 {
                             // Keep the output collected so far; stop the chain.
                             code = result.code;
+                            failed_step = name_steps.then_some(label);
                             break;
                         }
                     }
@@ -92,6 +101,7 @@ pub fn execute_all(
                         stdout,
                         stderr,
                         exit_code: code,
+                        failed_step,
                     });
                 }
             }

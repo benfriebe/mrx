@@ -1,6 +1,8 @@
 pub fn summarize(action: &str, stdout: &str, stderr: &str, exit_code: i32) -> String {
     if exit_code != 0 {
-        let msg = first_meaningful_line(stderr)
+        let msg = error_line(stderr)
+            .or_else(|| error_line(stdout))
+            .or_else(|| first_meaningful_line(stderr))
             .or_else(|| first_meaningful_line(stdout))
             .unwrap_or_else(|| format!("exit code {}", exit_code));
         return msg;
@@ -171,17 +173,53 @@ fn summarize_generic(stdout: &str, stderr: &str) -> String {
     }
 }
 
+/// Name the step whose output the summary came from, when there was more than one.
+///
+/// A row reading `npm error Missing script: "build"` does not say whether `update`
+/// or `post_update` produced it, and those are fixed in different places.
+pub fn with_step(step: Option<&str>, summary: String) -> String {
+    match step.filter(|s| !s.is_empty()) {
+        Some(step) => format!("{}: {}", step, summary),
+        None => summary,
+    }
+}
+
+/// The line most likely to say why a step failed.
+///
+/// Tools that fail loudly still warn first: npm prints screenfuls of
+/// `npm warn ERESOLVE ...` before `npm error Missing script: "build"`, so taking
+/// the first line reports a warning as the cause. Prefer a line that names an
+/// error, and never one that names a warning.
+fn error_line(s: &str) -> Option<String> {
+    const ERROR: [&str; 5] = ["error", "fatal:", "err!", "cannot ", "failed"];
+    const WARNING: [&str; 3] = ["warn", "deprecat", "notice"];
+
+    s.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .find(|l| {
+            let lower = l.to_ascii_lowercase();
+            ERROR.iter().any(|m| lower.contains(m)) && !WARNING.iter().any(|m| lower.contains(m))
+        })
+        .map(truncate)
+}
+
 fn first_meaningful_line(s: &str) -> Option<String> {
     s.lines()
-        .map(|l| l.trim())
+        .map(str::trim)
         .find(|l| !l.is_empty())
-        .map(|l| {
-            if l.len() > 80 {
-                format!("{}...", &l[..77])
-            } else {
-                l.to_string()
-            }
-        })
+        .map(truncate)
+}
+
+/// Counted in chars, not bytes: tool output is arbitrary UTF-8 and slicing it at a
+/// byte offset panics mid-codepoint.
+fn truncate(line: &str) -> String {
+    const MAX: usize = 80;
+    if line.chars().count() <= MAX {
+        return line.to_string();
+    }
+    let head: String = line.chars().take(MAX - 3).collect();
+    format!("{}...", head)
 }
 
 #[cfg(test)]
@@ -221,5 +259,50 @@ mod tests {
             "fatal: not a repo"
         );
         assert_eq!(summarize("deploy", "", "", 3), "exit code 3");
+    }
+
+    #[test]
+    fn a_failure_skips_the_warnings_that_came_first() {
+        let stderr = "npm warn ERESOLVE overriding peer dependency\n\
+                      npm warn deprecated inflight@1.0.6\n\
+                      npm error Missing script: \"build\"\n";
+        assert_eq!(
+            summarize("update", "", stderr, 1),
+            "npm error Missing script: \"build\""
+        );
+    }
+
+    #[test]
+    fn a_failure_with_nothing_error_shaped_still_says_something() {
+        assert_eq!(
+            summarize("update", "", "husky - install command is DEPRECATED\n", 1),
+            "husky - install command is DEPRECATED"
+        );
+    }
+
+    #[test]
+    fn a_failure_reads_stdout_when_the_error_went_there() {
+        assert_eq!(
+            summarize("update", "npm error code ENOENT\n", "some warning\n", 254),
+            "npm error code ENOENT"
+        );
+    }
+
+    #[test]
+    fn only_a_chain_names_the_step_that_broke() {
+        assert_eq!(
+            with_step(Some("post_update"), "npm error code ENOENT".into()),
+            "post_update: npm error code ENOENT"
+        );
+        assert_eq!(with_step(None, "done".into()), "done");
+        assert_eq!(with_step(Some(""), "done".into()), "done");
+    }
+
+    #[test]
+    fn a_long_line_is_cut_on_a_char_boundary() {
+        let line = "✗".repeat(200);
+        let cut = summarize("update", "", &line, 1);
+        assert_eq!(cut.chars().count(), 80);
+        assert!(cut.ends_with("..."));
     }
 }
