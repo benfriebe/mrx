@@ -170,7 +170,16 @@ async fn main() {
     let rx = executor::execute_all(&repos, ops, jobs, config_path.clone());
 
     let success = if stdout().is_terminal() && !cli.plain {
-        tui::run(repos, &cli.command, rx, cli.exit_on_done).expect("TUI error")
+        tui::run(
+            repos,
+            &cli.command,
+            rx,
+            jobs,
+            &defaults,
+            config_path.clone(),
+            cli.exit_on_done,
+        )
+        .expect("TUI error")
     } else {
         render_plain::run(repos, cli.command.display_name(), rx).await
     };

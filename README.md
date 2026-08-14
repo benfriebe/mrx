@@ -80,10 +80,10 @@ The TUI shows a compact one-line-per-repo view with live spinners for in-progres
   ⠙ sixth-repo              checking...
   ✗ seventh-repo            merge conflict!
  ────────────────────────────────────────────────────────────────
-  [↑↓/jk] navigate  [enter] expand  [q] quit
+  [↑↓/jk] navigate  [enter] expand  [r] re-run  [q] quit
 ```
 
-Press **Enter** on a repo to expand its full output in a bordered panel. Arrow keys scroll within the panel. **Esc** collapses it. **q** quits and prints a summary.
+Press **Enter** on a repo to expand its full output in a bordered panel. Arrow keys scroll within the panel. **Esc** collapses it. Press **r** once the run has finished to re-run the same command across all repos without leaving the screen. **q** quits and prints a summary.
 
 ## Config
 
