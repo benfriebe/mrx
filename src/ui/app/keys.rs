@@ -38,6 +38,19 @@ fn on_resize(app: &mut App, width: u16, height: u16) {
 }
 
 fn on_key(app: &mut App, key: KeyEvent) -> bool {
+    // Handled ahead of every modal dispatch below: section 03 binds
+    // `q / Ctrl-C` to quit in mode "any", and a mode-local handler that
+    // forgets to wire it (the set picker, the dirty-run confirm) would
+    // otherwise strand the user in a state with no way out. A second
+    // Ctrl-C at the quit prompt itself confirms rather than declining, same
+    // as `y`/Enter there.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return if app.quit_pending {
+            app.confirm_quit()
+        } else {
+            app.request_quit()
+        };
+    }
     if app.quit_pending {
         return on_quit_confirm_key(app, key);
     }
@@ -49,10 +62,12 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     if app.palette_open {
-        return on_palette_key(app, key);
+        on_palette_key(app, key);
+        return false;
     }
     if app.filtering {
-        return on_filter_key(app, key);
+        on_filter_key(app, key);
+        return false;
     }
     if app.detail_open {
         return on_detail_key(app, key);
@@ -62,13 +77,13 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
 
 fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
-        // A held Ctrl that isn't one of these three must not fall through to
+        // A held Ctrl that isn't one of these two must not fall through to
         // the plain-letter shortcuts below: crossterm reports Ctrl+U as
         // `Char('u')` with the modifier set, and `KeyCode::Char('u')` alone
         // would otherwise match it, running `update` (or worse, `s`/`f`/`d`)
         // on a common readline chord like Ctrl-U with no confirmation.
+        // Ctrl-C is handled centrally in `on_key`, ahead of this dispatch.
         return match key.code {
-            KeyCode::Char('c') => app.request_quit(),
             KeyCode::Char('r') => {
                 app.reload_config();
                 false
@@ -136,13 +151,9 @@ fn on_set_picker_key(app: &mut App, key: KeyEvent) {
 
 /// Keys while `/` is capturing text. Everything but Esc, Enter, and
 /// Backspace is literal filter text, including letters that are shortcuts in
-/// the normal mode, except Ctrl-C: the plan lists `q`/`Ctrl-C` as quitting in
-/// "any" mode, and text capture must not swallow the one binding that's
-/// meant to be universal. Returns true when the app should quit.
-fn on_filter_key(app: &mut App, key: KeyEvent) -> bool {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return app.request_quit();
-    }
+/// the normal mode. Ctrl-C is handled centrally in `on_key`, ahead of this
+/// dispatch, so it still quits rather than becoming filter text.
+fn on_filter_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.cancel_filter(),
         KeyCode::Enter => app.commit_filter(),
@@ -150,16 +161,12 @@ fn on_filter_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char(c) => app.filter_push(c),
         _ => {}
     }
-    false
 }
 
 /// Keys while the action palette is open. Same shape as filter capture:
-/// only navigation, the exits, and Ctrl-C are special, everything else is
-/// text. Returns true when the app should quit.
-fn on_palette_key(app: &mut App, key: KeyEvent) -> bool {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return app.request_quit();
-    }
+/// only navigation and the exits are special, everything else is text.
+/// Ctrl-C is handled centrally in `on_key`, ahead of this dispatch.
+fn on_palette_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.close_palette(),
         KeyCode::Enter => app.palette_confirm(),
@@ -169,7 +176,6 @@ fn on_palette_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char(c) => app.palette_push(c),
         _ => {}
     }
-    false
 }
 
 /// Keys while the dirty-selection confirmation is up (section 11): a modal
@@ -187,9 +193,9 @@ fn on_confirm_key(app: &mut App, key: KeyEvent) -> bool {
 /// underlying selection (the view follows it), plus scrolling, copying, and
 /// the exit back to the full-width list.
 fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
+    // Ctrl-C is handled centrally in `on_key`, ahead of this dispatch.
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
-            KeyCode::Char('c') => return app.request_quit(),
             KeyCode::Char('d') => {
                 app.detail_scroll_down();
                 return false;
@@ -689,6 +695,58 @@ mod tests {
         );
         assert!(a.quit_pending);
         assert!(on_input(&mut a, press(KeyCode::Char('y'))), "y confirms");
+    }
+
+    #[test]
+    fn ctrl_c_quits_while_the_set_picker_is_open() {
+        let mut a = app(&["foo"]);
+        a.open_set_picker();
+        assert!(
+            on_input(&mut a, ctrl(KeyCode::Char('c'))),
+            "the set picker has no dedicated exit key for Ctrl-C, so a mode-local \
+             handler that never sees it can't be trusted to quit"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_quits_while_the_dirty_run_confirmation_is_up() {
+        let mut a = app(&["foo"]);
+        let mut dirty = crate::ui::app::probe::RepoState {
+            index: 0,
+            branch: Some("main".into()),
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            changed: 0,
+            present: true,
+            timed_out: false,
+            fetched: false,
+        };
+        dirty.changed = 1;
+        a.on_probe(0, dirty);
+        a.request_run("update");
+        assert!(a.pending_run.is_some());
+
+        assert!(on_input(&mut a, ctrl(KeyCode::Char('c'))));
+    }
+
+    #[test]
+    fn a_second_ctrl_c_at_the_quit_prompt_quits_instead_of_dismissing_it() {
+        use crate::executor::TaskEvent;
+
+        let mut a = app(&["foo"]);
+        let run_id = a.begin_named_run("update".into(), vec![0]);
+        a.on_task(run_id, TaskEvent::Started { index: 0 });
+
+        assert!(
+            !on_input(&mut a, ctrl(KeyCode::Char('c'))),
+            "must not quit immediately while a run is live"
+        );
+        assert!(a.quit_pending);
+        assert!(
+            on_input(&mut a, ctrl(KeyCode::Char('c'))),
+            "a second Ctrl-C at the prompt confirms, like y/Enter, rather than declining"
+        );
     }
 
     #[test]

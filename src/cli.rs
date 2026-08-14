@@ -1,6 +1,17 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+/// Rejects `-j 0`: it becomes `Semaphore::new(0)` downstream, which never
+/// grants a permit, so every probe, run, and poll waits forever with no
+/// error and no visible cause.
+fn parse_jobs(s: &str) -> Result<usize, String> {
+    let n: usize = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
+    if n == 0 {
+        return Err("must be at least 1 (0 jobs can never run anything)".to_string());
+    }
+    Ok(n)
+}
+
 #[derive(Parser)]
 #[command(
     name = "mrx",
@@ -27,7 +38,7 @@ pub struct Cli {
     pub set: Option<String>,
 
     /// Max parallel jobs (default: min(cpus, 8))
-    #[arg(short = 'j', long, global = true)]
+    #[arg(short = 'j', long, global = true, value_parser = parse_jobs)]
     pub jobs: Option<usize>,
 
     /// Don't recurse into subdirectories
@@ -112,5 +123,31 @@ impl Command {
 
     pub fn is_register(&self) -> bool {
         matches!(self, Command::Register)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dash_j_zero_is_rejected_at_parse_time() {
+        let result = Cli::try_parse_from(["mrx", "-j", "0", "status"]);
+        let Err(err) = result else {
+            panic!("-j 0 must be rejected, not accepted");
+        };
+        assert!(err.to_string().contains("at least 1"), "got {err}");
+    }
+
+    #[test]
+    fn dash_j_with_a_positive_count_is_accepted() {
+        let cli = Cli::try_parse_from(["mrx", "-j", "4", "status"]).unwrap();
+        assert_eq!(cli.jobs, Some(4));
+    }
+
+    #[test]
+    fn jobs_defaults_to_none_when_dash_j_is_absent() {
+        let cli = Cli::try_parse_from(["mrx", "status"]).unwrap();
+        assert_eq!(cli.jobs, None);
     }
 }
