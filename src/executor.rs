@@ -132,9 +132,15 @@ async fn run_step(op: Operation, ctx: &StepContext) -> StepOutput {
             args,
             env,
         } => {
-            // sh -c '<body>' mrx <arg1> <arg2> ...
+            // sh -e -c '<body>' mrx <arg1> <arg2> ...
             // exposes the args as $1, $2 inside the body, and $0 as "mrx".
-            let mut sh_args: Vec<String> = vec!["-c".into(), cmd.clone(), "mrx".into()];
+            //
+            // `-e` because a body is usually a list of commands, and without it only
+            // the last one's exit code survives: a body that fails to pull and then
+            // succeeds at building reports success. `||` still tolerates a failure
+            // for the commands that are meant to be allowed to fail.
+            let mut sh_args: Vec<String> =
+                vec!["-e".into(), "-c".into(), cmd.clone(), "mrx".into()];
             sh_args.extend(args.iter().cloned());
 
             let mut c = Command::new("sh");
@@ -175,5 +181,68 @@ async fn run_step(op: Operation, ctx: &StepContext) -> StepOutput {
             stderr: format!("failed to execute: {}", e),
             code: 1,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn run_body(cmd: &str) -> StepOutput {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = StepContext {
+            repo_name: "r".into(),
+            repo_path: dir.path().to_path_buf(),
+            config_path: Arc::new(PathBuf::from("/dev/null")),
+        };
+        run_step(
+            Operation::Shell {
+                cmd: cmd.into(),
+                work_dir: dir.path().to_path_buf(),
+                action: "update".into(),
+                args: vec![],
+                env: vec![],
+            },
+            &ctx,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_failed_command_ends_the_body() {
+        // The shape that started this: pull, install, build. Without `-e` the failed
+        // pull is masked by the build that follows it and the repo reports success.
+        let out = run_body("echo 'error: cannot pull' >&2; false\necho built").await;
+        assert_ne!(out.code, 0, "a failed line has to fail the body");
+        assert!(!out.stdout.contains("built"), "got {:?}", out.stdout);
+    }
+
+    #[tokio::test]
+    async fn a_failure_the_body_handles_itself_is_still_allowed() {
+        let out = run_body("false || true\necho built").await;
+        assert_eq!(out.code, 0);
+        assert!(out.stdout.contains("built"));
+    }
+
+    #[tokio::test]
+    async fn positional_args_still_reach_the_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = StepContext {
+            repo_name: "r".into(),
+            repo_path: dir.path().to_path_buf(),
+            config_path: Arc::new(PathBuf::from("/dev/null")),
+        };
+        let out = run_step(
+            Operation::Shell {
+                cmd: "echo \"$0 $1\"".into(),
+                work_dir: dir.path().to_path_buf(),
+                action: "update".into(),
+                args: vec!["--offline".into()],
+                env: vec![],
+            },
+            &ctx,
+        )
+        .await;
+        assert_eq!(out.stdout.trim(), "mrx --offline");
     }
 }

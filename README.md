@@ -175,15 +175,27 @@ non-zero: the clone (if the repo isn't on disk yet), the `<action>` body, then t
 `post_<action>` body. A failure names the step it came from, so a row reads
 `post_update: npm error Missing script: "build"` rather than leaving you to guess.
 
-Everything *inside* one body is a single `sh -c` invocation, and ordinary shell rules
-apply. `update = git pull; npm ci` runs `npm ci` even when the pull failed, and
-reports only `npm ci`'s exit code. Use `&&` between commands you want to stop at the
-first failure, or split them across `update` and `post_update` to see which one broke:
+Everything *inside* one body is a single `sh -e -c` invocation, so a body that lists
+several commands stops at the first one that fails:
 
 ```ini
 [DEFAULT]
-update      = git pull --rebase && npm ci
-post_update = npm run build
+update = git pull --rebase
+         npm ci
+         npm run build
+```
+
+A failed `git pull --rebase` there ends the body and the repo reports the pull error.
+Without `-e` only `npm run build`'s exit code would survive, so a repo that failed to
+pull but built fine would report success.
+
+Append `|| true` to a command that is allowed to fail:
+
+```ini
+[DEFAULT]
+update = git pull --rebase
+         ./optional-hook.sh || true
+         npm ci
 ```
 
 ## Repo sets
