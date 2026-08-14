@@ -37,12 +37,9 @@ pub fn expand_tilde(s: &str) -> PathBuf {
     if s == "~" {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from(s));
     }
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(s)
+    s.strip_prefix("~/")
+        .and_then(|rest| dirs::home_dir().map(|home| home.join(rest)))
+        .unwrap_or_else(|| PathBuf::from(s))
 }
 
 /// Read a config file into repos plus the `[DEFAULT]` fallbacks.
@@ -64,7 +61,9 @@ pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
             return Config {
                 repos: Vec::new(),
                 defaults: BTreeMap::new(),
-                base: dir_override.map(Path::to_path_buf).unwrap_or_else(fallback_base),
+                base: dir_override
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(fallback_base),
             };
         }
         Err(e) => {
@@ -313,7 +312,10 @@ mod tests {
         }
         keys.insert("k".to_string(), "maybe".to_string());
         assert!(Repo::flag(&keys, "k", true), "unparseable falls back");
-        assert!(!Repo::flag(&BTreeMap::new(), "k", false), "unset falls back");
+        assert!(
+            !Repo::flag(&BTreeMap::new(), "k", false),
+            "unset falls back"
+        );
     }
 
     #[test]
@@ -336,11 +338,11 @@ mod tests {
         assert!(body.contains("git pull"), "got {body:?}");
     }
 
-#[test]
-fn semicolon_in_a_command_body_survives() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(dir.path(), "[a]\nupdate = echo one; echo two\n");
-    let body = load(&cfg, None).repos[0].keys["update"].clone();
-    assert_eq!(body, "echo one; echo two", "semicolon treated as a comment");
-}
+    #[test]
+    fn semicolon_in_a_command_body_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = write_config(dir.path(), "[a]\nupdate = echo one; echo two\n");
+        let body = load(&cfg, None).repos[0].keys["update"].clone();
+        assert_eq!(body, "echo one; echo two", "semicolon treated as a comment");
+    }
 }

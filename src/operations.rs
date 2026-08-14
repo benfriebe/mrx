@@ -54,14 +54,23 @@ fn config_env(repo: &Repo, defaults: &BTreeMap<String, String>) -> Vec<(String, 
     }
     env.into_iter()
         .filter(|(k, _)| !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()))
-        .map(|(k, v)| {
-            let name: String = k
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect();
-            (format!("MR_{}", name.to_ascii_uppercase()), v.to_string())
-        })
+        .map(|(k, v)| (env_var_name(k), v.to_string()))
         .collect()
+}
+
+/// Environment variable name for a config key: `post_update` becomes `MR_POST_UPDATE`.
+/// Anything that can't spell an identifier becomes an underscore.
+fn env_var_name(key: &str) -> String {
+    let mut name = String::with_capacity(key.len() + 3);
+    name.push_str("MR_");
+    name.extend(key.chars().map(|c| {
+        if c.is_ascii_alphanumeric() {
+            c.to_ascii_uppercase()
+        } else {
+            '_'
+        }
+    }));
+    name
 }
 
 fn shell(
@@ -110,11 +119,7 @@ fn clone_step(repo: &Repo, defaults: &BTreeMap<String, String>) -> Option<Operat
 }
 
 /// A `post_<action>` step, if one is defined anywhere in the cascade.
-fn post_step(
-    repo: &Repo,
-    defaults: &BTreeMap<String, String>,
-    action: &str,
-) -> Option<Operation> {
+fn post_step(repo: &Repo, defaults: &BTreeMap<String, String>, action: &str) -> Option<Operation> {
     let key = format!("post_{action}");
     resolve_body(repo, defaults, &key)
         .map(|body| shell(body, repo.path.clone(), &key, vec![], repo, defaults))
@@ -232,14 +237,7 @@ pub fn plan(command: &Command, repo: &Repo, defaults: &BTreeMap<String, String>)
                     reason: format!("no {} action defined", name),
                 };
             };
-            let mut steps = vec![shell(
-                body,
-                repo.path.clone(),
-                &name,
-                tail,
-                repo,
-                defaults,
-            )];
+            let mut steps = vec![shell(body, repo.path.clone(), &name, tail, repo, defaults)];
             steps.extend(post_step(repo, defaults, &name));
             sequence(steps)
         }
@@ -413,7 +411,10 @@ mod tests {
             name: "r".into(),
             path: PathBuf::from("/nope/r"),
             clone_url: Some("git@example.com:r.git".into()),
-            keys: BTreeMap::from([("checkout".to_string(), "git clone --depth 1 x r".to_string())]),
+            keys: BTreeMap::from([(
+                "checkout".to_string(),
+                "git clone --depth 1 x r".to_string(),
+            )]),
         };
 
         match plan(&Command::Checkout, &repo, &BTreeMap::new()) {
@@ -469,11 +470,7 @@ mod tests {
 
         match plan(&Command::Update, &repo, &defs) {
             Operation::Shell { env, .. } => {
-                let get = |k: &str| {
-                    env.iter()
-                        .find(|(n, _)| n == k)
-                        .map(|(_, v)| v.as_str())
-                };
+                let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
                 assert_eq!(get("MR_BRANCH"), Some("master"), "section beats DEFAULT");
                 assert_eq!(get("MR_RESET"), Some("false"), "DEFAULT still reaches env");
                 assert_eq!(get("MR_UPDATE"), Some("sync.sh"));
@@ -501,5 +498,14 @@ mod tests {
             }
             other => panic!("expected Shell, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn env_var_name_uppercases_and_sanitises() {
+        assert_eq!(env_var_name("branch"), "MR_BRANCH");
+        assert_eq!(env_var_name("post_update"), "MR_POST_UPDATE");
+        assert_eq!(env_var_name("Reset"), "MR_RESET");
+        assert_eq!(env_var_name("deploy-target"), "MR_DEPLOY_TARGET");
+        assert_eq!(env_var_name("a.b c"), "MR_A_B_C");
     }
 }
