@@ -16,7 +16,7 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event};
 use crossterm::execute;
 use std::collections::BTreeMap;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -48,6 +48,36 @@ fn apply_mouse_capture(enabled: bool) -> io::Result<()> {
     } else {
         execute!(io::stdout(), DisableMouseCapture)
     }
+}
+
+/// `o`: suspend the alternate screen, raw mode, and (if it was on) mouse
+/// capture, run `$EDITOR` (falling back to `vi`) on `path` to completion,
+/// then restore all three exactly as they were. A blocking wait is the
+/// point: there is nothing useful for the app to do while the editor has
+/// the terminal, and any probe or run events that arrive in the meantime
+/// just sit in their channels until the next draw picks them up, the same
+/// eventually-consistent handling every other background result gets.
+fn open_editor(terminal: &mut super::Term, path: &Path, mouse_captured: bool) -> io::Result<()> {
+    if mouse_captured {
+        apply_mouse_capture(false)?;
+    }
+    super::teardown_terminal()?;
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    let mut parts = editor.split_whitespace();
+    let bin = parts.next().unwrap_or("vi");
+    let result = std::process::Command::new(bin)
+        .args(parts)
+        .arg(path)
+        .status();
+
+    *terminal = super::setup_terminal()?;
+    if mouse_captured {
+        apply_mouse_capture(true)?;
+    }
+    terminal.clear()?;
+
+    result.map(|_| ())
 }
 
 /// Begin a new probe generation over `targets` and spawn it.
@@ -185,6 +215,11 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
                 }
                 if app.take_mouse_capture_dirty() {
                     apply_mouse_capture(app.mouse_captured)?;
+                }
+                if let Some(path) = app.take_open_editor_requested() {
+                    if let Err(e) = open_editor(&mut terminal, &path, app.mouse_captured) {
+                        app.status_message = Some(format!("could not open $EDITOR: {e}"));
+                    }
                 }
             }
             Some(probed) = probe_rx.recv() => {

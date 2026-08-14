@@ -339,13 +339,14 @@ fn status_line(app: &App, sidebar: bool) -> Line<'static> {
     let keys = if app.filtering {
         "  esc clear  enter keep".to_string()
     } else if app.detail_open {
-        "  j/k move  ^d/^u scroll  y copy  esc back  ^r reload  m mouse  q quit".to_string()
+        "  j/k move  ^d/^u scroll  o editor  y copy  esc back  ^r reload  m mouse  q quit"
+            .to_string()
     } else if sidebar {
         "  j/k move  esc back".to_string()
     } else {
         let mut keys = String::from(
             "  j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter  \
-             u update  s/f/d status/fetch/diff  : action  r reprobe  F poll  ^a auto  \
+             u update  s/f/d status/fetch/diff  : action  r reprobe  o editor  F poll  ^a auto  \
              tab set  ^r reload  m mouse",
         );
         // Esc only cancels here: while a run is live and the plain list is

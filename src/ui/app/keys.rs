@@ -20,8 +20,21 @@ pub fn on_input(app: &mut App, event: Event) -> bool {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => on_key(app, key),
         Event::Mouse(mouse) => on_mouse(app, mouse),
+        Event::Resize(width, height) => {
+            on_resize(app, width, height);
+            false
+        }
         _ => false,
     }
+}
+
+/// `Terminal::draw` re-queries the real terminal size and resizes its own
+/// buffers on its own (ratatui's `autoresize`), so this just keeps `App`'s
+/// cached width/height, used for click and scroll geometry between draws,
+/// from lagging a frame behind an actual resize.
+fn on_resize(app: &mut App, width: u16, height: u16) {
+    app.terminal_width = width;
+    app.terminal_height = height;
 }
 
 fn on_key(app: &mut App, key: KeyEvent) -> bool {
@@ -84,6 +97,7 @@ fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char(':') => app.open_palette(),
         KeyCode::Char('m') => app.toggle_mouse_capture(),
         KeyCode::Char('F') => app.toggle_poll(),
+        KeyCode::Char('o') => app.request_open_editor(),
         KeyCode::Tab => app.open_set_picker(),
         KeyCode::Esc => app.request_cancel(),
         KeyCode::Enter => app.open_detail(),
@@ -184,6 +198,7 @@ fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Esc => app.close_detail(),
         KeyCode::Char('y') => app.copy_visible_step(),
         KeyCode::Char('m') => app.toggle_mouse_capture(),
+        KeyCode::Char('o') => app.request_open_editor(),
         _ => {}
     }
     false
@@ -526,6 +541,26 @@ mod tests {
             a.status_message.is_none(),
             "the hint is shown once, not every drag"
         );
+    }
+
+    #[test]
+    fn o_requests_the_editor_in_list_and_detail_modes() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, press(KeyCode::Char('o')));
+        assert!(a.open_editor_requested);
+        a.open_editor_requested = false;
+
+        a.open_detail();
+        on_input(&mut a, press(KeyCode::Char('o')));
+        assert!(a.open_editor_requested);
+    }
+
+    #[test]
+    fn resize_updates_the_cached_terminal_size() {
+        let mut a = app(&["foo"]);
+        assert!(!on_input(&mut a, Event::Resize(132, 43)));
+        assert_eq!(a.terminal_width, 132);
+        assert_eq!(a.terminal_height, 43);
     }
 
     #[test]

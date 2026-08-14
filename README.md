@@ -100,8 +100,8 @@ selection without leaving the screen.
     ●  crew-db-schema main   2 modified       git pull
  ──────────────────────────────────────────────────────────────────────────
   j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter
-  u update  s/f/d status/fetch/diff  : action  r reprobe  F poll  ^a auto
-  tab set  ^r reload  m mouse  q quit
+  u update  s/f/d status/fetch/diff  : action  r reprobe  o editor  F poll
+  ^a auto  tab set  ^r reload  m mouse  q quit
 ```
 
 `j`/`k` (or the arrow keys) move the cursor, `g`/`G` jump to the first or last row.
@@ -129,6 +129,11 @@ detail view following. Each step of a run is its own labelled section rather tha
 scrollback. `Ctrl-D`/`Ctrl-U` scroll half a page, kept per repo; `y` copies the
 visible step's output, falling back to a temp file when there's no clipboard binary
 on `PATH`. `Esc` goes back to the full-width list.
+
+`o` opens the cursor row's repo in `$EDITOR` (`vi` if it's unset), from either the
+plain list or the detail view. The app suspends properly to do it: raw mode, the
+alternate screen, and mouse capture all come off first, so the editor gets a normal
+terminal, and all three come back once it exits.
 
 Clicking a row moves the cursor to it; clicking the row already under the cursor
 opens its detail view. The wheel scrolls whichever region is under the pointer. `m`

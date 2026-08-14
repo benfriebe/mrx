@@ -146,6 +146,11 @@ pub struct App {
     /// (section 03, "prompts if a run is live").
     pub quit_pending: bool,
 
+    /// `o`: set by [`request_open_editor`](Self::request_open_editor); the
+    /// run loop owns actually suspending the terminal, since state has no
+    /// I/O of its own (mirrors `probe_requested`, `mouse_capture_dirty`).
+    pub open_editor_requested: bool,
+
     /// `F`: whether the freshness poll is currently on. Off by default,
     /// since freshness is an opt-in loop (section 07).
     pub poll_enabled: bool,
@@ -279,6 +284,7 @@ impl App {
             full_reprobe_requested: false,
             cancel_requested: false,
             quit_pending: false,
+            open_editor_requested: false,
             poll_enabled: false,
             poll_interval: poll::DEFAULT_POLL_INTERVAL,
             auto_update: false,
@@ -1021,6 +1027,24 @@ impl App {
         std::mem::take(&mut self.mouse_capture_dirty)
     }
 
+    /// `o`: open `$EDITOR` on the cursor row's repo, from either the plain
+    /// list or the detail view (section 03, "o is worth including early").
+    pub fn request_open_editor(&mut self) {
+        self.open_editor_requested = true;
+    }
+
+    /// Set by [`request_open_editor`](Self::request_open_editor); consumed
+    /// by the run loop, the only thing that can suspend and restore the
+    /// terminal. Resolves to the cursor's repo path at the moment it's
+    /// taken rather than when requested.
+    pub fn take_open_editor_requested(&mut self) -> Option<PathBuf> {
+        if std::mem::take(&mut self.open_editor_requested) {
+            self.repos.get(self.cursor).map(|r| r.path.clone())
+        } else {
+            None
+        }
+    }
+
     /// The global repo index at on-screen row `row` within the table body
     /// (0-based, below the header), given `scroll_offset`: the same lookup
     /// `move_cursor` uses, so a click and a keystroke can't disagree about
@@ -1581,6 +1605,24 @@ mod tests {
         assert!(!a.mouse_captured);
         assert!(a.take_mouse_capture_dirty());
         assert!(!a.take_mouse_capture_dirty(), "only taken once");
+    }
+
+    #[test]
+    fn open_editor_resolves_to_the_cursor_repo_at_the_moment_its_taken() {
+        let mut a = app(&["foo", "bar"]);
+        a.cursor = 1;
+        a.request_open_editor();
+        assert!(a.open_editor_requested);
+
+        // Moving the cursor before the run loop gets around to taking the
+        // request is what "at the moment it's taken" means.
+        a.cursor = 0;
+        assert_eq!(
+            a.take_open_editor_requested(),
+            Some(PathBuf::from("/nonexistent/foo"))
+        );
+        assert!(!a.open_editor_requested, "only taken once");
+        assert_eq!(a.take_open_editor_requested(), None);
     }
 
     #[test]
