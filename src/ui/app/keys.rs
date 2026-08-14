@@ -57,6 +57,10 @@ fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
                 app.reload_config();
                 return false;
             }
+            KeyCode::Char('a') => {
+                app.toggle_auto_update();
+                return false;
+            }
             _ => {}
         }
     }
@@ -79,6 +83,7 @@ fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('d') => app.request_run("diff"),
         KeyCode::Char(':') => app.open_palette(),
         KeyCode::Char('m') => app.toggle_mouse_capture(),
+        KeyCode::Char('F') => app.toggle_poll(),
         KeyCode::Tab => app.open_set_picker(),
         KeyCode::Esc => app.request_cancel(),
         KeyCode::Enter => app.open_detail(),

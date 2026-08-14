@@ -89,10 +89,30 @@ fn max_jobs(cli: &Cli) -> usize {
 }
 
 /// Label shown in the resident app's header: the named set if `-s` or
-/// `$MRX_SET` gave one, otherwise `(unnamed)` for the bare config file, the
-/// same label `print_sets` uses for it.
-fn ui_set_label(cli: &Cli) -> String {
-    named_set(cli).unwrap_or_else(|| "(unnamed)".to_string())
+/// `$MRX_SET` gave one, the persisted session's set if `restored` named
+/// one, otherwise `(unnamed)` for the bare config file, the same label
+/// `print_sets` uses for it.
+fn ui_set_label(cli: &Cli, restored: Option<&str>) -> String {
+    named_set(cli)
+        .or_else(|| restored.map(String::from))
+        .unwrap_or_else(|| "(unnamed)".to_string())
+}
+
+/// The persisted session's stored set, but only when it should actually be
+/// used: nothing on the command line named one, and the stored name still
+/// resolves to a config on disk (section 09, "`-s` on the command line
+/// always wins over the stored set"; a set removed since the last session
+/// just falls back to the ordinary default rather than erroring, since a
+/// config edit is not an error).
+fn restored_set(cli: &Cli, session: &ui::app::session::Session) -> Option<String> {
+    if cli.config.is_some() || named_set(cli).is_some() {
+        return None;
+    }
+    session
+        .set
+        .as_deref()
+        .filter(|name| sets::resolve(name).is_some())
+        .map(str::to_string)
 }
 
 /// `ui` needs an interactive terminal and contradicts `--plain`. Both are
@@ -122,7 +142,17 @@ async fn main() {
 
     reject_bad_ui_invocation(&cli);
 
-    let config_path = resolve_config_path(&cli);
+    // Only `ui` has a session to restore; every other command resolves the
+    // config exactly as it always has.
+    let ui_session = matches!(cli.command, Command::Ui).then(ui::app::session::load);
+    let ui_restored_set = ui_session.as_ref().and_then(|s| restored_set(&cli, s));
+
+    let config_path = match &ui_restored_set {
+        Some(name) => {
+            absolutize(&sets::resolve(name).expect("restored_set already confirmed this resolves"))
+        }
+        None => resolve_config_path(&cli),
+    };
 
     // Sets command: independent of the config's contents.
     if matches!(cli.command, Command::Sets) {
@@ -169,16 +199,17 @@ async fn main() {
     // Ui command: open the resident app and block until the user quits.
     if matches!(cli.command, Command::Ui) {
         let jobs = max_jobs(&cli);
-        let label = ui_set_label(&cli);
-        ui::app::run(
+        let label = ui_set_label(&cli, ui_restored_set.as_deref());
+        ui::app::run(ui::app::RunOptions {
             repos,
-            label,
+            set_label: label,
             jobs,
             defaults,
-            config_path.clone(),
-            cli.force,
-            dir_override.clone(),
-        )
+            config_path: config_path.clone(),
+            force: cli.force,
+            dir_override: dir_override.clone(),
+            session: ui_session.unwrap_or_default(),
+        })
         .await
         .expect("ui error");
         return;
@@ -316,5 +347,64 @@ mod tests {
             None,
             "a blank set is not a set, so the default applies"
         );
+    }
+
+    #[test]
+    fn an_explicit_set_beats_a_stored_session_set() {
+        let cli = Cli::parse_from(["mrx", "--set", "other", "ui"]);
+        let session = ui::app::session::Session {
+            set: Some("work".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            restored_set(&cli, &session),
+            None,
+            "-s always wins over whatever set was stored"
+        );
+    }
+
+    /// `XDG_CONFIG_HOME` is process-global; tests that point it at their own
+    /// tempdir still need to serialise against each other.
+    fn with_config_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
+        use std::sync::Mutex;
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let dir = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        let result = f(dir.path());
+        match previous {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        result
+    }
+
+    #[test]
+    fn a_stored_session_set_is_used_when_nothing_on_the_command_line_names_one() {
+        with_config_home(|dir| {
+            std::fs::create_dir_all(dir.join("mrx")).unwrap();
+            std::fs::write(dir.join("mrx/work.mrconfig"), "[repo]\n").unwrap();
+
+            let cli = Cli::parse_from(["mrx", "ui"]);
+            let session = ui::app::session::Session {
+                set: Some("work".into()),
+                ..Default::default()
+            };
+            assert_eq!(restored_set(&cli, &session).as_deref(), Some("work"));
+        });
+    }
+
+    #[test]
+    fn a_stored_set_that_no_longer_resolves_is_dropped_silently() {
+        with_config_home(|_| {
+            let cli = Cli::parse_from(["mrx", "ui"]);
+            let session = ui::app::session::Session {
+                set: Some("gone".into()),
+                ..Default::default()
+            };
+            assert_eq!(restored_set(&cli, &session), None);
+        });
     }
 }

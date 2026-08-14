@@ -51,7 +51,9 @@ impl RepoState {
         }
     }
 
-    fn timeout(index: usize) -> Self {
+    /// Visible to [`super::poll`], whose own per-repo timeout produces the
+    /// same "unknown" row a probe timeout does.
+    pub(super) fn timeout(index: usize) -> Self {
         Self {
             timed_out: true,
             ..Self::absent(index)
@@ -87,7 +89,9 @@ pub fn spawn_probe(
     }
 }
 
-async fn probe_one(index: usize, path: &Path) -> RepoState {
+/// Visible to [`super::poll`], whose poll cycle is a `git fetch` followed by
+/// exactly this same status parse (section 07).
+pub(super) async fn probe_one(index: usize, path: &Path) -> RepoState {
     if !path.is_dir() {
         return RepoState::absent(index);
     }

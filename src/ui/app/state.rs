@@ -4,13 +4,16 @@
 
 use super::actions::{self, Action};
 use super::detail;
+use super::poll::{self, AutoUpdateOutcome, AutoUpdateResult};
 use super::probe::{self, RepoState};
+use super::session::Session;
 use crate::config::{self, Repo};
 use crate::executor::{StepResult, TaskEvent};
 use crate::sets;
 use crate::summarize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Shown for a repo that has never taken part in a run this session, per
 /// section 02: "a repo that has never been run shows `·` rather than a fake
@@ -142,6 +145,39 @@ pub struct App {
     /// Whether `q`/`Ctrl-C` is waiting on confirmation because a run is live
     /// (section 03, "prompts if a run is live").
     pub quit_pending: bool,
+
+    /// `F`: whether the freshness poll is currently on. Off by default,
+    /// since freshness is an opt-in loop (section 07).
+    pub poll_enabled: bool,
+    /// How often the poll fires when it's on; a value on `App` rather than
+    /// a hardcoded constant, so a persisted session can change it (section
+    /// 07: "the interval is a config value").
+    pub poll_interval: Duration,
+    /// `Ctrl-A`: whether a completed poll cycle is allowed to fast-forward
+    /// what it finds behind. Off by default; never true while `poll_enabled`
+    /// is false, since it has nothing to act on without one.
+    pub auto_update: bool,
+    /// Set by [`on_poll_due`](Self::on_poll_due) when a tick is actually
+    /// allowed to start a cycle; the run loop owns spawning it, since state
+    /// has no runtime handle of its own (mirrors `probe_requested`).
+    poll_targets_requested: Option<Vec<usize>>,
+    /// The probe generation the current in-flight probe belongs to, when it
+    /// was started as a poll cycle rather than a plain probe or reprobe.
+    /// Lets [`on_probe`](Self::on_probe) tell "a poll cycle just finished"
+    /// from "the user pressed r", without a second copy of the generation
+    /// machinery (section 02: "the existing generation counter").
+    poll_generation: Option<u64>,
+    /// Set once a poll cycle's results are all in and some of them passed
+    /// [`poll::can_fast_forward`]; the run loop owns spawning the actual
+    /// merges.
+    auto_update_requested: Option<Vec<usize>>,
+    auto_update_total: usize,
+    auto_update_done: usize,
+    auto_update_ok: usize,
+    /// Repos an auto-update pass actually fast-forwarded, so the run loop
+    /// can re-probe just those once the pass finishes and pick up their new
+    /// ahead/behind and branch state.
+    auto_update_reprobe_targets: Option<Vec<usize>>,
 }
 
 /// One row in the set picker: a discovered set's name and the config path
@@ -243,7 +279,51 @@ impl App {
             full_reprobe_requested: false,
             cancel_requested: false,
             quit_pending: false,
+            poll_enabled: false,
+            poll_interval: poll::DEFAULT_POLL_INTERVAL,
+            auto_update: false,
+            poll_targets_requested: None,
+            poll_generation: None,
+            auto_update_requested: None,
+            auto_update_total: 0,
+            auto_update_done: 0,
+            auto_update_ok: 0,
+            auto_update_reprobe_targets: None,
         }
+    }
+
+    /// Apply a persisted session on top of a freshly built app (section 09).
+    /// Filter and selection are matched by repo name so a config edit
+    /// doesn't misdirect them onto the wrong row, and any name the current
+    /// repo list doesn't have is dropped silently, a config edit is not an
+    /// error. `set_label` is left untouched: `main.rs` already decided which
+    /// config to load, `-s` beating the stored set if it named one, before
+    /// this ever runs.
+    pub fn restore_session(&mut self, session: &Session) {
+        self.filter = session.filter.clone();
+
+        self.selected = self
+            .repos
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| session.selected.contains(&r.name))
+            .map(|(i, _)| i)
+            .collect();
+
+        if let Some(name) = &session.cursor {
+            if let Some(pos) = self.repos.iter().position(|r| &r.name == name) {
+                self.cursor = pos;
+            }
+        }
+        self.clamp_cursor_to_visible();
+
+        if let Some(interval) = session.poll_interval {
+            self.poll_enabled = true;
+            self.poll_interval = interval;
+        }
+        // Never restore auto-update without the poll it depends on, even if
+        // the file somehow has that combination.
+        self.auto_update = session.auto_update && self.poll_enabled;
     }
 
     /// Start a new run generation and return its id, so the caller can tag
@@ -621,6 +701,184 @@ impl App {
         if let Some(slot) = self.probes.get_mut(state.index) {
             *slot = Some(state);
         }
+        self.maybe_complete_poll(generation);
+    }
+
+    /// The tick loop's poll `Interval` arm always fires; this is what
+    /// decides whether a given tick actually does anything (section 05,
+    /// "a timer that exists but does nothing is cheaper to reason about
+    /// than one that gets created and dropped as the mode toggles").
+    /// Suspended rather than queued while a run is live (section 02): a
+    /// fetch storm competing with a live update for the network is worse
+    /// than a poll landing a cycle late.
+    pub fn on_poll_due(&mut self) {
+        if !self.poll_enabled || self.run_action.is_some() {
+            return;
+        }
+        let targets: Vec<usize> = (0..self.repos.len()).collect();
+        let generation = self.begin_probe(&targets);
+        self.poll_generation = Some(generation);
+        // The poll itself, not any one repo's fetch succeeding, is what
+        // makes the behind column trustworthy again (section 02).
+        self.fetched_this_session = true;
+        self.poll_targets_requested = Some(targets);
+    }
+
+    /// Set by [`on_poll_due`](Self::on_poll_due); consumed by the run loop,
+    /// the only thing with a runtime handle to spawn the resulting fetch
+    /// with.
+    pub fn take_poll_requested(&mut self) -> Option<Vec<usize>> {
+        self.poll_targets_requested.take()
+    }
+
+    /// `F`: turn the freshness poll on or off. The interval stays whatever
+    /// it last was rather than resetting to the default every time. Turning
+    /// it off also turns auto-update off: a fast-forward pass with nothing
+    /// feeding it fresh data has nothing to act on (section 02).
+    pub fn toggle_poll(&mut self) {
+        self.poll_enabled = !self.poll_enabled;
+        if !self.poll_enabled {
+            self.auto_update = false;
+        }
+    }
+
+    /// `Ctrl-A`: turn auto-update on or off. Refuses while the poll itself
+    /// is off, since auto-update only ever acts on a poll's results
+    /// (section 02: "after a poll, pull the repos that came back behind").
+    pub fn toggle_auto_update(&mut self) {
+        if !self.poll_enabled {
+            self.status_message = Some("auto-update needs the freshness poll on first".into());
+            return;
+        }
+        self.auto_update = !self.auto_update;
+    }
+
+    /// Once every repo a poll cycle covered has reported back, decide which
+    /// ones auto-update is allowed to touch. A plain probe or reprobe never
+    /// sets `poll_generation`, so this is a no-op for those.
+    fn maybe_complete_poll(&mut self, generation: u64) {
+        if self.poll_generation != Some(generation) || !self.probing.is_empty() {
+            return;
+        }
+        self.poll_generation = None;
+        if !self.auto_update {
+            return;
+        }
+        let targets: Vec<usize> = self
+            .probes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.as_ref().filter(|s| poll::can_fast_forward(s)).map(|_| i))
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        self.auto_update_total = targets.len();
+        self.auto_update_done = 0;
+        self.auto_update_ok = 0;
+        self.auto_update_requested = Some(targets);
+    }
+
+    /// Set by [`maybe_complete_poll`](Self::maybe_complete_poll); consumed
+    /// by the run loop, the only thing with a runtime handle to spawn the
+    /// resulting merges with.
+    pub fn take_auto_update_requested(&mut self) -> Option<Vec<usize>> {
+        self.auto_update_requested.take()
+    }
+
+    /// Apply one repo's outcome from an auto-update pass. Once every
+    /// targeted repo has reported in, leaves an honest one-line summary in
+    /// the status bar: repos a fast-forward could not touch are reported,
+    /// not fixed (section 02), and are simply left out of the count rather
+    /// than named individually here.
+    pub fn on_auto_update_result(&mut self, result: AutoUpdateResult) {
+        self.auto_update_done += 1;
+        let fast_forwarded = matches!(result.outcome, AutoUpdateOutcome::FastForwarded);
+        if fast_forwarded {
+            self.auto_update_ok += 1;
+            self.auto_update_reprobe_targets
+                .get_or_insert_with(Vec::new)
+                .push(result.index);
+        }
+
+        if self.auto_update_done < self.auto_update_total {
+            return;
+        }
+        let left_alone = self.auto_update_total - self.auto_update_ok;
+        self.status_message = Some(if left_alone == 0 {
+            format!("auto-update: fast-forwarded {}", self.auto_update_ok)
+        } else {
+            format!(
+                "auto-update: fast-forwarded {}, {left_alone} left alone",
+                self.auto_update_ok
+            )
+        });
+        self.auto_update_total = 0;
+        self.auto_update_done = 0;
+        self.auto_update_ok = 0;
+    }
+
+    /// Set once an auto-update pass finishes with at least one repo it
+    /// actually touched; consumed by the run loop, which owns spawning the
+    /// resulting re-probe so those rows' branch and ahead/behind reflect
+    /// the merge.
+    pub fn take_auto_update_reprobe_targets(&mut self) -> Option<Vec<usize>> {
+        self.auto_update_reprobe_targets.take()
+    }
+
+    /// The header's `poll 5m` / `poll 5m · auto` text, `None` when the poll
+    /// is off. A mode that silently modifies repos and is invisible on
+    /// screen is a bug waiting to be filed (section 02).
+    pub fn poll_status_text(&self) -> Option<String> {
+        if !self.poll_enabled {
+            return None;
+        }
+        let interval = poll::format_interval(self.poll_interval);
+        Some(if self.auto_update {
+            format!("poll {interval} · auto")
+        } else {
+            format!("poll {interval}")
+        })
+    }
+
+    /// The header's right-hand text: the live run's summary while one is
+    /// running (section 02, "the only place the run's global state
+    /// appears"), otherwise the selection count, with the poll's state and
+    /// a restored filter's match count layered on. A restored filter is
+    /// shown here, not only in the status bar, since "4 of 42 repos" with
+    /// no explanation otherwise looks like a broken config (section 09).
+    pub fn header_right_text(&self) -> String {
+        if let Some(run) = self.run_status_text() {
+            return run;
+        }
+        let mut text = if self.filter.is_empty() {
+            format!(
+                "{} repos · {} selected",
+                self.repos.len(),
+                self.effective_selection().len()
+            )
+        } else {
+            format!(
+                "{} of {} repos · filter",
+                self.visible_indices().len(),
+                self.repos.len()
+            )
+        };
+        if let Some(poll) = self.poll_status_text() {
+            text.push_str(&format!(" · {poll}"));
+        }
+        text
+    }
+
+    /// The live run's summary for the header: action name, done/total, and
+    /// a failure count once there's one to show.
+    fn run_status_text(&self) -> Option<String> {
+        let action = self.run_action.as_ref()?;
+        let mut text = format!("{} {}/{}", action, self.run_completed, self.run_total);
+        if self.run_failed > 0 {
+            text.push_str(&format!(" · {} failed", self.run_failed));
+        }
+        Some(text)
     }
 
     /// Set by `r`; consumed by the run loop, which is the only thing with a
@@ -1509,5 +1767,218 @@ mod tests {
         a.request_quit();
         a.cancel_quit();
         assert!(!a.quit_pending);
+    }
+
+    #[test]
+    fn a_due_poll_while_a_run_is_live_is_a_no_op_and_the_next_one_after_it_finishes_is_not() {
+        let mut a = app(&["foo"]);
+        a.poll_enabled = true;
+        let run_id = a.begin_named_run("update".into(), vec![0]);
+        a.on_task(run_id, TaskEvent::Started { index: 0 });
+
+        a.on_poll_due();
+        assert!(
+            a.take_poll_requested().is_none(),
+            "a live run suspends the poll"
+        );
+
+        a.on_task(
+            run_id,
+            TaskEvent::Finished {
+                index: 0,
+                steps: Vec::new(),
+                exit_code: 0,
+            },
+        );
+        assert!(a.run_action.is_none(), "the run really did finish");
+
+        a.on_poll_due();
+        assert_eq!(a.take_poll_requested(), Some(vec![0]));
+    }
+
+    #[test]
+    fn a_due_poll_while_disabled_is_a_no_op() {
+        let mut a = app(&["foo"]);
+        a.on_poll_due();
+        assert!(a.take_poll_requested().is_none());
+    }
+
+    #[test]
+    fn toggling_the_poll_off_also_turns_off_auto_update() {
+        let mut a = app(&["foo"]);
+        a.poll_enabled = true;
+        a.auto_update = true;
+        a.toggle_poll();
+        assert!(!a.poll_enabled);
+        assert!(
+            !a.auto_update,
+            "auto-update has nothing to act on without the poll"
+        );
+    }
+
+    #[test]
+    fn auto_update_refuses_to_turn_on_while_the_poll_is_off() {
+        let mut a = app(&["foo"]);
+        a.toggle_auto_update();
+        assert!(!a.auto_update);
+        assert!(a.status_message.is_some());
+    }
+
+    #[test]
+    fn a_finished_poll_cycle_requests_auto_update_only_for_fast_forwardable_repos() {
+        let mut a = app(&["clean-behind", "dirty-behind"]);
+        a.poll_enabled = true;
+        a.auto_update = true;
+
+        a.on_poll_due();
+        let targets = a.take_poll_requested().expect("poll started");
+        let generation = a.probe_generation;
+
+        let clean = RepoState {
+            index: 0,
+            branch: Some("main".into()),
+            upstream: Some("origin/main".into()),
+            ahead: 0,
+            behind: 2,
+            changed: 0,
+            present: true,
+            timed_out: false,
+        };
+        let mut dirty = clean.clone();
+        dirty.index = 1;
+        dirty.changed = 1;
+
+        for state in [clean, dirty] {
+            assert!(targets.contains(&state.index));
+            a.on_probe(generation, state);
+        }
+
+        assert_eq!(a.take_auto_update_requested(), Some(vec![0]));
+    }
+
+    #[test]
+    fn a_plain_reprobe_never_triggers_auto_update() {
+        let mut a = app(&["clean-behind"]);
+        a.auto_update = true; // set directly: never went through the poll it needs
+
+        let generation = a.begin_probe(&[0]);
+        a.on_probe(
+            generation,
+            RepoState {
+                index: 0,
+                branch: Some("main".into()),
+                upstream: Some("origin/main".into()),
+                ahead: 0,
+                behind: 2,
+                changed: 0,
+                present: true,
+                timed_out: false,
+            },
+        );
+        assert!(
+            a.take_auto_update_requested().is_none(),
+            "only a poll cycle's own results should ever trigger auto-update"
+        );
+    }
+
+    #[test]
+    fn an_auto_update_result_summarises_once_every_target_has_reported() {
+        let mut a = app(&["ok", "fails"]);
+        a.auto_update_total = 2;
+        a.on_auto_update_result(AutoUpdateResult {
+            index: 0,
+            outcome: AutoUpdateOutcome::FastForwarded,
+        });
+        assert!(a.status_message.is_none(), "not done yet");
+
+        a.on_auto_update_result(AutoUpdateResult {
+            index: 1,
+            outcome: AutoUpdateOutcome::Failed("not fast-forward possible".into()),
+        });
+        assert_eq!(
+            a.status_message.as_deref(),
+            Some("auto-update: fast-forwarded 1, 1 left alone")
+        );
+        assert_eq!(a.take_auto_update_reprobe_targets(), Some(vec![0]));
+    }
+
+    #[test]
+    fn poll_status_text_is_none_until_the_poll_is_on() {
+        let a = app(&["foo"]);
+        assert_eq!(a.poll_status_text(), None);
+    }
+
+    #[test]
+    fn poll_status_text_shows_auto_only_once_auto_update_is_on_too() {
+        let mut a = app(&["foo"]);
+        a.poll_enabled = true;
+        a.poll_interval = Duration::from_secs(300);
+        assert_eq!(a.poll_status_text().as_deref(), Some("poll 5m"));
+
+        a.auto_update = true;
+        assert_eq!(a.poll_status_text().as_deref(), Some("poll 5m · auto"));
+    }
+
+    #[test]
+    fn a_restored_session_applies_the_filter_and_selection_dropping_unknown_names() {
+        let mut a = app(&["bill-api", "menu-api", "mr-yum"]);
+        let session = Session {
+            filter: "api".into(),
+            selected: vec!["bill-api".into(), "menu-api".into(), "gone".into()],
+            ..Default::default()
+        };
+        a.restore_session(&session);
+
+        assert_eq!(a.filter, "api");
+        assert_eq!(
+            a.selected,
+            BTreeSet::from([0, 1]),
+            "a name the repo list doesn't have is dropped silently"
+        );
+    }
+
+    #[test]
+    fn a_restored_session_applies_the_cursor_and_poll_settings() {
+        let mut a = app(&["bill-api", "menu-api", "mr-yum"]);
+        let session = Session {
+            cursor: Some("mr-yum".into()),
+            poll_interval: Some(Duration::from_secs(120)),
+            auto_update: true,
+            ..Default::default()
+        };
+        a.restore_session(&session);
+
+        assert_eq!(a.cursor, 2);
+        assert!(a.poll_enabled);
+        assert_eq!(a.poll_interval, Duration::from_secs(120));
+        assert!(a.auto_update);
+    }
+
+    #[test]
+    fn a_restored_cursor_not_visible_under_the_restored_filter_falls_back_to_the_first_visible_row()
+    {
+        let mut a = app(&["bill-api", "menu-api", "mr-yum"]);
+        let session = Session {
+            filter: "api".into(),
+            cursor: Some("mr-yum".into()), // doesn't match "api"
+            ..Default::default()
+        };
+        a.restore_session(&session);
+        assert_eq!(
+            a.cursor, 0,
+            "the same rule move_cursor already applies while filtering live"
+        );
+    }
+
+    #[test]
+    fn a_restored_session_never_turns_on_auto_update_without_the_poll() {
+        let mut a = app(&["foo"]);
+        let session = Session {
+            auto_update: true, // poll_interval left None: the poll was off
+            ..Default::default()
+        };
+        a.restore_session(&session);
+        assert!(!a.poll_enabled);
+        assert!(!a.auto_update);
     }
 }

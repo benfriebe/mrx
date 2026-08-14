@@ -6,8 +6,10 @@
 pub mod actions;
 pub mod detail;
 pub mod keys;
+pub mod poll;
 pub mod probe;
 pub mod render;
+pub mod session;
 pub mod state;
 
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event};
@@ -79,16 +81,37 @@ fn spawn_action_run(
     )
 }
 
-/// Open the resident app on `repos` and block until the user quits.
-pub async fn run(
-    repos: Vec<Repo>,
-    set_label: String,
-    jobs: usize,
-    defaults: BTreeMap<String, String>,
-    config_path: PathBuf,
-    force: bool,
-    dir_override: Option<PathBuf>,
-) -> io::Result<()> {
+/// Everything [`run`] needs to open the resident app, bundled to satisfy
+/// clippy's argument-count limit (the same shape `widgets::RepoRow` used
+/// for this in phase 0).
+pub struct RunOptions {
+    pub repos: Vec<Repo>,
+    pub set_label: String,
+    pub jobs: usize,
+    pub defaults: BTreeMap<String, String>,
+    pub config_path: PathBuf,
+    pub force: bool,
+    pub dir_override: Option<PathBuf>,
+    /// Whatever `session::load()` returned before the repo list was even
+    /// resolved (`main.rs` needed it earlier, to decide which set to open
+    /// on the stored one's own terms); applied once, after `App::new`, to
+    /// restore the filter, selection, cursor, and poll settings.
+    pub session: session::Session,
+}
+
+/// Open the resident app and block until the user quits.
+pub async fn run(options: RunOptions) -> io::Result<()> {
+    let RunOptions {
+        repos,
+        set_label,
+        jobs,
+        defaults,
+        config_path,
+        force,
+        dir_override,
+        session,
+    } = options;
+
     super::install_panic_hook();
     let mut terminal = super::setup_terminal()?;
     apply_mouse_capture(true)?;
@@ -102,10 +125,21 @@ pub async fn run(
         force,
         dir_override,
     );
+    app.restore_session(&session);
     let mut input = input_thread();
     let mut ticker = tokio::time::interval(Duration::from_millis(200));
+    // The interval arm always ticks, whether or not the poll is on
+    // (section 05); `on_poll_due` is what actually decides. Delayed a full
+    // interval past startup rather than firing immediately, so a restored
+    // "poll on" session doesn't race the very first, unconditional probe
+    // below.
+    let mut poll_ticker = tokio::time::interval_at(
+        tokio::time::Instant::now() + app.poll_interval,
+        app.poll_interval,
+    );
     let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
     let (run_tx, mut run_rx) = mpsc::unbounded_channel::<RunEvent>();
+    let (auto_tx, mut auto_rx) = mpsc::unbounded_channel::<poll::AutoUpdateResult>();
 
     // The first frame paints immediately with placeholders; this probe's
     // results fill the table in as they arrive.
@@ -126,7 +160,11 @@ pub async fn run(
     loop {
         tokio::select! {
             Some(ev) = input.recv() => {
-                if keys::on_input(&mut app, ev) {
+                let should_quit = keys::on_input(&mut app, ev);
+                // Best-effort: a session write failing (a full disk, a
+                // read-only home) shouldn't take the app down over it.
+                let _ = session::save(&app);
+                if should_quit {
                     break;
                 }
                 if app.take_full_reprobe_request() {
@@ -151,6 +189,9 @@ pub async fn run(
             }
             Some(probed) = probe_rx.recv() => {
                 app.on_probe(probed.generation, probed.state);
+                if let Some(targets) = app.take_auto_update_requested() {
+                    poll::spawn_auto_update(&app.repos, targets, app.jobs, auto_tx.clone());
+                }
             }
             Some(evt) = run_rx.recv() => {
                 app.on_task(evt.run_id, evt.kind);
@@ -158,8 +199,20 @@ pub async fn run(
                     spawn_probe_over(&mut app, &probe_tx, targets);
                 }
             }
+            Some(result) = auto_rx.recv() => {
+                app.on_auto_update_result(result);
+                if let Some(targets) = app.take_auto_update_reprobe_targets() {
+                    spawn_probe_over(&mut app, &probe_tx, targets);
+                }
+            }
             _ = ticker.tick() => {
                 app.tick = app.tick.wrapping_add(1);
+            }
+            _ = poll_ticker.tick() => {
+                app.on_poll_due();
+                if let Some(targets) = app.take_poll_requested() {
+                    poll::spawn_poll_generation(&app.repos, targets, app.jobs, app.probe_generation, probe_tx.clone());
+                }
             }
         }
         let completed = terminal.draw(|frame| render::draw(frame, &app))?;

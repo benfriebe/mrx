@@ -184,31 +184,13 @@ fn render_detail_line(line: &detail::DetailLine) -> Line<'static> {
 
 fn header_line(app: &App, width: usize) -> Line<'static> {
     let title = format!("  mrx · {}", app.set_label);
-    let right = match run_status_text(app) {
-        Some(r) => format!("{}  ", r),
-        None => format!(
-            "{} repos · {} selected  ",
-            app.repos.len(),
-            app.effective_selection().len()
-        ),
-    };
+    let right = format!("{}  ", app.header_right_text());
     let gap = width.saturating_sub(display_width(&title) + display_width(&right));
     Line::from(vec![
         Span::styled(title, Style::default().bold()),
         Span::raw(" ".repeat(gap)),
         Span::styled(right, Style::default().fg(Color::DarkGray)),
     ])
-}
-
-/// The live run's summary for the header: action name, done/total, and a
-/// failure count once there's one to show.
-fn run_status_text(app: &App) -> Option<String> {
-    let action = app.run_action.as_ref()?;
-    let mut text = format!("{} {}/{}", action, app.run_completed, app.run_total);
-    if app.run_failed > 0 {
-        text.push_str(&format!(" · {} failed", app.run_failed));
-    }
-    Some(text)
 }
 
 fn separator(width: usize) -> Line<'static> {
@@ -363,7 +345,8 @@ fn status_line(app: &App, sidebar: bool) -> Line<'static> {
     } else {
         let mut keys = String::from(
             "  j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter  \
-             u update  s/f/d status/fetch/diff  : action  r reprobe  tab set  ^r reload  m mouse",
+             u update  s/f/d status/fetch/diff  : action  r reprobe  F poll  ^a auto  \
+             tab set  ^r reload  m mouse",
         );
         // Esc only cancels here: while a run is live and the plain list is
         // showing, not once it's opened the detail view (there, Esc is back).

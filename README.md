@@ -100,7 +100,8 @@ selection without leaving the screen.
     ●  crew-db-schema main   2 modified       git pull
  ──────────────────────────────────────────────────────────────────────────
   j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter
-  u update  s/f/d status/fetch/diff  : action  r reprobe  tab set  ^r reload  m mouse  q quit
+  u update  s/f/d status/fetch/diff  : action  r reprobe  F poll  ^a auto
+  tab set  ^r reload  m mouse  q quit
 ```
 
 `j`/`k` (or the arrow keys) move the cursor, `g`/`G` jump to the first or last row.
@@ -149,6 +150,27 @@ has no kill), and the status line says exactly that: `cancelled, 2 queued skippe
 still finishing`. `q`/`Ctrl-C` quit immediately with nothing running; with a run
 live they ask first, since losing sight of an in-flight action isn't something to
 do by reflex.
+
+The ahead/behind counts only ever reflect the last fetch, so a repo that's ↓3
+behind reads ↓? until something updates the remote-tracking ref. `F` toggles a
+freshness poll, `git fetch --quiet` across the set on an interval (5 minutes by
+default), suspended rather than queued while a run is live; `Ctrl-A` layers a
+narrow, opt-in auto-update on top, fast-forwarding whatever a poll finds behind
+on a repo that's clean, not ahead, and tracking an upstream, and simply leaving
+everything else alone. Both are off by default and both show in the header the
+moment either is on (`poll 5m`, `poll 5m · auto`), since a mode that touches
+working trees on a timer has no business being invisible. `Ctrl-A` refuses to
+turn on while the poll itself is off, since it has nothing to act on without one.
+
+The set, filter, selection, cursor, and both poll settings are written to
+`$XDG_STATE_HOME/mrx/ui.json` (`~/.local/state/mrx/ui.json` by default) as they
+change and restored the next time `mrx ui` opens, so reopening puts you back
+where you left off; a restored filter shows in the header with its match count
+(`4 of 42 repos · filter`) rather than only in the status bar, so it doesn't
+look like the config broke. `-s` on the command line always wins over whichever
+set was stored, and a name the file remembers that the set no longer has (a
+repo, or the set itself) is dropped silently rather than treated as an error.
+Deleting the file is a supported way to reset back to defaults.
 
 Needs a real terminal: `mrx ui` with stdout piped, or combined with `--plain`, exits 2
 with a pointer at `mrx status` or another non-interactive subcommand instead.
