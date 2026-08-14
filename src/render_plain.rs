@@ -42,9 +42,13 @@ pub async fn run(
                 stdout,
                 stderr,
                 exit_code,
+                failed_step,
             } => {
                 done += 1;
-                let summary = summarize::summarize(action, &stdout, &stderr, exit_code);
+                let summary = summarize::with_step(
+                    failed_step.as_deref(),
+                    summarize::summarize(action, &stdout, &stderr, exit_code),
+                );
                 if exit_code == 0 {
                     println!("{:width$} | {}", repos[index].name, summary);
                 } else {

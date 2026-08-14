@@ -168,9 +168,23 @@ reset  = false
 rather than interpolated into the command string, so a value can never break out of
 the shell word it sits in.
 
-Steps run in order and stop at the first non-zero exit. A repo that isn't on disk
-yet is cloned and *then* run through its `update` body, so a fresh clone gets the
-same setup as everything else.
+### What counts as a step
+
+mrx builds an action out of up to three steps, and stops at the first that exits
+non-zero: the clone (if the repo isn't on disk yet), the `<action>` body, then the
+`post_<action>` body. A failure names the step it came from, so a row reads
+`post_update: npm error Missing script: "build"` rather than leaving you to guess.
+
+Everything *inside* one body is a single `sh -c` invocation, and ordinary shell rules
+apply. `update = git pull; npm ci` runs `npm ci` even when the pull failed, and
+reports only `npm ci`'s exit code. Use `&&` between commands you want to stop at the
+first failure, or split them across `update` and `post_update` to see which one broke:
+
+```ini
+[DEFAULT]
+update      = git pull --rebase && npm ci
+post_update = npm run build
+```
 
 ## Repo sets
 

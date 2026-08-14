@@ -30,6 +30,22 @@ pub enum Operation {
     NotCheckedOut,
 }
 
+impl Operation {
+    /// What to call this step in a summary. Config-defined steps carry the key they
+    /// came from, so a `post_update` failure reads back as `post_update`.
+    pub fn label(&self) -> String {
+        match self {
+            Operation::Git { args, .. } => format!("git {}", args.join(" ")),
+            Operation::Clone { .. } => "clone".into(),
+            Operation::Shell { action, .. } => action.clone(),
+            // Flattened or resolved before anything runs, as in `run_step`.
+            Operation::Sequence(_) | Operation::Skip { .. } | Operation::NotCheckedOut => {
+                String::new()
+            }
+        }
+    }
+}
+
 /// Look up a shell body for `action` in the cascade: repo section -> [DEFAULT].
 fn resolve_body<'a>(
     repo: &'a Repo,
@@ -497,6 +513,21 @@ mod tests {
                 );
             }
             other => panic!("expected Shell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_step_is_labelled_by_where_it_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo_with_keys(dir.path().to_path_buf(), &[]);
+        let defs = defaults(&[("post_update", "npm run build")]);
+
+        match plan(&Command::Update, &repo, &defs) {
+            Operation::Sequence(steps) => {
+                assert_eq!(steps[0].label(), "git pull");
+                assert_eq!(steps[1].label(), "post_update");
+            }
+            other => panic!("expected Sequence, got {other:?}"),
         }
     }
 

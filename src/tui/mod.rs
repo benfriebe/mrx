@@ -146,8 +146,12 @@ fn apply_event(state: &mut AppState, event: &TaskEvent, action: &str) {
             stdout,
             stderr,
             exit_code,
+            failed_step,
         } => {
-            let summary = summarize::summarize(action, stdout, stderr, *exit_code);
+            let summary = summarize::with_step(
+                failed_step.as_deref(),
+                summarize::summarize(action, stdout, stderr, *exit_code),
+            );
             state.statuses[*index] = RepoStatus::Done {
                 summary,
                 stdout: stdout.clone(),
