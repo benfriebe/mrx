@@ -181,8 +181,8 @@ fn working_tree_text(state: &RepoState) -> String {
 /// count compares against the local remote-tracking ref, so a stale one
 /// would otherwise read as "up to date" instead of "unknown", and a repo
 /// whose own fetch failed (offline, VPN, auth) must not borrow another
-/// repo's success (section 02, and finding A4: "up to date" and "not asked
-/// recently" must not render identically).
+/// repo's success (section 02: "up to date" and "not asked recently" must
+/// not render identically).
 pub fn dirty_text(state: &RepoState, repo_has_fetched: bool) -> String {
     if state.timed_out {
         return "timed out".into();

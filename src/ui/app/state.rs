@@ -49,7 +49,7 @@ pub struct App {
     /// here, its behind column reads unknown rather than claiming to be
     /// current; a repo whose own fetch keeps failing (offline, VPN, auth)
     /// must not borrow another repo's success just because they polled in
-    /// the same cycle (finding A4). Sticky per repo, the same way the old
+    /// the same cycle. Sticky per repo, the same way the old
     /// session-wide flag was sticky: a later fetch-less reprobe doesn't
     /// downgrade a repo that has genuinely fetched before.
     pub fetched_repos: BTreeSet<usize>,
@@ -185,8 +185,7 @@ pub struct App {
     /// Bumped every time an auto-update cycle actually starts (mirrors
     /// `probe_generation`); a result tagged with a different generation
     /// belongs to a cycle that has since completed or been superseded and
-    /// is dropped rather than corrupting the current cycle's counters
-    /// (finding A3).
+    /// is dropped rather than corrupting the current cycle's counters.
     auto_update_generation: u64,
     auto_update_total: usize,
     auto_update_done: usize,
@@ -494,7 +493,7 @@ impl App {
     /// guard [`reload_config`](Self::reload_config) uses, since switching
     /// the repo list out from under a live run's indices would attribute
     /// its results to the wrong rows. Also blocked while auto-update has
-    /// merges in flight, for the same reason (finding A2).
+    /// merges in flight, for the same reason.
     pub fn open_set_picker(&mut self) {
         if self.run_action.is_some() {
             self.status_message = Some("can't switch sets while a run is live".into());
@@ -542,8 +541,8 @@ impl App {
     /// a full re-probe (section 03, "switching reloads the config and
     /// restarts the probe").
     ///
-    /// Uses [`config::try_load`] rather than `config::load` (finding B1):
-    /// this runs with raw mode, the alternate screen, and mouse capture all
+    /// Uses [`config::try_load`] rather than `config::load`: this runs with
+    /// raw mode, the alternate screen, and mouse capture all
     /// active, so a `std::process::exit` here would skip teardown and the
     /// panic hook and leave the terminal wrecked. An unreadable or
     /// unparseable config keeps the set currently open and reports the
@@ -573,8 +572,8 @@ impl App {
     /// [`open_set_picker`](Self::open_set_picker) is.
     ///
     /// Uses [`config::try_load`] rather than `config::load` for the same
-    /// reason [`confirm_set_picker`](Self::confirm_set_picker) does
-    /// (finding B1): this runs with the terminal in raw mode, so exiting the
+    /// reason [`confirm_set_picker`](Self::confirm_set_picker) does: this runs
+    /// with the terminal in raw mode, so exiting the
     /// process here bypasses teardown. A bad edit mid-save keeps the current
     /// config loaded and reports the error rather than killing the app.
     pub fn reload_config(&mut self) {
@@ -787,7 +786,7 @@ impl App {
         self.probing.remove(&state.index);
         // Sticky per repo, and set as soon as this one result lands rather
         // than waiting on the rest of the cycle: a repo whose own fetch
-        // failed must not borrow another repo's success (finding A4).
+        // failed must not borrow another repo's success.
         if state.fetched {
             self.fetched_repos.insert(state.index);
         }
@@ -867,14 +866,14 @@ impl App {
         }
         // Refuse to start a second cycle on top of one still in flight: a
         // late result from the first would otherwise land against the
-        // second cycle's counters (finding A3).
+        // second cycle's counters.
         if self.auto_update_in_flight() {
             return;
         }
         // `s.fetched` restricts eligibility to repos whose fetch actually
         // succeeded in this cycle; a repo whose fetch failed keeps whatever
         // stale ahead/behind it already had and must not be trusted for a
-        // merge on the strength of it (finding A4).
+        // merge on the strength of it.
         let targets: Vec<usize> = self
             .probes
             .iter()
@@ -897,7 +896,7 @@ impl App {
 
     /// The generation the current in-flight auto-update cycle was tagged
     /// with; consumed by the run loop to tag the `spawn_auto_update` call it
-    /// is about to make (finding A3).
+    /// is about to make.
     pub fn auto_update_generation(&self) -> u64 {
         self.auto_update_generation
     }
@@ -910,7 +909,7 @@ impl App {
     }
 
     /// Apply one repo's outcome from an auto-update pass, unless it belongs
-    /// to a cycle a later one has since superseded (finding A3: a late
+    /// to a cycle a later one has since superseded (a late
     /// result from an old cycle must not corrupt a new one's counters).
     /// Once every targeted repo has reported in, leaves an honest one-line
     /// summary in the status bar: repos a fast-forward could not touch are
@@ -934,8 +933,7 @@ impl App {
         }
         // Guarded rather than a plain `-`: an overlapping cycle that still
         // slipped through the generation check would otherwise underflow
-        // here, and a panic in this path takes the terminal down with it
-        // (finding A3).
+        // here, and a panic in this path takes the terminal down with it.
         let left_alone = self.auto_update_total.saturating_sub(self.auto_update_ok);
         self.status_message = Some(if left_alone == 0 {
             format!("auto-update: fast-forwarded {}", self.auto_update_ok)
@@ -1083,7 +1081,7 @@ impl App {
 
     /// Open the detail view for the cursor row. A no-op with a status
     /// message when the filter hides every row: the cursor can still index
-    /// a repo the table isn't showing (finding A1).
+    /// a repo the table isn't showing.
     pub fn open_detail(&mut self) {
         if self.visible_indices().is_empty() {
             self.status_message = Some(self.no_visible_rows_message());
@@ -1160,7 +1158,7 @@ impl App {
     /// `o`: open `$EDITOR` on the cursor row's repo, from either the plain
     /// list or the detail view (section 03, "o is worth including early").
     /// A no-op with a status message when the filter hides every row, for
-    /// the same reason [`open_detail`](Self::open_detail) is (finding A1).
+    /// the same reason [`open_detail`](Self::open_detail) is.
     pub fn request_open_editor(&mut self) {
         if self.visible_indices().is_empty() {
             self.status_message = Some(self.no_visible_rows_message());
@@ -1247,7 +1245,7 @@ impl App {
     }
 
     /// Status text for an action that would otherwise act on a repo the
-    /// filter currently hides (finding A1): "no repos" when the set itself
+    /// filter currently hides: "no repos" when the set itself
     /// is empty, "no repos match the filter" when a filter is why nothing
     /// is visible.
     fn no_visible_rows_message(&self) -> String {
@@ -1308,7 +1306,7 @@ impl App {
     /// selected before. A no-op with a status message, leaving the existing
     /// selection untouched, when the filter hides every row: replacing a
     /// real selection with an empty one just because nothing currently
-    /// matches would be a silent selection wipe (finding A1).
+    /// matches would be a silent selection wipe.
     pub fn select_all_visible(&mut self) {
         let visible = self.visible_indices();
         if visible.is_empty() {
@@ -1324,7 +1322,7 @@ impl App {
 
     /// Flip the selection of every visible row; a row hidden by the filter
     /// keeps whatever selection state it already had. A no-op with a status
-    /// message when the filter hides every row (finding A1).
+    /// message when the filter hides every row.
     pub fn invert_selection(&mut self) {
         let visible = self.visible_indices();
         if visible.is_empty() {
@@ -1452,9 +1450,9 @@ mod tests {
         assert_eq!(a.effective_selection(), vec![0]);
     }
 
-    /// Finding A1: a filter that matches nothing leaves no row on screen, so
-    /// the cursor fallback must not act on whatever repo the cursor still
-    /// happens to index from before the filter narrowed to zero.
+    /// A filter that matches nothing leaves no row on screen, so the cursor
+    /// fallback must not act on whatever repo the cursor still happens to
+    /// index from before the filter narrowed to zero.
     #[test]
     fn a_zero_match_filter_makes_the_cursor_fallback_empty() {
         let mut a = app(&["foo", "bar"]);
@@ -1465,7 +1463,7 @@ mod tests {
 
     /// An explicit selection is a deliberate choice, unlike the cursor
     /// fallback, so it still runs even when a filter typed afterwards hides
-    /// every member of it (finding A1's "decide deliberately" note): this
+    /// every member of it (the plan's own "decide deliberately" note): this
     /// is the same invariant `selection_survives_a_filter_change` already
     /// covers, just followed through to what a run actually targets.
     #[test]
@@ -2059,7 +2057,7 @@ mod tests {
         assert!(a.status_message.is_some());
     }
 
-    /// Finding B1: `reload_config` used to call `config::load`, which calls
+    /// `reload_config` used to call `config::load`, which calls
     /// `std::process::exit(1)` on a bad file. `Ctrl-R` runs with raw mode,
     /// the alternate screen, and mouse capture all active, so that exit
     /// bypassed teardown and the panic hook and left the terminal wrecked.
@@ -2094,7 +2092,7 @@ mod tests {
         );
     }
 
-    /// Same as above but through the set-picker path (finding B1).
+    /// Same as above but through the set-picker path.
     #[test]
     fn confirm_set_picker_keeps_the_current_config_when_the_target_does_not_parse() {
         let dir = tempfile::tempdir().unwrap();
@@ -2334,7 +2332,7 @@ mod tests {
     /// A repo's own fetch can fail (offline, VPN, auth) even while other
     /// repos in the same poll cycle succeed; its behind column must read
     /// unknown rather than borrowing the cycle's overall completion
-    /// (finding A4). Replaces the old test of the same name against a
+    /// Replaces the old test of the same name against a
     /// session-wide flag, which this per-repo behaviour supersedes.
     #[test]
     fn a_repos_behind_column_is_known_only_once_its_own_fetch_has_succeeded() {
@@ -2481,9 +2479,9 @@ mod tests {
         );
     }
 
-    /// Finding A3: a result tagged with an older auto-update generation
-    /// belongs to a cycle the counters have already moved past and must be
-    /// dropped, the same way a stale probe result is.
+    /// A result tagged with an older auto-update generation belongs to a
+    /// cycle the counters have already moved past and must be dropped, the
+    /// same way a stale probe result is.
     #[test]
     fn an_auto_update_result_from_a_superseded_generation_is_dropped() {
         let mut a = app(&["foo"]);
@@ -2503,9 +2501,9 @@ mod tests {
         assert!(a.status_message.is_none());
     }
 
-    /// Finding A3: a poll cycle must not start a second auto-update pass
-    /// while one is still in flight, since a late result from the first
-    /// would otherwise land against the second cycle's counters.
+    /// A poll cycle must not start a second auto-update pass while one is
+    /// still in flight, since a late result from the first would otherwise
+    /// land against the second cycle's counters.
     #[test]
     fn a_poll_cycle_refuses_to_start_a_second_auto_update_pass_while_one_is_in_flight() {
         let mut a = app(&["foo"]);
@@ -2529,9 +2527,9 @@ mod tests {
         );
     }
 
-    /// Finding A3: the completion arithmetic must not panic even if a stale
-    /// result slips past the generation check with `ok` already ahead of
-    /// `total`, since a panic in this path takes the terminal down with it.
+    /// The completion arithmetic must not panic even if a stale result
+    /// slips past the generation check with `ok` already ahead of `total`,
+    /// since a panic in this path takes the terminal down with it.
     #[test]
     fn on_auto_update_result_does_not_panic_when_ok_would_exceed_total() {
         let mut a = app(&["foo"]);
@@ -2550,9 +2548,9 @@ mod tests {
         // `total - ok` would do here.
     }
 
-    /// Finding A2: switching sets while auto-update has merges in flight
-    /// would hand a later `AutoUpdateResult` an index into a different repo
-    /// list, the same hazard a live run guards against.
+    /// Switching sets while auto-update has merges in flight would hand a
+    /// later `AutoUpdateResult` an index into a different repo list, the
+    /// same hazard a live run guards against.
     #[test]
     fn the_set_picker_is_blocked_while_auto_update_is_in_flight() {
         let mut a = app(&["foo"]);
@@ -2562,7 +2560,7 @@ mod tests {
         assert!(a.status_message.is_some());
     }
 
-    /// Finding A2: same hazard, same guard, for a config reload.
+    /// Same hazard, same guard, for a config reload.
     #[test]
     fn reload_config_is_a_no_op_while_auto_update_is_in_flight() {
         let dir = tempfile::tempdir().unwrap();

@@ -54,9 +54,9 @@ pub fn can_fast_forward(s: &RepoState) -> bool {
 /// Fetch, then read state back exactly the way a plain probe would; a fetch
 /// that fails (offline, no remote, auth) leaves refs stale but must not stop
 /// the status read that follows, since a stale local view is still worth
-/// showing. The result carries whether the fetch actually succeeded
-/// (finding A4), so a repo whose own fetch failed doesn't inherit another
-/// repo's freshness just because they polled in the same cycle.
+/// showing. The result carries whether the fetch actually succeeded, so a
+/// repo whose own fetch failed doesn't inherit another repo's freshness
+/// just because they polled in the same cycle.
 async fn poll_one(index: usize, path: &Path) -> RepoState {
     let fetched = if path.is_dir() {
         matches!(
@@ -129,8 +129,8 @@ pub fn spawn_poll_generation(
 
 /// One repo's outcome from an auto-update pass, tagged with the cycle it
 /// belongs to so a result arriving after a later cycle has started gets
-/// dropped rather than corrupting that cycle's counters (finding A3, the
-/// same generation scheme the probe already uses).
+/// dropped rather than corrupting that cycle's counters, the same
+/// generation scheme the probe already uses.
 pub struct AutoUpdateResult {
     pub index: usize,
     pub generation: u64,
@@ -147,10 +147,10 @@ pub enum AutoUpdateOutcome {
 /// Callers are expected to have already filtered `which` through
 /// [`can_fast_forward`], but time passes between that filter running and a
 /// given repo's turn at the semaphore, and `merge --ff-only` succeeds even
-/// on a dirty tree when the incoming change doesn't conflict with it
-/// (finding A2). So each task re-probes its repo immediately before
-/// merging and skips the merge if it no longer passes `can_fast_forward`,
-/// rather than trusting the snapshot the poll took.
+/// on a dirty tree when the incoming change doesn't conflict with it. So
+/// each task re-probes its repo immediately before merging and skips the
+/// merge if it no longer passes `can_fast_forward`, rather than trusting
+/// the snapshot the poll took.
 pub fn spawn_auto_update(
     repos: &[Repo],
     which: Vec<usize>,
@@ -307,7 +307,7 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// Finding A2: eligibility for auto-update is decided from a probe
+    /// Eligibility for auto-update is decided from a probe
     /// snapshot, but `git merge --ff-only` succeeds on a dirty tree whenever
     /// the incoming commit doesn't touch the dirtied file, so trusting that
     /// snapshot at merge time can fast-forward a repo the user has since

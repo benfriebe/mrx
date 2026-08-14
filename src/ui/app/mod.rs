@@ -38,15 +38,14 @@ const GATE_POLL_INTERVAL: Duration = Duration::from_millis(30);
 /// `$EDITOR` owns the terminal, so mrx and the editor are never both
 /// blocked on the same tty at once (`o`, section 03), and lets it stop the
 /// thread for good on the way out so it isn't still competing for
-/// keystrokes with the shell mrx just handed the tty back to (finding B3).
+/// keystrokes with the shell mrx just handed the tty back to.
 ///
 /// `crossterm::read()` itself can't be interrupted once it's blocked in a
 /// syscall, so the thread never calls it unless the gate is open. But
 /// merely closing the gate isn't enough on its own: the thread could have
 /// already passed its own open check and be mid `poll`/`read` when the gate
 /// closes, and nothing stops it from sending that stray event before it
-/// next notices (finding B4, "stronger atomic ordering does not close
-/// this"). `park` closes the gate and then blocks until the thread itself
+/// next notices. `park` closes the gate and then blocks until the thread itself
 /// reports, via `parked`, that it has actually reached the paused branch
 /// with no read in flight, turning "probably stopped by now" into an
 /// explicit handshake.
@@ -112,7 +111,7 @@ impl InputGate {
 /// to stop (on quit) instead of parking in a read that could otherwise race
 /// a child process, or the just-restored shell, for the same keystrokes.
 /// The join handle is how [`run`] waits for the thread to actually stop
-/// before handing the tty back (finding B3).
+/// before handing the tty back.
 fn input_thread() -> (
     mpsc::UnboundedReceiver<Event>,
     InputGate,
@@ -178,10 +177,10 @@ enum EditorOutcome {
 ///
 /// `gate.park()` blocks until the input thread confirms it has actually
 /// stopped touching stdin before this goes on to tear down the terminal and
-/// launch the editor (finding B4): closing the gate and immediately
-/// proceeding isn't enough, since the thread can already be mid `poll` or
-/// `read` when the gate closes, and a keystroke meant for the editor would
-/// otherwise be won by mrx's own reader instead.
+/// launch the editor: closing the gate and immediately proceeding isn't
+/// enough, since the thread can already be mid `poll` or `read` when the
+/// gate closes, and a keystroke meant for the editor would otherwise be won
+/// by mrx's own reader instead.
 ///
 /// An `Err` return means re-entering raw mode or the alternate screen
 /// failed and the real terminal is left in whatever state that partial
@@ -291,7 +290,7 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
     // the run loop below) is a way to return early with raw mode and the
     // alternate screen still active; `_terminal_guard`'s `Drop` is what
     // restores the terminal on any of those paths, not just the explicit
-    // teardown at the bottom of this function (finding B2).
+    // teardown at the bottom of this function.
     let _terminal_guard = super::TerminalGuard;
     apply_mouse_capture(true)?;
 
@@ -345,7 +344,7 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
         tokio::select! {
             ev = input.recv() => {
                 // `None` means the input thread's own read failed and it
-                // ended (finding B3): pattern-matching on `Some(ev)` in the
+                // ended: pattern-matching on `Some(ev)` in the
                 // select arm above would just leave this arm permanently
                 // disabled instead, since the receiver stays instantly
                 // ready-with-None from here on, and the app would spin
@@ -439,7 +438,7 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
     // so before handing the tty back: otherwise it's still polling stdin
     // for up to GATE_POLL_INTERVAL after this returns, competing with the
     // shell the terminal is about to be restored to for the first key the
-    // user types (finding B3).
+    // user types.
     input_gate.stop();
     let _ = input_handle.join();
 
@@ -486,16 +485,16 @@ mod tests {
     #[test]
     fn stop_is_observed_by_a_clone() {
         // The input thread checks its own clone's `should_stop`; the run
-        // loop signals the original on the way out (finding B3).
+        // loop signals the original on the way out.
         let gate = InputGate::new();
         let clone = gate.clone();
         gate.stop();
         assert!(clone.should_stop());
     }
 
-    /// Finding B4: closing the gate used to be treated as enough on its
-    /// own. `park()` must actually wait for the reader's own acknowledgment
-    /// rather than assuming a closed gate means the reader has stopped.
+    /// Closing the gate alone isn't enough: `park()` must actually wait for
+    /// the reader's own acknowledgment rather than assuming a closed gate
+    /// means the reader has stopped.
     #[test]
     fn park_blocks_until_the_reader_marks_itself_parked() {
         let gate = InputGate::new();
@@ -518,8 +517,8 @@ mod tests {
         simulated_reader.join().unwrap();
     }
 
-    /// Finding B3, the other half: `run`'s select arm used to read
-    /// `Some(ev) = input.recv() =>`, which just disables that arm forever
+    /// The other half of the input-channel-close fix: `run`'s select arm
+    /// used to read `Some(ev) = input.recv() =>`, which just disables that arm forever
     /// once the channel closes (the input thread's read failed and it
     /// ended) rather than ending the loop, so the app would spin on ticks
     /// with no way left to quit. This mirrors that arm's exact shape,

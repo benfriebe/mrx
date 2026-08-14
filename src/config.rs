@@ -47,8 +47,8 @@ pub fn expand_tilde(s: &str) -> PathBuf {
 ///
 /// A thin wrapper over [`try_load`] for the one-shot CLI paths, where there is
 /// no terminal state to protect and exiting with a message is the right
-/// behaviour. The resident app calls `try_load` directly instead (finding B1):
-/// calling this from inside raw mode bypasses teardown and the panic hook,
+/// behaviour. The resident app calls `try_load` directly instead: calling
+/// this from inside raw mode bypasses teardown and the panic hook,
 /// leaving the user's terminal wrecked.
 pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
     match try_load(config_path, dir_override) {

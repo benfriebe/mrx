@@ -50,7 +50,7 @@ pub fn teardown_terminal() -> io::Result<()> {
 /// the alternate screen, and mouse capture. Without it, any `?` between
 /// entering that state and the app's own teardown at the end of `run`
 /// (including a library caller's own `ui::app::run(...).await?`) skips
-/// cleanup and leaves the terminal wrecked (finding B2). `Drop` attempts
+/// cleanup and leaves the terminal wrecked. `Drop` attempts
 /// every restoration step regardless of whether an earlier one failed, so
 /// one bad step can't skip the others; the installed panic hook remains
 /// the belt to this guard's braces for an actual panic.
