@@ -5,20 +5,34 @@
 //! straight off `App`, not a separate render-time mode.
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use super::actions::Source;
 use super::detail::{self, DetailLayout};
+use super::keymap;
 use super::state::{App, PendingRun, RunStatus};
 use crate::ui::widgets::{display_width, frame as spinner_frame, truncate};
 
 const COL_GAP: usize = 2;
 /// Width of the leading " ▸ ● " cursor and selection markers.
 const PREFIX_W: usize = 5;
-/// Header line plus its separator, above the table body in every layout
-/// that shows one (the plain list and the detail sidebar alike), so a
+/// The sidebar drops the selection marker, so its rows start " ▸ ".
+const SIDEBAR_PREFIX_W: usize = 3;
+
+const REPO_LABEL: &str = "REPO";
+const BRANCH_LABEL: &str = "BRANCH";
+/// Working-tree and upstream state, distinct from [`RESULT_LABEL`], which is
+/// what the last run reported.
+const STATE_LABEL: &str = "STATE";
+const RESULT_LABEL: &str = "RESULT";
+/// Title line, column labels, and the separator under them, above the table
+/// body in every layout that shows one (the plain list and the detail
+/// sidebar alike). Click resolution derives its row offset from this, so a
 /// click's row and the row the table actually painted never disagree.
-pub(crate) const LIST_HEADER_ROWS: usize = 2;
+pub(crate) const LIST_HEADER_ROWS: usize = 3;
+/// The detail view's own chrome: a title line and its separator. It has no
+/// column labels, so it cannot share [`LIST_HEADER_ROWS`].
+const DETAIL_HEADER_ROWS: usize = 2;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -50,6 +64,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.quit_pending {
         draw_quit_confirm(frame, area);
     }
+    if app.help_open {
+        draw_help(frame, area);
+    }
 }
 
 /// Total chrome rows above and below the table body: the header (fixed at
@@ -68,7 +85,6 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
     let mut lines: Vec<Line> = Vec::new();
 
     lines.push(header_line(app, width));
-    lines.push(separator(width));
 
     let visible = app.visible_indices();
     let lh = list_height(app, area.height);
@@ -78,12 +94,27 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
 
     if sidebar {
         let (name_col, state_col) = sidebar_column_widths(width.saturating_sub(PREFIX_W));
+        lines.push(column_label_line(
+            SIDEBAR_PREFIX_W,
+            &[(REPO_LABEL, name_col), (STATE_LABEL, state_col)],
+        ));
+        lines.push(separator(width));
         for &idx in &visible[start..end] {
             lines.push(sidebar_repo_line(app, idx, name_col, state_col));
         }
     } else {
         let (name_col, branch_col, state_col, result_col) =
             column_widths(app, width.saturating_sub(PREFIX_W));
+        lines.push(column_label_line(
+            PREFIX_W,
+            &[
+                (REPO_LABEL, name_col),
+                (BRANCH_LABEL, branch_col),
+                (STATE_LABEL, state_col),
+                (RESULT_LABEL, result_col),
+            ],
+        ));
+        lines.push(separator(width));
         for &idx in &visible[start..end] {
             lines.push(repo_line(
                 app, idx, name_col, branch_col, state_col, result_col,
@@ -95,7 +126,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
     if app.filtering {
         lines.push(filter_line(app));
     }
-    lines.push(status_line(app, sidebar));
+    lines.push(status_line(app, sidebar, width));
 
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -118,7 +149,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(separator(width));
 
     // One row for the status line reserved below the content.
-    let content_height = (area.height as usize).saturating_sub(LIST_HEADER_ROWS + 1);
+    let content_height = (area.height as usize).saturating_sub(DETAIL_HEADER_ROWS + 1);
 
     match app.run_results.get(app.cursor).and_then(|r| r.as_ref()) {
         Some(RunStatus::Finished { steps, .. }) => {
@@ -155,7 +186,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     while lines.len() + 1 < area.height as usize {
         lines.push(Line::default());
     }
-    lines.push(status_line(app, false));
+    lines.push(status_line(app, false, width));
 
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -191,6 +222,26 @@ fn header_line(app: &App, width: usize) -> Line<'static> {
         Span::raw(" ".repeat(gap)),
         Span::styled(right, Style::default().fg(Color::DarkGray)),
     ])
+}
+
+/// Column labels laid out on the same widths and gaps the data rows use, so
+/// a label sits over its own column at every terminal width. Labels truncate
+/// with their column rather than pushing the ones after them out of line.
+fn column_label_line(prefix_w: usize, columns: &[(&str, usize)]) -> Line<'static> {
+    let style = Style::default().fg(Color::DarkGray).bold();
+    let mut spans = vec![Span::raw(" ".repeat(prefix_w))];
+    for (i, (label, col)) in columns.iter().enumerate() {
+        let text = truncate(label, *col);
+        // The last column has nothing after it to stay aligned with.
+        if i + 1 < columns.len() {
+            let padding = col.saturating_sub(display_width(&text)) + COL_GAP;
+            spans.push(Span::styled(text, style));
+            spans.push(Span::raw(" ".repeat(padding)));
+        } else {
+            spans.push(Span::styled(text, style));
+        }
+    }
+    Line::from(spans)
 }
 
 fn separator(width: usize) -> Line<'static> {
@@ -329,35 +380,177 @@ fn filter_line(app: &App) -> Line<'static> {
     ])
 }
 
-fn status_line(app: &App, sidebar: bool) -> Line<'static> {
+/// Marks bindings left off the end of a footer too narrow for all of them.
+/// Ascii, so it never costs a cell more than it looks like it does.
+const FOOTER_ELLIPSIS: &str = "…  ";
+
+fn status_line(app: &App, sidebar: bool, width: usize) -> Line<'static> {
     if let Some(msg) = &app.status_message {
         return Line::from(Span::styled(
             format!("  {msg}"),
             Style::default().fg(Color::Yellow),
         ));
     }
-    let keys = if app.filtering {
-        "  esc clear  enter keep".to_string()
-    } else if app.detail_open {
-        "  j/k move  ^d/^u scroll  o editor  y copy  esc back  ^r reload  m mouse  q quit"
-            .to_string()
-    } else if sidebar {
-        "  j/k move  esc back".to_string()
-    } else {
-        let mut keys = String::from(
-            "  j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter  \
-             u update  s/f/d status/fetch/diff  : action  r reprobe  o editor  F poll  ^a auto  \
-             tab set  ^r reload  m mouse",
-        );
-        // Esc only cancels here: while a run is live and the plain list is
-        // showing, not once it's opened the detail view (there, Esc is back).
-        if app.run_action.is_some() {
-            keys.push_str("  esc cancel");
+    keys_footer(&keymap::bindings_for(app, sidebar), width)
+}
+
+/// The current mode's keys, fitted to `width` so a narrow terminal never
+/// pushes `? help` off the right edge the way an unbounded line would.
+///
+/// Help is drawn last but budgeted first, so it is the one binding a narrow
+/// terminal never loses: everything else fills what is left, whole bindings
+/// only, with an ellipsis standing in for what did not fit.
+fn keys_footer(bindings: &[keymap::Binding], width: usize) -> Line<'static> {
+    let hinted: Vec<keymap::Binding> = bindings.iter().copied().filter(|b| b.hinted).collect();
+    let budget = width
+        .saturating_sub(LEAD_IN.len())
+        .saturating_sub(footer_width(&keymap::HELP));
+    let (fitting, dropped) = fitted(&hinted, budget);
+
+    let mut spans = vec![Span::raw(LEAD_IN)];
+    for binding in &fitting {
+        spans.extend(footer_spans(*binding));
+    }
+    // Too narrow even for the marker means too narrow to say anything but
+    // `? help`, and overflowing the line to admit that would be worse than
+    // leaving it unsaid.
+    if dropped && budget >= display_width(FOOTER_ELLIPSIS) {
+        spans.push(Span::styled(
+            FOOTER_ELLIPSIS,
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    spans.extend(footer_spans(keymap::HELP));
+    Line::from(spans)
+}
+
+/// Indent shared with every other line in the table, so the footer's first
+/// key sits under the first column rather than hard against the edge.
+const LEAD_IN: &str = "  ";
+
+/// One binding as the footer draws it: the keys, then the label dimmed
+/// behind the gap separating it from the next.
+fn footer_spans(binding: keymap::Binding) -> [Span<'static>; 2] {
+    [
+        Span::styled(binding.keys, Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!(" {}  ", binding.label),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]
+}
+
+/// The cells one binding costs in the footer, its spacing included.
+fn footer_width(binding: &keymap::Binding) -> usize {
+    display_width(binding.keys) + 1 + display_width(binding.label) + COL_GAP
+}
+
+/// The longest run of `bindings`, in order, that fits in `budget` cells, and
+/// whether anything had to be left off to get there.
+///
+/// A binding is kept whole or not at all: cutting one mid-label would read
+/// as a different, shorter key. When something does not fit, the ellipsis's
+/// own room is set aside up front, so the marker cannot crowd out the
+/// bindings it is there to explain.
+fn fitted(bindings: &[keymap::Binding], budget: usize) -> (Vec<keymap::Binding>, bool) {
+    let whole: usize = bindings.iter().map(footer_width).sum();
+    if whole <= budget {
+        return (bindings.to_vec(), false);
+    }
+
+    let budget = budget.saturating_sub(display_width(FOOTER_ELLIPSIS));
+    let mut spent = 0;
+    let mut kept = Vec::new();
+    for binding in bindings.iter().copied() {
+        let cost = footer_width(&binding);
+        if spent + cost > budget {
+            break;
         }
-        keys.push_str("  q quit");
-        keys
+        spent += cost;
+        kept.push(binding);
+    }
+    (kept, true)
+}
+
+/// The full keymap, centred over the table rather than replacing it.
+///
+/// It lists the detail view's keys alongside the list's, since the overlay
+/// is the one place both sets can be read at once: inside the detail view
+/// only its own footer is on screen.
+fn draw_help(frame: &mut Frame, area: Rect) {
+    let key_col = keymap::LIST_KEYS
+        .iter()
+        .chain(keymap::DETAIL_KEYS)
+        .map(|b| display_width(b.keys))
+        .max()
+        .unwrap_or(0);
+
+    let bound = |bindings: &[keymap::Binding]| {
+        bindings
+            .iter()
+            .map(|b| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("  {:>key_col$}  ", b.keys),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::raw(b.label),
+                ])
+            })
+            .collect::<Vec<_>>()
     };
-    Line::from(Span::styled(keys, Style::default().fg(Color::DarkGray)))
+    let heading = |text: &'static str| {
+        Line::from(Span::styled(
+            format!("  {text}"),
+            Style::default().fg(Color::DarkGray).bold(),
+        ))
+    };
+
+    let mut lines = vec![heading("IN THE LIST")];
+    lines.extend(bound(keymap::LIST_KEYS));
+    lines.push(Line::default());
+    lines.push(heading("IN THE DETAIL VIEW"));
+    lines.extend(bound(keymap::DETAIL_KEYS));
+    lines.push(Line::default());
+    lines.extend(
+        keymap::NOTES
+            .iter()
+            .map(|n| Line::from(Span::styled(*n, Style::default().fg(Color::DarkGray)))),
+    );
+
+    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+    let popup = centred(area, 62, height);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" keys · esc to close "),
+            )
+            // A note longer than the box wraps rather than losing its tail
+            // off the right edge.
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
+/// A `width` by `height` rect centred in `area`, clamped so an overlay
+/// larger than the terminal is cropped rather than positioned off-screen.
+fn centred(area: Rect, width: u16, height: u16) -> Rect {
+    let [_, band, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(height.min(area.height)),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let [_, centre, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(width.min(area.width)),
+        Constraint::Fill(1),
+    ])
+    .areas(band);
+    centre
 }
 
 /// Column widths for the four-column repo table: NAME, BRANCH, and STATE
@@ -588,6 +781,147 @@ mod tests {
         let (name, branch, state, result) = column_widths(&a, 80);
         assert!(name <= 20, "got name width {name}");
         assert_eq!(name + branch + state + result + 3 * COL_GAP, 80);
+    }
+
+    fn flatten(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// The display column `needle` starts at. Byte offsets would not do: the
+    /// markers and the ellipsis are multi-byte, so a row's bytes and the
+    /// terminal cells it occupies diverge well before the first column.
+    fn col_of(haystack: &str, needle: &str) -> Option<usize> {
+        haystack
+            .find(needle)
+            .map(|byte| display_width(&haystack[..byte]))
+    }
+
+    #[test]
+    fn every_column_label_starts_where_its_data_starts() {
+        let mut a = app(vec![repo("bill-api"), repo("menu-api")]);
+        a.probes[0] = Some(crate::ui::app::probe::RepoState {
+            index: 0,
+            branch: Some("master".into()),
+            upstream: Some("origin/master".into()),
+            ahead: 0,
+            behind: 0,
+            changed: 0,
+            present: true,
+            timed_out: false,
+            fetched: true,
+        });
+        let (name, branch, state, result) = column_widths(&a, 80 - PREFIX_W);
+        let labels = flatten(&column_label_line(
+            PREFIX_W,
+            &[
+                (REPO_LABEL, name),
+                (BRANCH_LABEL, branch),
+                (STATE_LABEL, state),
+                (RESULT_LABEL, result),
+            ],
+        ));
+        let row = flatten(&repo_line(&a, 0, name, branch, state, result));
+
+        assert_eq!(
+            col_of(&labels, REPO_LABEL),
+            col_of(&row, "bill-api"),
+            "REPO sits over the repo name"
+        );
+        assert_eq!(
+            col_of(&labels, BRANCH_LABEL),
+            col_of(&row, "master"),
+            "BRANCH sits over the branch"
+        );
+        assert_eq!(
+            col_of(&labels, STATE_LABEL),
+            col_of(&row, "clean"),
+            "STATE sits over the working-tree state"
+        );
+    }
+
+    #[test]
+    fn a_column_label_truncates_with_its_column_instead_of_shifting_the_next_one() {
+        let line = column_label_line(0, &[("BRANCH", 3), ("STATE", 5)]);
+        let text = flatten(&line);
+        assert_eq!(
+            display_width(&text[..text.find("  ").unwrap()]),
+            3,
+            "the label fits its column, got {text:?}"
+        );
+        assert_eq!(
+            col_of(&text, "STATE"),
+            Some(3 + COL_GAP),
+            "the next label keeps its own offset, got {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_footer_with_room_for_every_key_shows_them_all_and_no_ellipsis() {
+        let a = app(vec![repo("bill-api")]);
+        let text = flatten(&status_line(&a, false, 200));
+        assert!(text.contains("j/k move"), "got {text:?}");
+        assert!(text.contains("tab set"), "got {text:?}");
+        assert!(text.ends_with("? help  "), "got {text:?}");
+        assert!(!text.contains(FOOTER_ELLIPSIS), "got {text:?}");
+    }
+
+    #[test]
+    fn help_is_the_one_binding_a_narrow_footer_never_drops() {
+        let a = app(vec![repo("bill-api")]);
+        for width in [12, 24, 40, 60, 80] {
+            let text = flatten(&status_line(&a, false, width));
+            assert!(
+                text.contains("? help"),
+                "width {width} lost the help hint: {text:?}"
+            );
+            assert!(
+                display_width(&text) <= width,
+                "width {width} overflowed to {}: {text:?}",
+                display_width(&text)
+            );
+        }
+    }
+
+    #[test]
+    fn a_footer_too_narrow_marks_what_it_dropped() {
+        let a = app(vec![repo("bill-api")]);
+        let text = flatten(&status_line(&a, false, 46));
+        assert!(text.contains(FOOTER_ELLIPSIS), "got {text:?}");
+        assert!(text.contains("? help"), "got {text:?}");
+    }
+
+    #[test]
+    fn a_binding_is_kept_whole_or_dropped_never_cut_in_half() {
+        let bindings = keymap::LIST_KEYS.to_vec();
+        for budget in 0..90 {
+            let (kept, _) = fitted(&bindings, budget);
+            let spent: usize = kept.iter().map(footer_width).sum();
+            assert!(spent <= budget, "budget {budget} spent {spent}");
+            // Whatever survived is a prefix of the list, in order.
+            for (i, binding) in kept.iter().enumerate() {
+                assert_eq!(binding.keys, bindings[i].keys, "budget {budget}");
+            }
+        }
+    }
+
+    #[test]
+    fn overlay_only_bindings_stay_out_of_the_footer() {
+        let a = app(vec![repo("bill-api")]);
+        let text = flatten(&status_line(&a, false, 400));
+        assert!(!text.contains("re-probe"), "got {text:?}");
+        assert!(!text.contains("auto-update"), "got {text:?}");
+        assert!(
+            keymap::LIST_KEYS.iter().any(|b| b.keys == "r"),
+            "r is still bound, just not hinted"
+        );
+    }
+
+    #[test]
+    fn cancel_is_only_hinted_while_a_run_is_live() {
+        let mut a = app(vec![repo("bill-api")]);
+        assert!(!flatten(&status_line(&a, false, 200)).contains("esc cancel"));
+        a.run_action = Some("update".into());
+        assert!(flatten(&status_line(&a, false, 200)).contains("esc cancel"));
     }
 
     #[test]

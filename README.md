@@ -94,15 +94,20 @@ soon as the table paints, and any action from `.mrconfig` can run against the
 selection without leaving the screen.
 
 ```
-  mrx · work                                    update 1/2 · 1 failed
- ──────────────────────────────────────────────────────────────────────────
-  ▸ ●  bill-api      main    clean            already up to date
-    ●  crew-db-schema main   2 modified       git pull
- ──────────────────────────────────────────────────────────────────────────
-  j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter
-  u update  s/f/d status/fetch/diff  : action  r reprobe  o editor  F poll
-  ^a auto  tab set  ^r reload  m mouse  q quit
+  mrx · work                                  update 1/2 · 1 failed
+     REPO               BRANCH  STATE       RESULT
+────────────────────────────────────────────────────────────────────────
+ ▸ ● bill-api           main    clean       already up to date
+   ● crew-db-schema     main    2 modified  git pull
+     loyalty-db-schema  main    clean  ↓?   ·
+────────────────────────────────────────────────────────────────────────
+  j/k move  space select  / filter  enter output  u update  …  ? help
 ```
+
+The footer shows as many keys as the terminal is wide enough for, whole ones only,
+with `…` standing in for the rest. `? help` is budgeted first and drawn last, so it
+survives every width. **`?` opens the full keymap**, listing the keys the footer left
+out along with the detail view's.
 
 `j`/`k` (or the arrow keys) move the cursor, `g`/`G` jump to the first or last row.
 `space` toggles the cursor row's selection and moves on, `a` selects every row the

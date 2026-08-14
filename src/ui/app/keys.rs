@@ -54,6 +54,13 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
     if app.quit_pending {
         return on_quit_confirm_key(app, key);
     }
+    // Dismissed by anything that could mean "done reading", since the
+    // overlay reads rather than does, and hunting for its one exit key is
+    // the annoyance a help screen is least entitled to.
+    if app.help_open {
+        app.help_open = false;
+        return false;
+    }
     if app.pending_run.is_some() {
         return on_confirm_key(app, key);
     }
@@ -114,6 +121,7 @@ fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('d') => app.request_run("diff"),
         KeyCode::Char(':') => app.open_palette(),
         KeyCode::Char('m') => app.toggle_mouse_capture(),
+        KeyCode::Char('?') => app.help_open = true,
         KeyCode::Char('F') => app.toggle_poll(),
         KeyCode::Char('o') => app.request_open_editor(),
         KeyCode::Tab => app.open_set_picker(),
@@ -218,6 +226,7 @@ fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Esc => app.close_detail(),
         KeyCode::Char('y') => app.copy_visible_step(),
         KeyCode::Char('m') => app.toggle_mouse_capture(),
+        KeyCode::Char('?') => app.help_open = true,
         KeyCode::Char('o') => app.request_open_editor(),
         _ => {}
     }
@@ -584,6 +593,81 @@ mod tests {
         on_input(&mut a, ev);
         assert_eq!(a.cursor, 1);
         assert!(!a.detail_open);
+    }
+
+    /// Pinned to literal rows rather than to `LIST_HEADER_ROWS`, so that
+    /// adding or removing a chrome row without adjusting click resolution
+    /// fails here instead of silently shifting every click by one.
+    #[test]
+    fn clicking_the_title_label_or_rule_rows_never_reaches_a_repo() {
+        for row in 0..3u16 {
+            let mut a = app(&["foo", "bar", "baz"]);
+            a.terminal_height = 24;
+            a.cursor = 2;
+            let ev = Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,
+                row,
+                modifiers: KeyModifiers::NONE,
+            });
+            on_input(&mut a, ev);
+            assert_eq!(a.cursor, 2, "row {row} moved the cursor");
+            assert!(!a.detail_open, "row {row} opened the detail view");
+        }
+    }
+
+    #[test]
+    fn the_first_row_below_the_chrome_is_the_first_repo() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        a.terminal_height = 24;
+        a.cursor = 2;
+        let ev = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        on_input(&mut a, ev);
+        assert_eq!(a.cursor, 0);
+    }
+
+    #[test]
+    fn question_mark_opens_the_help_overlay_and_the_next_key_closes_it() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, press(KeyCode::Char('?')));
+        assert!(a.help_open);
+        on_input(&mut a, press(KeyCode::Esc));
+        assert!(!a.help_open);
+    }
+
+    #[test]
+    fn a_key_that_closes_the_help_overlay_does_nothing_else() {
+        let mut a = app(&["foo", "bar"]);
+        a.cursor = 0;
+        on_input(&mut a, press(KeyCode::Char('?')));
+        on_input(&mut a, press(KeyCode::Char('j')));
+        assert!(!a.help_open);
+        assert_eq!(a.cursor, 0, "j dismissed the overlay rather than moving");
+    }
+
+    #[test]
+    fn question_mark_is_filter_text_rather_than_help_while_filtering() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, press(KeyCode::Char('/')));
+        on_input(&mut a, press(KeyCode::Char('?')));
+        assert!(!a.help_open);
+        assert_eq!(a.filter, "?");
+    }
+
+    #[test]
+    fn ctrl_c_still_quits_from_the_help_overlay() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, press(KeyCode::Char('?')));
+        let ev = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(
+            on_input(&mut a, ev),
+            "ctrl-c should quit, not just close help"
+        );
     }
 
     #[test]

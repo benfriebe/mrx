@@ -152,6 +152,10 @@ pub struct App {
     /// (section 03, "prompts if a run is live").
     pub quit_pending: bool,
 
+    /// `?`: whether the keymap overlay is showing. Purely a view concern, so
+    /// it gates nothing and blocks no operation.
+    pub help_open: bool,
+
     /// `o`: set by [`request_open_editor`](Self::request_open_editor); the
     /// run loop owns actually suspending the terminal, since state has no
     /// I/O of its own (mirrors `probe_requested`, `mouse_capture_dirty`).
@@ -297,6 +301,7 @@ impl App {
             full_reprobe_requested: false,
             cancel_requested: false,
             quit_pending: false,
+            help_open: false,
             open_editor_requested: false,
             poll_enabled: false,
             poll_interval: poll::DEFAULT_POLL_INTERVAL,

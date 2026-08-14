@@ -5,6 +5,7 @@
 
 pub mod actions;
 pub mod detail;
+pub mod keymap;
 pub mod keys;
 pub mod poll;
 pub mod probe;
