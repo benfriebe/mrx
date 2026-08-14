@@ -23,6 +23,14 @@ fn absolutize(p: &Path) -> PathBuf {
     }
 }
 
+/// The set named by `-s` or `$MRX_SET`, in that order, ignoring blanks.
+fn named_set(cli: &Cli) -> Option<String> {
+    cli.set
+        .clone()
+        .or_else(|| std::env::var("MRX_SET").ok())
+        .filter(|s| !s.trim().is_empty())
+}
+
 /// `-c` wins outright. Otherwise the set named by `-s` or `$MRX_SET` must exist:
 /// a named set that resolves to nothing is a typo, not a reason to silently
 /// operate on a different repo list. Only the implicit default set falls back to
@@ -32,13 +40,7 @@ fn resolve_config_path(cli: &Cli) -> PathBuf {
         return absolutize(p);
     }
 
-    let named = cli
-        .set
-        .clone()
-        .or_else(|| std::env::var("MRX_SET").ok())
-        .filter(|s| !s.trim().is_empty());
-
-    let raw = match named {
+    let raw = match named_set(cli) {
         Some(name) => sets::resolve(&name).unwrap_or_else(|| {
             eprintln!("error: no config for set '{}'. Looked in:", name);
             for candidate in sets::candidates(&name) {
@@ -71,7 +73,22 @@ fn print_sets(active: &Path) {
 
     // The active config may be an unnamed one: ~/.mrconfig, or an explicit -c.
     if !found.iter().any(|(_, p)| p == active) {
-        println!("* {:16} {}", "(unnamed)", active.display());
+        println!(
+            "* {:16} {}{}",
+            "(unnamed)",
+            active.display(),
+            missing_note(active.is_file())
+        );
+    }
+}
+
+/// `discover` only returns files that exist, so the unnamed row is the one place
+/// `sets` can point at a path that is not there.
+fn missing_note(exists: bool) -> &'static str {
+    if exists {
+        ""
+    } else {
+        "  (missing)"
     }
 }
 
@@ -89,6 +106,19 @@ async fn main() {
     if matches!(cli.command, Command::Sets) {
         print_sets(&config_path);
         return;
+    }
+
+    // A config that is not there is a mistake, not an empty repo list. Without
+    // this every action succeeds having done nothing, the same silent
+    // succeed-by-skipping that the unknown-action guard below rejects.
+    // `register` is exempt because it is how the first config gets written.
+    if !config_path.is_file() && !cli.command.is_register() {
+        eprintln!("error: no config at {}", config_path.display());
+        if cli.config.is_none() && named_set(&cli).is_none() {
+            eprintln!("no set was named, so this is the default location");
+            eprintln!("name one with --set or MRX_SET, or run `mrx sets` to see what is defined");
+        }
+        std::process::exit(2);
     }
 
     let dir_override = cli.directory.as_deref().map(absolutize);
@@ -213,4 +243,29 @@ fn register(config_path: &PathBuf, base_dir: &PathBuf) {
     });
 
     println!("registered {} ({})", section, url);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_unnamed_row_says_when_its_path_is_not_there() {
+        assert_eq!(missing_note(true), "");
+        assert_eq!(missing_note(false), "  (missing)");
+    }
+
+    #[test]
+    fn an_explicit_set_beats_the_environment_and_blanks_are_ignored() {
+        let cli = Cli::parse_from(["mrx", "--set", "work", "status"]);
+        assert_eq!(named_set(&cli).as_deref(), Some("work"));
+
+        let blank = Cli::parse_from(["mrx", "--set", "   ", "status"]);
+        assert_eq!(blank.set.as_deref(), Some("   "), "clap kept the raw value");
+        assert_eq!(
+            named_set(&blank),
+            None,
+            "a blank set is not a set, so the default applies"
+        );
+    }
 }
