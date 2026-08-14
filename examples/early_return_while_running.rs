@@ -3,7 +3,7 @@
 //! returns an `Err` early rather than panicking, the way a `?` deep inside
 //! the run loop would. Deliberately does *not* install the panic hook, so a
 //! pty test can confirm `TerminalGuard`'s `Drop` restores the terminal on
-//! its own (finding B2), independent of the panic-hook safety net that
+//! its own, independent of the panic-hook safety net that
 //! `panic_while_running` already covers.
 
 use crossterm::event::EnableMouseCapture;

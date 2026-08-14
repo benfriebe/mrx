@@ -1277,8 +1277,8 @@ impl App {
     /// (`selection_survives_a_filter_change`). The cursor fallback has no
     /// such choice behind it, so it is empty whenever there is no visible
     /// row to fall back to, rather than acting on whatever the cursor still
-    /// happens to index from before the filter narrowed to nothing (finding
-    /// A1: a zero-match filter must not leave a hidden repo runnable).
+    /// happens to index from before the filter narrowed to nothing: a
+    /// zero-match filter must not leave a hidden repo runnable.
     pub fn effective_selection(&self) -> Vec<usize> {
         if !self.selected.is_empty() {
             return self.selected.iter().copied().collect();
@@ -1536,9 +1536,9 @@ mod tests {
         assert!(a.status_message.is_some());
     }
 
-    /// The dangerous case the finding actually reproduces: a repo already
-    /// probed clean would otherwise run with no confirmation at all, since
-    /// clean-and-known skips the dirty-selection prompt.
+    /// The dangerous case: a repo already probed clean would otherwise run
+    /// with no confirmation at all, since clean-and-known skips the
+    /// dirty-selection prompt.
     #[test]
     fn a_probed_clean_repo_does_not_run_once_hidden_by_a_zero_match_filter() {
         let mut a = app(&["foo"]);

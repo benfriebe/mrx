@@ -698,6 +698,49 @@ mod tests {
         waiter_thread.join().unwrap();
     }
 
+    /// `InputThreadGuard::drop` has to actually stop and join the reader
+    /// thread, not just ask it to stop: a reader still mid `poll`/`read`
+    /// when a caller drops the guard and moves on would keep competing for
+    /// stdin with whatever the tty is handed to next. Spawns a stand-in
+    /// reader loop (the real one needs a tty crossterm can poll, which a
+    /// unit test doesn't have) that proves it is still alive by bumping a
+    /// counter every iteration, then confirms the counter stops changing at
+    /// the moment `drop` returns rather than sometime after.
+    #[test]
+    fn dropping_the_input_thread_guard_stops_and_joins_the_reader() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let gate = InputGate::new();
+        let thread_gate = gate.clone();
+        let iterations = Arc::new(AtomicU64::new(0));
+        let counter = iterations.clone();
+        let handle = std::thread::spawn(move || {
+            while !thread_gate.should_stop() {
+                counter.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+
+        // Let the stand-in reader actually get into its loop before the
+        // guard is dropped, so the assertion below isn't just measuring a
+        // thread that hadn't started yet.
+        std::thread::sleep(Duration::from_millis(20));
+
+        let guard = InputThreadGuard {
+            gate,
+            handle: Some(handle),
+        };
+        drop(guard);
+
+        let at_drop = iterations.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(50));
+        let after_drop = iterations.load(Ordering::SeqCst);
+        assert_eq!(
+            at_drop, after_drop,
+            "the reader thread must already be stopped by the time drop() returns"
+        );
+    }
+
     /// A reader whose own loop has already ended (a read error, stdin
     /// closing) can never acknowledge a pause again; `park()` has to give
     /// up once it learns that, rather than waiting on stdin forever with
