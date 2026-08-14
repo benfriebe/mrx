@@ -1,35 +1,21 @@
-pub mod event;
-pub mod render;
-pub mod spinner;
-pub mod state;
+//! The one-shot progress view: plan, execute, watch, quit. This is `mrx`'s
+//! existing TUI, unchanged in behaviour after moving out of `tui/`.
 
-use crossterm::{
-    event::KeyCode,
-    execute,
-    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use ratatui::prelude::*;
-use state::{AppState, RepoStatus};
+use crossterm::event::KeyCode;
 use std::collections::BTreeMap;
-use std::io::{self, stdout};
+use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use super::event;
+use super::render;
+use super::state::{AppState, RepoStatus};
 use crate::cli::Command;
 use crate::config::Repo;
 use crate::executor::{self, TaskEvent};
 use crate::operations;
 use crate::summarize;
-
-pub fn install_panic_hook() {
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |panic_info| {
-        let _ = terminal::disable_raw_mode();
-        let _ = execute!(stdout(), LeaveAlternateScreen);
-        original_hook(panic_info);
-    }));
-}
 
 pub fn run(
     repos: Vec<Repo>,
@@ -40,13 +26,8 @@ pub fn run(
     config_path: PathBuf,
     exit_on_done: bool,
 ) -> io::Result<bool> {
-    install_panic_hook();
-
-    terminal::enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen)?;
-
-    let backend = CrosstermBackend::new(stdout());
-    let mut terminal = Terminal::new(backend)?;
+    super::install_panic_hook();
+    let mut terminal = super::setup_terminal()?;
 
     let action = command.display_name().to_string();
     let mut state = AppState::new(repos, &action);
@@ -54,11 +35,8 @@ pub fn run(
 
     loop {
         // Drain pending events from executor
-        loop {
-            match rx.try_recv() {
-                Ok(evt) => apply_event(&mut state, &evt, &action),
-                Err(_) => break,
-            }
+        while let Ok(evt) = rx.try_recv() {
+            apply_event(&mut state, &evt, &action);
         }
 
         // Check if all done
@@ -137,8 +115,7 @@ pub fn run(
     }
 
     // Cleanup
-    terminal::disable_raw_mode()?;
-    execute!(stdout(), LeaveAlternateScreen)?;
+    super::teardown_terminal()?;
 
     // Print final summary
     let failed = state.failed_count();

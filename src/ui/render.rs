@@ -1,9 +1,8 @@
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::spinner;
-use super::state::{AppState, RepoStatus};
+use super::state::AppState;
+use super::widgets::{self, Columns, RepoRow};
 
 pub fn draw(frame: &mut Frame, state: &AppState) {
     let area = frame.area();
@@ -12,24 +11,24 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
     let name_nat = state
         .repos
         .iter()
-        .map(|r| display_width(&r.name))
+        .map(|r| widgets::display_width(&r.name))
         .max()
         .unwrap_or(0)
-        .max(display_width("REPO"));
+        .max(widgets::display_width("REPO"));
     let branch_nat = (0..state.total())
-        .map(|i| display_width(state.branch_label(i)))
+        .map(|i| widgets::display_width(state.branch_label(i)))
         .max()
         .unwrap_or(0)
-        .max(display_width("BRANCH"));
+        .max(widgets::display_width("BRANCH"));
     let status_nat = (0..state.total())
         .map(|i| {
             let (_, _, summ, _) =
-                format_status(&state.statuses[i], state.tick, &state.command_name);
-            display_width(&summ)
+                widgets::format_status(&state.statuses[i], state.tick, &state.command_name);
+            widgets::display_width(&summ)
         })
         .max()
         .unwrap_or(0)
-        .max(display_width("STATUS"));
+        .max(widgets::display_width("STATUS"));
 
     // Row prefix is "  ▸ ✓ " (2 spaces + selector + space + icon + space) = 6 cells.
     // Two 2-space gaps separate the three columns.
@@ -64,11 +63,13 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
     )));
 
     // Column headers (labels truncate alongside their column on narrow viewports)
-    let repo_label = truncate("REPO", name_col);
-    let branch_label = truncate("BRANCH", branch_col);
-    let status_label = truncate("STATUS", status_col);
-    let header_name_padding = name_col.saturating_sub(display_width(&repo_label)) + COL_GAP;
-    let header_branch_padding = branch_col.saturating_sub(display_width(&branch_label)) + COL_GAP;
+    let repo_label = widgets::truncate("REPO", name_col);
+    let branch_label = widgets::truncate("BRANCH", branch_col);
+    let status_label = widgets::truncate("STATUS", status_col);
+    let header_name_padding =
+        name_col.saturating_sub(widgets::display_width(&repo_label)) + COL_GAP;
+    let header_branch_padding =
+        branch_col.saturating_sub(widgets::display_width(&branch_label)) + COL_GAP;
     let header_style = Style::default().fg(Color::DarkGray).bold();
     lines.push(Line::from(vec![
         Span::raw("      "),
@@ -83,43 +84,31 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
     let visible_end = state
         .total()
         .min(view_start + list_height.saturating_sub(expanded_rows));
+    let columns = Columns {
+        name: name_col,
+        branch: branch_col,
+        status: status_col,
+    };
     for i in view_start..visible_end {
         let is_selected = i == state.selected;
         let name = &state.repos[i].name;
         let status = &state.statuses[i];
 
         let (icon, icon_style, summ, summ_style) =
-            format_status(status, state.tick, &state.command_name);
+            widgets::format_status(status, state.tick, &state.command_name);
 
-        let selector = if is_selected { "▸" } else { " " };
-        let selector_style = if is_selected {
-            Style::default().fg(Color::Cyan).bold()
-        } else {
-            Style::default()
-        };
-
-        let name_style = if is_selected {
-            Style::default().bold()
-        } else {
-            Style::default()
-        };
-
-        let name_disp = truncate(name, name_col);
-        let name_padding = name_col.saturating_sub(display_width(&name_disp)) + COL_GAP;
-        let branch_disp = truncate(state.branch_label(i), branch_col);
-        let branch_padding = branch_col.saturating_sub(display_width(&branch_disp)) + COL_GAP;
-        let summ_disp = truncate(&summ, status_col);
-
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {} ", selector), selector_style),
-            Span::styled(icon, icon_style),
-            Span::raw(" "),
-            Span::styled(name_disp, name_style),
-            Span::raw(" ".repeat(name_padding)),
-            Span::styled(branch_disp, Style::default().fg(Color::DarkGray)),
-            Span::raw(" ".repeat(branch_padding)),
-            Span::styled(summ_disp, summ_style),
-        ]));
+        lines.push(widgets::repo_row(
+            &RepoRow {
+                name,
+                branch: state.branch_label(i),
+                icon: &icon,
+                icon_style,
+                summary: &summ,
+                summary_style: summ_style,
+                selected: is_selected,
+            },
+            &columns,
+        ));
 
         // Expanded content right after the selected row
         if state.expanded == Some(i) {
@@ -186,52 +175,6 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
     frame.render_widget(paragraph, area);
 }
 
-fn format_status(
-    status: &RepoStatus,
-    tick: usize,
-    command_name: &str,
-) -> (String, Style, String, Style) {
-    match status {
-        RepoStatus::Pending => (
-            " ".into(),
-            Style::default().fg(Color::Gray),
-            "waiting...".into(),
-            Style::default().fg(Color::Gray),
-        ),
-        RepoStatus::Running => (
-            spinner::frame(tick).to_string(),
-            Style::default().fg(Color::Yellow),
-            running_text(command_name),
-            Style::default().fg(Color::Yellow),
-        ),
-        RepoStatus::Done {
-            summary, exit_code, ..
-        } => {
-            if *exit_code == 0 {
-                (
-                    "✓".into(),
-                    Style::default().fg(Color::Green),
-                    summary.clone(),
-                    Style::default().fg(Color::DarkGray),
-                )
-            } else {
-                (
-                    "✗".into(),
-                    Style::default().fg(Color::Red),
-                    summary.clone(),
-                    Style::default().fg(Color::Red),
-                )
-            }
-        }
-        RepoStatus::Skipped { reason } => (
-            "-".into(),
-            Style::default().fg(Color::DarkGray),
-            reason.clone(),
-            Style::default().fg(Color::DarkGray),
-        ),
-    }
-}
-
 fn calculate_scroll(state: &AppState, list_height: usize) -> (usize, usize) {
     let expanded_rows = if state.expanded.is_some() {
         if let Some(content) = state.expanded_content() {
@@ -269,9 +212,9 @@ fn compute_column_widths(
     status_nat: usize,
     avail: usize,
 ) -> (usize, usize, usize) {
-    let name_min = display_width("REPO");
-    let branch_min = display_width("BRANCH");
-    let status_min = display_width("STATUS");
+    let name_min = widgets::display_width("REPO");
+    let branch_min = widgets::display_width("BRANCH");
+    let status_min = widgets::display_width("STATUS");
 
     let total = name_nat + branch_nat + status_nat;
     if total <= avail {
@@ -323,72 +266,9 @@ fn compute_column_widths(
     (name, branch, status)
 }
 
-fn display_width(s: &str) -> usize {
-    UnicodeWidthStr::width(s)
-}
-
-/// Truncate `s` to fit in `max` display cells, appending `…` when shortened.
-/// Width-aware: a single CJK or emoji glyph counts as 2 cells.
-fn truncate(s: &str, max: usize) -> String {
-    if max == 0 {
-        return String::new();
-    }
-    if display_width(s) <= max {
-        return s.to_string();
-    }
-    if max == 1 {
-        return "…".into();
-    }
-    let target = max - 1; // reserve 1 cell for the ellipsis
-    let mut acc = 0usize;
-    let mut out = String::new();
-    for ch in s.chars() {
-        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if acc + w > target {
-            break;
-        }
-        out.push(ch);
-        acc += w;
-    }
-    out.push('…');
-    out
-}
-
-fn running_text(command: &str) -> String {
-    match command {
-        "update" => "pulling...".into(),
-        "status" => "checking...".into(),
-        "diff" => "diffing...".into(),
-        "push" => "pushing...".into(),
-        "fetch" => "fetching...".into(),
-        "checkout" => "cloning...".into(),
-        "run" => "running...".into(),
-        _ => "running...".into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn waiting_is_lighter_grey_than_finished() {
-        let (_, _, _, pending_style) = format_status(&RepoStatus::Pending, 0, "update");
-        let done = RepoStatus::Done {
-            summary: "clean".into(),
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: 0,
-        };
-        let (_, _, _, done_style) = format_status(&done, 0, "update");
-
-        assert_eq!(pending_style.fg, Some(Color::Gray));
-        assert_eq!(done_style.fg, Some(Color::DarkGray));
-        assert_ne!(
-            pending_style.fg, done_style.fg,
-            "waiting should be visually distinct from finished"
-        );
-    }
 
     #[test]
     fn natural_widths_used_when_they_fit() {
@@ -426,38 +306,5 @@ mod tests {
     fn fits_zero_avail() {
         let (n, b, s) = compute_column_widths(10, 20, 15, 0);
         assert_eq!((n, b, s), (0, 0, 0));
-    }
-
-    #[test]
-    fn truncate_preserves_short_strings() {
-        assert_eq!(truncate("foo", 10), "foo");
-        assert_eq!(truncate("foo", 3), "foo");
-    }
-
-    #[test]
-    fn truncate_appends_ellipsis() {
-        assert_eq!(truncate("feat/long-branch-name", 8), "feat/lo…");
-        assert_eq!(display_width(&truncate("feat/long-branch-name", 8)), 8);
-    }
-
-    #[test]
-    fn truncate_handles_wide_glyphs() {
-        // CJK chars are 2 cells. "中文测试" = 8 cells.
-        assert_eq!(display_width("中文测试"), 8);
-        let t = truncate("中文测试", 5);
-        // Want display width <= 5: take "中文" (4) + "…" (1) = 5.
-        assert_eq!(display_width(&t), 5);
-        assert_eq!(t, "中文…");
-    }
-
-    #[test]
-    fn truncate_zero_max() {
-        assert_eq!(truncate("anything", 0), "");
-    }
-
-    #[test]
-    fn truncate_max_one() {
-        assert_eq!(truncate("anything", 1), "…");
-        assert_eq!(truncate("a", 1), "a");
     }
 }

@@ -1,14 +1,6 @@
-mod cli;
-mod config;
-mod executor;
-mod operations;
-mod render_plain;
-mod sets;
-mod summarize;
-mod tui;
-
 use clap::Parser;
-use cli::{Cli, Command};
+use mrx::cli::{Cli, Command};
+use mrx::{config, executor, operations, render_plain, sets, ui};
 use std::io::{stdout, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -170,7 +162,7 @@ async fn main() {
     let rx = executor::execute_all(&repos, ops, jobs, config_path.clone());
 
     let success = if stdout().is_terminal() && !cli.plain {
-        tui::run(
+        ui::run::run(
             repos,
             &cli.command,
             rx,
