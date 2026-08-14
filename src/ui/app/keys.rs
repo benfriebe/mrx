@@ -84,13 +84,21 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
 
 fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
-        // A held Ctrl that isn't one of these two must not fall through to
+        // A held Ctrl that matches none of these must not fall through to
         // the plain-letter shortcuts below: crossterm reports Ctrl+U as
         // `Char('u')` with the modifier set, and `KeyCode::Char('u')` alone
         // would otherwise match it, running `update` (or worse, `s`/`f`/`d`)
         // on a common readline chord like Ctrl-U with no confirmation.
         // Ctrl-C is handled centrally in `on_key`, ahead of this dispatch.
         return match key.code {
+            KeyCode::Char('d') => {
+                app.move_cursor_half_page(1);
+                false
+            }
+            KeyCode::Char('u') => {
+                app.move_cursor_half_page(-1);
+                false
+            }
             KeyCode::Char('r') => {
                 app.reload_config();
                 false
@@ -426,6 +434,7 @@ mod tests {
                 present: true,
                 timed_out: false,
                 fetched: false,
+                fetch_head: None,
             },
         );
         on_input(&mut a, press(KeyCode::Char('u')));
@@ -440,6 +449,20 @@ mod tests {
             a.run_requested.is_none() && a.pending_run.is_none(),
             "Ctrl-U must not fall through to the plain u shortcut"
         );
+    }
+
+    #[test]
+    fn ctrl_d_pages_the_list_down_and_ctrl_u_brings_it_back() {
+        let names: Vec<String> = (0..40).map(|i| format!("repo-{i:02}")).collect();
+        let mut a = app(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        a.terminal_height = 26;
+
+        on_input(&mut a, ctrl(KeyCode::Char('d')));
+        let paged = a.cursor;
+        assert!(paged > 1, "Ctrl-D moves a page, not a line, got {paged}");
+
+        on_input(&mut a, ctrl(KeyCode::Char('u')));
+        assert_eq!(a.cursor, 0, "Ctrl-U comes back the same distance");
     }
 
     #[test]
@@ -553,6 +576,7 @@ mod tests {
             present: true,
             timed_out: false,
             fetched: false,
+            fetch_head: None,
         };
         dirty.changed = 1;
         a.on_probe(0, dirty);
@@ -805,6 +829,7 @@ mod tests {
             present: true,
             timed_out: false,
             fetched: false,
+            fetch_head: None,
         };
         dirty.changed = 1;
         a.on_probe(0, dirty);

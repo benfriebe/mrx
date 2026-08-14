@@ -25,28 +25,22 @@ const BRANCH_LABEL: &str = "BRANCH";
 /// what the last run reported.
 const STATE_LABEL: &str = "STATE";
 const RESULT_LABEL: &str = "RESULT";
-/// Title line, column labels, and the separator under them, above the table
-/// body in every layout that shows one (the plain list and the detail
-/// sidebar alike). Click resolution derives its row offset from this, so a
+/// Title line, a second line of labels, and the rule under them: the chrome
+/// above the body of every pane, list and detail alike, so their rules meet
+/// across a split. Click resolution derives its row offset from this, so a
 /// click's row and the row the table actually painted never disagree.
 pub(crate) const LIST_HEADER_ROWS: usize = 3;
-/// The detail view's own chrome: a title line and its separator. It has no
-/// column labels, so it cannot share [`LIST_HEADER_ROWS`].
-const DETAIL_HEADER_ROWS: usize = 2;
+/// The rule and key line under the body, drawn once per frame: by the pane
+/// itself when it owns the whole width, by the split when it doesn't.
+const FOOTER_ROWS: u16 = 2;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
     if app.detail_open {
         match detail::layout_for_width(area.width) {
-            DetailLayout::FullScreen => draw_detail(frame, app, area),
-            DetailLayout::Split => {
-                let sidebar_w = detail::sidebar_width(area.width);
-                let cols = Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(0)])
-                    .split(area);
-                draw_list(frame, app, cols[0], true);
-                draw_detail(frame, app, cols[1]);
-            }
+            DetailLayout::FullScreen => draw_detail(frame, app, area, false),
+            DetailLayout::Split => draw_split(frame, app, area),
         }
     } else {
         draw_list(frame, app, area, false);
@@ -73,11 +67,68 @@ pub fn draw(frame: &mut Frame, app: &App) {
 /// [`LIST_HEADER_ROWS`]) plus a bottom separator, status line, and (while
 /// `/` is capturing text) the filter line.
 pub(crate) fn chrome_rows(app: &App) -> usize {
-    LIST_HEADER_ROWS + if app.filtering { 3 } else { 2 }
+    LIST_HEADER_ROWS + FOOTER_ROWS as usize + if app.filtering { 1 } else { 0 }
 }
 
 pub(crate) fn list_height(app: &App, area_height: u16) -> usize {
     (area_height as usize).saturating_sub(chrome_rows(app))
+}
+
+/// The split: the list narrowed to a sidebar, a rule down the middle, and
+/// one footer under both. Two panes that merely abut read as two windows,
+/// so the chrome is drawn as one frame divided rather than as two frames
+/// side by side.
+fn draw_split(frame: &mut Frame, app: &App, area: Rect) {
+    let [panes, footer] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(FOOTER_ROWS)]).areas(area);
+    let [list, rule, output] = Layout::horizontal([
+        Constraint::Length(detail::sidebar_width(area.width)),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(panes);
+
+    draw_list(frame, app, list, true);
+    draw_detail(frame, app, output, true);
+    draw_split_rule(frame, rule);
+    draw_split_footer(frame, app, footer, list.width as usize);
+}
+
+/// The vertical rule between the split's panes, notched where the two
+/// panes' header rules run into it.
+fn draw_split_rule(frame: &mut Frame, area: Rect) {
+    let lines: Vec<Line> = (0..area.height as usize)
+        .map(|row| {
+            let glyph = if row + 1 == LIST_HEADER_ROWS {
+                "┼"
+            } else {
+                "│"
+            };
+            Line::from(Span::styled(glyph, Style::default().fg(Color::DarkGray)))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The split's shared footer, spanning both panes. One line of keys under
+/// the whole frame, not one per pane: with the split open every keystroke
+/// reaches the same handler whichever side the pointer is on, so two
+/// different key lines would be claiming otherwise.
+fn draw_split_footer(frame: &mut Frame, app: &App, area: Rect, rule_col: usize) {
+    let width = area.width as usize;
+    let lines = vec![joined_separator(width, rule_col), status_line(app, width)];
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// A horizontal rule that meets the split's vertical one at `at`.
+fn joined_separator(width: usize, at: usize) -> Line<'static> {
+    if at >= width {
+        return separator(width);
+    }
+    Line::from(Span::styled(
+        format!("{}┴{}", "─".repeat(at), "─".repeat(width - at - 1)),
+        Style::default().fg(Color::DarkGray),
+    ))
 }
 
 fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
@@ -87,13 +138,21 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
     lines.push(header_line(app, width));
 
     let visible = app.visible_indices();
-    let lh = list_height(app, area.height);
+    // As a sidebar the pane's area already stops above the shared footer, so
+    // its body is simply what's left under the header. That lands on the
+    // same row count as the full-width list, which is what lets click
+    // resolution use one formula for both.
+    let lh = if sidebar {
+        (area.height as usize).saturating_sub(LIST_HEADER_ROWS)
+    } else {
+        list_height(app, area.height)
+    };
     let cursor_pos = visible.iter().position(|&i| i == app.cursor).unwrap_or(0);
     let start = scroll_offset(cursor_pos, visible.len(), lh);
     let end = visible.len().min(start + lh);
 
     if sidebar {
-        let (name_col, state_col) = sidebar_column_widths(width.saturating_sub(PREFIX_W));
+        let (name_col, state_col) = sidebar_column_widths(app, width.saturating_sub(PREFIX_W));
         lines.push(column_label_line(
             SIDEBAR_PREFIX_W,
             &[(REPO_LABEL, name_col), (STATE_LABEL, state_col)],
@@ -122,34 +181,28 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
         }
     }
 
-    lines.push(separator(width));
-    if app.filtering {
-        lines.push(filter_line(app));
+    if !sidebar {
+        lines.push(separator(width));
+        if app.filtering {
+            lines.push(filter_line(app));
+        }
+        lines.push(status_line(app, width));
     }
-    lines.push(status_line(app, sidebar, width));
 
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// The detail view for the cursor row: a title line, the selected run's
-/// output as labelled step sections, and a status bar. Drawn identically
-/// whether it's splitting beside the sidebar or filling the whole frame;
-/// only `area`'s width differs between the two callers.
-fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
+/// The detail view for the cursor row: a title, a line of run and scroll
+/// state, the output as labelled step sections, and (when it owns the whole
+/// width) a footer. `split` says the frame's shared footer is drawing that
+/// last part instead.
+fn draw_detail(frame: &mut Frame, app: &App, area: Rect, split: bool) {
     let width = area.width as usize;
-    let mut lines: Vec<Line> = Vec::new();
+    let footer_rows = if split { 0 } else { FOOTER_ROWS as usize };
+    let content_height = (area.height as usize).saturating_sub(LIST_HEADER_ROWS + footer_rows);
 
-    let repo_name = app.repos.get(app.cursor).map(|r| r.name.as_str());
-    let title = match (repo_name, &app.run_action) {
-        (Some(name), Some(action)) => format!("  {name} · {action}"),
-        (Some(name), None) => format!("  {name} · output"),
-        (None, _) => "  (no repo)".into(),
-    };
-    lines.push(Line::from(Span::styled(title, Style::default().bold())));
-    lines.push(separator(width));
-
-    // One row for the status line reserved below the content.
-    let content_height = (area.height as usize).saturating_sub(DETAIL_HEADER_ROWS + 1);
+    let mut body: Vec<Line> = Vec::new();
+    let mut position = None;
 
     match app.run_results.get(app.cursor).and_then(|r| r.as_ref()) {
         Some(RunStatus::Finished { steps, .. }) => {
@@ -157,38 +210,87 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             let raw_scroll = app.detail_scroll.get(&app.cursor).copied().unwrap_or(0);
             let scroll = detail::clamp_scroll(raw_scroll, detail_lines.len(), content_height);
             for line in detail_lines.iter().skip(scroll).take(content_height) {
-                lines.push(render_detail_line(line));
+                body.push(render_detail_line(line));
             }
+            position = scroll_position(scroll, detail_lines.len(), content_height);
         }
         Some(RunStatus::Running) => {
-            lines.push(Line::from(Span::styled(
+            body.push(Line::from(Span::styled(
                 "  running…",
                 Style::default().fg(Color::Yellow),
             )));
         }
         Some(RunStatus::Step { label }) => {
-            lines.push(Line::from(Span::styled(
+            body.push(Line::from(Span::styled(
                 format!("  {label}…"),
                 Style::default().fg(Color::Yellow),
             )));
         }
         Some(RunStatus::Skipped { reason }) => {
-            lines.push(Line::from(Span::raw(format!("  skipped: {reason}"))));
+            body.push(Line::from(Span::raw(format!("  skipped: {reason}"))));
         }
         None => {
-            lines.push(Line::from(Span::styled(
+            body.push(Line::from(Span::styled(
                 "  this repo hasn't run yet",
                 Style::default().fg(Color::DarkGray),
             )));
         }
     }
 
-    while lines.len() + 1 < area.height as usize {
-        lines.push(Line::default());
+    let repo_name = app.repos.get(app.cursor).map(|r| r.name.as_str());
+    let title = match (repo_name, &app.run_action) {
+        (Some(name), Some(action)) => format!("  {name} · {action}"),
+        (Some(name), None) => format!("  {name} · output"),
+        (None, _) => "  (no repo)".into(),
+    };
+
+    let mut lines = vec![
+        Line::from(Span::styled(title, Style::default().bold())),
+        // Where the list puts its column labels, so the two rules meet.
+        two_column_line(&detail_summary(app), &position.unwrap_or_default(), width),
+        separator(width),
+    ];
+    lines.extend(body);
+
+    if !split {
+        // The footer sits on the last two rows however short the output is.
+        while lines.len() + (FOOTER_ROWS as usize) < area.height as usize {
+            lines.push(Line::default());
+        }
+        lines.push(separator(width));
+        lines.push(status_line(app, width));
     }
-    lines.push(status_line(app, false, width));
 
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// How the cursor row's last run ended, for the line under the detail
+/// title: the one thing the title can't say and the output alone makes you
+/// count.
+fn detail_summary(app: &App) -> String {
+    match app.run_results.get(app.cursor).and_then(|r| r.as_ref()) {
+        Some(RunStatus::Finished { steps, exit_code }) => {
+            let plural = if steps.len() == 1 { "" } else { "s" };
+            format!("{} step{plural} · exit {exit_code}", steps.len())
+        }
+        Some(RunStatus::Running) => "running".into(),
+        Some(RunStatus::Step { label }) => format!("running {label}"),
+        Some(RunStatus::Skipped { .. }) => "skipped".into(),
+        None => "no output yet".into(),
+    }
+}
+
+/// Which slice of the output is on screen, or `None` when all of it is.
+/// The detail view has no scrollbar, so without this a long transcript
+/// gives no clue how much of it is above or below.
+fn scroll_position(scroll: usize, total: usize, viewport: usize) -> Option<String> {
+    (total > viewport && viewport > 0).then(|| {
+        format!(
+            "{}-{} of {total}",
+            scroll + 1,
+            (scroll + viewport).min(total)
+        )
+    })
 }
 
 fn render_detail_line(line: &detail::DetailLine) -> Line<'static> {
@@ -214,14 +316,43 @@ fn render_detail_line(line: &detail::DetailLine) -> Line<'static> {
 }
 
 fn header_line(app: &App, width: usize) -> Line<'static> {
-    let title = format!("  mrx · {}", app.set_label);
-    let right = format!("{}  ", app.header_right_text());
-    let gap = width.saturating_sub(display_width(&title) + display_width(&right));
-    Line::from(vec![
-        Span::styled(title, Style::default().bold()),
-        Span::raw(" ".repeat(gap)),
-        Span::styled(right, Style::default().fg(Color::DarkGray)),
-    ])
+    let title = format!("mrx · {}", app.set_label);
+    styled_two_column_line(
+        &title,
+        &app.header_right_text(),
+        width,
+        Style::default().bold(),
+    )
+}
+
+/// `left` at the table's indent and `right` against the far edge, dimmed.
+/// A line too narrow for both keeps the left half and drops the right,
+/// rather than letting them collide or spill past the pane.
+fn two_column_line(left: &str, right: &str, width: usize) -> Line<'static> {
+    styled_two_column_line(left, right, width, Style::default().fg(Color::DarkGray))
+}
+
+fn styled_two_column_line(
+    left: &str,
+    right: &str,
+    width: usize,
+    left_style: Style,
+) -> Line<'static> {
+    let left = format!("{LEAD_IN}{left}");
+    let right = if right.is_empty() {
+        String::new()
+    } else {
+        format!("{right}{LEAD_IN}")
+    };
+    let dim = Style::default().fg(Color::DarkGray);
+    match width.checked_sub(display_width(&left) + display_width(&right)) {
+        Some(gap) => Line::from(vec![
+            Span::styled(left, left_style),
+            Span::raw(" ".repeat(gap)),
+            Span::styled(right, dim),
+        ]),
+        None => Line::from(Span::styled(truncate(&left, width), left_style)),
+    }
 }
 
 /// Column labels laid out on the same widths and gaps the data rows use, so
@@ -327,14 +458,23 @@ fn result_style(app: &App, idx: usize) -> Style {
     }
 }
 
-/// Name and state column widths for the two-column sidebar: name gets about
-/// two thirds of `avail`, state gets the rest, so the state text has a
-/// bounded column to truncate into rather than running off the edge.
-fn sidebar_column_widths(avail: usize) -> (usize, usize) {
+/// Name and state column widths for the two-column sidebar. The name column
+/// shrink-wraps the longest repo name so the state text sits beside the
+/// names rather than across a field of empty cells, capped at two thirds of
+/// `avail` so one very long name can't squeeze the state out. State takes
+/// what is left, being the last column.
+fn sidebar_column_widths(app: &App, avail: usize) -> (usize, usize) {
     if avail == 0 {
         return (0, 0);
     }
-    let name = (avail * 2 / 3).clamp(1, avail);
+    let name_natural = app
+        .repos
+        .iter()
+        .map(|r| display_width(&r.name))
+        .max()
+        .unwrap_or(0)
+        .max(display_width(REPO_LABEL));
+    let name = name_natural.clamp(1, (avail * 2 / 3).max(1));
     let state = avail.saturating_sub(name + COL_GAP);
     (name, state)
 }
@@ -384,14 +524,14 @@ fn filter_line(app: &App) -> Line<'static> {
 /// Ascii, so it never costs a cell more than it looks like it does.
 const FOOTER_ELLIPSIS: &str = "…  ";
 
-fn status_line(app: &App, sidebar: bool, width: usize) -> Line<'static> {
+fn status_line(app: &App, width: usize) -> Line<'static> {
     if let Some(msg) = &app.status_message {
         return Line::from(Span::styled(
             format!("  {msg}"),
             Style::default().fg(Color::Yellow),
         ));
     }
-    keys_footer(&keymap::bindings_for(app, sidebar), width)
+    keys_footer(&keymap::bindings_for(app), width)
 }
 
 /// The current mode's keys, fitted to `width` so a narrow terminal never
@@ -476,26 +616,31 @@ fn fitted(bindings: &[keymap::Binding], budget: usize) -> (Vec<keymap::Binding>,
 ///
 /// It lists the detail view's keys alongside the list's, since the overlay
 /// is the one place both sets can be read at once: inside the detail view
-/// only its own footer is on screen.
+/// only its own footer is on screen. Two bindings to a row: one each reads
+/// more easily but runs off the bottom of a short terminal, and a help
+/// screen that crops is worse than one that packs.
 fn draw_help(frame: &mut Frame, area: Rect) {
-    let key_col = keymap::LIST_KEYS
-        .iter()
-        .chain(keymap::DETAIL_KEYS)
-        .map(|b| display_width(b.keys))
-        .max()
-        .unwrap_or(0);
+    let every = || keymap::LIST_KEYS.iter().chain(keymap::DETAIL_KEYS);
+    let key_col = every().map(|b| display_width(b.keys)).max().unwrap_or(0);
+    let label_col = every().map(|b| display_width(b.label)).max().unwrap_or(0);
 
     let bound = |bindings: &[keymap::Binding]| {
         bindings
-            .iter()
-            .map(|b| {
-                Line::from(vec![
-                    Span::styled(
-                        format!("  {:>key_col$}  ", b.keys),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                    Span::raw(b.label),
-                ])
+            .chunks(2)
+            .map(|pair| {
+                let spans = pair
+                    .iter()
+                    .flat_map(|b| {
+                        [
+                            Span::styled(
+                                format!("{LEAD_IN}{:>key_col$}  ", b.keys),
+                                Style::default().fg(Color::Cyan),
+                            ),
+                            Span::raw(format!("{:<label_col$}", b.label)),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                Line::from(spans)
             })
             .collect::<Vec<_>>()
     };
@@ -518,8 +663,17 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             .map(|n| Line::from(Span::styled(*n, Style::default().fg(Color::DarkGray)))),
     );
 
+    // Wide enough for two key columns and for the widest note, so nothing
+    // has to wrap to a second line and push the rest off the bottom.
+    let columns = 2 * (LEAD_IN.len() + key_col + COL_GAP + label_col);
+    let notes = keymap::NOTES
+        .iter()
+        .map(|n| display_width(n))
+        .max()
+        .unwrap_or(0);
+    let width = u16::try_from(columns.max(notes) + 2).unwrap_or(u16::MAX);
     let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
-    let popup = centred(area, 62, height);
+    let popup = centred(area, width, height);
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(lines)
@@ -564,17 +718,17 @@ fn column_widths(app: &App, avail: usize) -> (usize, usize, usize, usize) {
         .map(|r| display_width(&r.name))
         .max()
         .unwrap_or(0)
-        .max(display_width("NAME"));
+        .max(display_width(REPO_LABEL));
     let branch_nat = (0..app.repos.len())
         .map(|i| display_width(&app.probe_display(i).branch))
         .max()
         .unwrap_or(0)
-        .max(display_width("BRANCH"));
+        .max(display_width(BRANCH_LABEL));
     let state_nat = (0..app.repos.len())
         .map(|i| display_width(&app.probe_display(i).state))
         .max()
         .unwrap_or(0)
-        .max(display_width("STATE"));
+        .max(display_width(STATE_LABEL));
 
     let name = name_nat.min(avail / 4);
     let branch = branch_nat.min(avail / 6);
@@ -809,6 +963,7 @@ mod tests {
             present: true,
             timed_out: false,
             fetched: true,
+            fetch_head: None,
         });
         let (name, branch, state, result) = column_widths(&a, 80 - PREFIX_W);
         let labels = flatten(&column_label_line(
@@ -858,7 +1013,7 @@ mod tests {
     #[test]
     fn a_footer_with_room_for_every_key_shows_them_all_and_no_ellipsis() {
         let a = app(vec![repo("bill-api")]);
-        let text = flatten(&status_line(&a, false, 200));
+        let text = flatten(&status_line(&a, 200));
         assert!(text.contains("j/k move"), "got {text:?}");
         assert!(text.contains("tab set"), "got {text:?}");
         assert!(text.ends_with("? help  "), "got {text:?}");
@@ -869,7 +1024,7 @@ mod tests {
     fn help_is_the_one_binding_a_narrow_footer_never_drops() {
         let a = app(vec![repo("bill-api")]);
         for width in [12, 24, 40, 60, 80] {
-            let text = flatten(&status_line(&a, false, width));
+            let text = flatten(&status_line(&a, width));
             assert!(
                 text.contains("? help"),
                 "width {width} lost the help hint: {text:?}"
@@ -885,7 +1040,7 @@ mod tests {
     #[test]
     fn a_footer_too_narrow_marks_what_it_dropped() {
         let a = app(vec![repo("bill-api")]);
-        let text = flatten(&status_line(&a, false, 46));
+        let text = flatten(&status_line(&a, 46));
         assert!(text.contains(FOOTER_ELLIPSIS), "got {text:?}");
         assert!(text.contains("? help"), "got {text:?}");
     }
@@ -907,7 +1062,7 @@ mod tests {
     #[test]
     fn overlay_only_bindings_stay_out_of_the_footer() {
         let a = app(vec![repo("bill-api")]);
-        let text = flatten(&status_line(&a, false, 400));
+        let text = flatten(&status_line(&a, 400));
         assert!(!text.contains("re-probe"), "got {text:?}");
         assert!(!text.contains("auto-update"), "got {text:?}");
         assert!(
@@ -919,9 +1074,9 @@ mod tests {
     #[test]
     fn cancel_is_only_hinted_while_a_run_is_live() {
         let mut a = app(vec![repo("bill-api")]);
-        assert!(!flatten(&status_line(&a, false, 200)).contains("esc cancel"));
+        assert!(!flatten(&status_line(&a, 200)).contains("esc cancel"));
         a.run_action = Some("update".into());
-        assert!(flatten(&status_line(&a, false, 200)).contains("esc cancel"));
+        assert!(flatten(&status_line(&a, 200)).contains("esc cancel"));
     }
 
     #[test]
@@ -931,7 +1086,8 @@ mod tests {
 
     #[test]
     fn sidebar_columns_reserve_room_for_the_state_text_instead_of_giving_it_all_to_name() {
-        let (name, state) = sidebar_column_widths(30);
+        let a = app(vec![repo("a-very-long-repo-name-indeed-far-too-long")]);
+        let (name, state) = sidebar_column_widths(&a, 30);
         assert!(
             state > 0,
             "the state column must not be squeezed to nothing"
@@ -940,7 +1096,171 @@ mod tests {
     }
 
     #[test]
+    fn the_sidebar_name_column_shrinks_to_the_names_rather_than_taking_a_fixed_share() {
+        let a = app(vec![repo("bill-api"), repo("crew")]);
+        let (name, _) = sidebar_column_widths(&a, 60);
+        assert_eq!(
+            name,
+            display_width("bill-api"),
+            "the longest name sets the column, so STATE sits beside it"
+        );
+    }
+
+    #[test]
     fn sidebar_columns_handle_zero_available_width() {
-        assert_eq!(sidebar_column_widths(0), (0, 0));
+        let a = app(vec![repo("bill-api")]);
+        assert_eq!(sidebar_column_widths(&a, 0), (0, 0));
+    }
+
+    /// The split's two panes are drawn as separate widgets, so nothing but
+    /// this makes their rules meet: both put a title, a labels line, and a
+    /// rule above the body, and the vertical rule notches at the same row.
+    #[test]
+    fn both_panes_of_the_split_rule_off_their_header_on_the_same_row() {
+        let mut a = app(vec![repo("bill-api"), repo("crew")]);
+        a.detail_open = true;
+        let (list, output) = split_panes(&a, 140, 20);
+
+        assert!(
+            list[LIST_HEADER_ROWS - 1].starts_with('─'),
+            "the list rules off row {}, got {:?}",
+            LIST_HEADER_ROWS - 1,
+            list[LIST_HEADER_ROWS - 1]
+        );
+        assert!(
+            output[LIST_HEADER_ROWS - 1].starts_with('─'),
+            "the detail pane rules off the same row, got {:?}",
+            output[LIST_HEADER_ROWS - 1]
+        );
+    }
+
+    #[test]
+    fn the_split_draws_one_footer_under_both_panes_not_one_each() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.detail_open = true;
+        let (list, output) = split_panes(&a, 140, 20);
+        for pane in [&list, &output] {
+            assert!(
+                !pane.iter().any(|line| line.contains("? help")),
+                "a pane drew its own footer: {pane:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_vertical_rule_notches_where_the_header_rules_meet_it() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.detail_open = true;
+        let rows = frame_rows(&a, 140, 20);
+        let col = detail::sidebar_width(140) as usize;
+        assert_eq!(
+            rows[LIST_HEADER_ROWS - 1].chars().nth(col),
+            Some('┼'),
+            "got {:?}",
+            rows[LIST_HEADER_ROWS - 1]
+        );
+        assert_eq!(rows[0].chars().nth(col), Some('│'), "got {:?}", rows[0]);
+    }
+
+    #[test]
+    fn the_shared_footers_rule_meets_the_vertical_one() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.detail_open = true;
+        let rows = frame_rows(&a, 140, 20);
+        let col = detail::sidebar_width(140) as usize;
+        assert_eq!(rows[rows.len() - 2].chars().nth(col), Some('┴'));
+    }
+
+    /// The overlay grows with the keymap, and `centred` crops rather than
+    /// scrolls, so the notes at the bottom are what a terminal one row too
+    /// short silently loses.
+    #[test]
+    fn the_help_overlay_fits_a_terminal_no_taller_than_thirty_rows() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.help_open = true;
+        let rows = frame_rows(&a, 100, 30);
+        let last = keymap::NOTES.last().unwrap().trim();
+        assert!(
+            rows.iter().any(|line| line.contains(last)),
+            "the last note was cropped off the bottom: {rows:#?}"
+        );
+    }
+
+    /// The blank rows that push the footer down are counted, not measured,
+    /// so an off-by-one there pads the key line off the bottom of the frame
+    /// where nothing else would notice it had gone.
+    #[test]
+    fn the_full_screen_detail_view_keeps_its_footer_on_the_last_row() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.detail_open = true;
+        for height in [8, 12, 40] {
+            let rows = frame_rows(&a, 90, height);
+            assert!(
+                rows.last().unwrap().contains("? help"),
+                "height {height} lost the footer: {rows:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_detail_pane_says_how_the_run_ended() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.detail_open = true;
+        a.run_results[0] = Some(RunStatus::Finished {
+            steps: vec![],
+            exit_code: 1,
+        });
+        assert_eq!(detail_summary(&a), "0 steps · exit 1");
+
+        a.run_results[0] = None;
+        assert_eq!(detail_summary(&a), "no output yet");
+    }
+
+    #[test]
+    fn the_scroll_position_is_only_reported_when_some_output_is_off_screen() {
+        assert_eq!(scroll_position(0, 10, 20), None);
+        assert_eq!(scroll_position(0, 100, 20), Some("1-20 of 100".into()));
+        assert_eq!(scroll_position(90, 100, 20), Some("91-100 of 100".into()));
+    }
+
+    /// Every row of a rendered frame, as plain text with trailing blanks
+    /// trimmed, so a layout assertion can be made against what a terminal
+    /// would actually show.
+    fn frame_rows(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// The split's two panes, each as its own rows, sliced apart at the
+    /// vertical rule and stopping above the footer both of them share.
+    fn split_panes(app: &App, width: u16, height: u16) -> (Vec<String>, Vec<String>) {
+        let mut rows = frame_rows(app, width, height);
+        rows.truncate(rows.len() - FOOTER_ROWS as usize);
+        let col = detail::sidebar_width(width) as usize;
+        let cut = |line: &String, range: std::ops::Range<usize>| {
+            line.chars()
+                .skip(range.start)
+                .take(range.len())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        (
+            rows.iter().map(|l| cut(l, 0..col)).collect(),
+            rows.iter()
+                .map(|l| cut(l, col + 1..width as usize))
+                .collect(),
+        )
     }
 }

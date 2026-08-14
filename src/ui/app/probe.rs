@@ -2,13 +2,15 @@
 //! bounded by the same job limit as a run so a refresh can't swamp a machine
 //! that is already mid-update (section 07). The probe never fetches:
 //! ahead/behind and dirtiness are only ever as fresh as the last time
-//! something else did.
+//! something else did. It does read `FETCH_HEAD`'s timestamp, which is how
+//! it notices when that something else was an `update` action or another
+//! terminal rather than mrx's own poll.
 
 use crate::config::Repo;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Semaphore};
 
@@ -41,6 +43,12 @@ pub struct RepoState {
     /// successfully and others fail (offline, VPN, auth), so this is a
     /// per-repo fact, not a session-wide one.
     pub fetched: bool,
+    /// When `FETCH_HEAD` was last written, or `None` for a repo that has
+    /// never fetched. Git rewrites it on every successful fetch, so a value
+    /// newer than the last probe's is evidence that the remote-tracking refs
+    /// were refreshed by *something*: an `update` action, a `git pull` in
+    /// another terminal, or mrx's own poll.
+    pub fetch_head: Option<SystemTime>,
 }
 
 impl RepoState {
@@ -55,6 +63,7 @@ impl RepoState {
             present: false,
             timed_out: false,
             fetched: false,
+            fetch_head: None,
         }
     }
 
@@ -117,9 +126,36 @@ pub(super) async fn probe_one(index: usize, path: &Path) -> RepoState {
             let mut state = parse_porcelain_v2(&String::from_utf8_lossy(&o.stdout));
             state.index = index;
             state.present = true;
+            state.fetch_head = fetch_head_written_at(path);
             state
         }
         _ => RepoState::absent(index),
+    }
+}
+
+/// When this repo's `FETCH_HEAD` was last written. One `stat` alongside a
+/// `git status` that already spawned a process, and the only way the probe
+/// learns about a fetch it did not perform itself.
+fn fetch_head_written_at(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(git_dir(path).join("FETCH_HEAD"))
+        .ok()?
+        .modified()
+        .ok()
+}
+
+/// The repo's git directory: `.git` itself, or wherever the `gitdir:` line
+/// in it points for a linked worktree or a submodule.
+fn git_dir(path: &Path) -> PathBuf {
+    let dot_git = path.join(".git");
+    if dot_git.is_dir() {
+        return dot_git;
+    }
+    match std::fs::read_to_string(&dot_git) {
+        Ok(text) => match text.strip_prefix("gitdir:").map(str::trim) {
+            Some(target) if !target.is_empty() => path.join(target),
+            _ => dot_git,
+        },
+        Err(_) => dot_git,
     }
 }
 
@@ -177,12 +213,11 @@ fn working_tree_text(state: &RepoState) -> String {
 
 /// Working-tree summary: clean or a modified count, plus ahead/behind when
 /// there is an upstream to compare against. `behind` reads `?` rather than a
-/// number until this specific repo has had a fetch actually succeed: the
-/// count compares against the local remote-tracking ref, so a stale one
-/// would otherwise read as "up to date" instead of "unknown", and a repo
-/// whose own fetch failed (offline, VPN, auth) must not borrow another
-/// repo's success (section 02: "up to date" and "not asked recently" must
-/// not render identically).
+/// number until this specific repo has fetched: the count compares against
+/// the local remote-tracking ref, so a stale one would otherwise read as "up
+/// to date" instead of "unknown", and a repo whose own fetch failed
+/// (offline, VPN, auth) must not borrow another repo's success (section 02:
+/// "up to date" and "not asked recently" must not render identically).
 pub fn dirty_text(state: &RepoState, repo_has_fetched: bool) -> String {
     if state.timed_out {
         return "timed out".into();
@@ -343,6 +378,37 @@ mod tests {
         state.present = true;
         assert_eq!(dirty_text(&state, false), "clean  ↓?");
         assert_eq!(dirty_text(&state, true), "clean  ↓3");
+    }
+
+    #[test]
+    fn a_repo_that_has_never_fetched_has_no_fetch_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        assert_eq!(fetch_head_written_at(dir.path()), None);
+
+        std::fs::write(dir.path().join(".git/FETCH_HEAD"), "abc123\n").unwrap();
+        assert!(fetch_head_written_at(dir.path()).is_some());
+    }
+
+    #[test]
+    fn a_worktrees_gitdir_file_is_followed_to_where_fetch_head_really_lives() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real-git-dir");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("FETCH_HEAD"), "abc123\n").unwrap();
+
+        let worktree = dir.path().join("worktree");
+        std::fs::create_dir(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", real.display()),
+        )
+        .unwrap();
+
+        assert!(
+            fetch_head_written_at(&worktree).is_some(),
+            "a .git file points at the git dir instead of being one"
+        );
     }
 
     #[test]

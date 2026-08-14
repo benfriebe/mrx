@@ -13,7 +13,7 @@ use crate::sets;
 use crate::summarize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// Shown for a repo that has never taken part in a run this session, per
 /// section 02: "a repo that has never been run shows `·` rather than a fake
@@ -44,15 +44,23 @@ pub struct App {
     /// generation is dropped rather than painted over newer data (section
     /// 07, "superseded, not queued").
     pub probe_generation: u64,
-    /// Global indices of repos that have had at least one poll cycle's
-    /// `git fetch` actually succeed this session. Until a given repo is in
-    /// here, its behind column reads unknown rather than claiming to be
-    /// current; a repo whose own fetch keeps failing (offline, VPN, auth)
-    /// must not borrow another repo's success just because they polled in
-    /// the same cycle. Sticky per repo, the same way the old
-    /// session-wide flag was sticky: a later fetch-less reprobe doesn't
-    /// downgrade a repo that has genuinely fetched before.
+    /// Global indices of repos known to have fetched this session, either
+    /// because a poll cycle's own `git fetch` succeeded for them or because
+    /// their `FETCH_HEAD` moved since [`fetch_baseline`](Self::fetch_baseline)
+    /// was taken. Until a given repo is in here, its behind column reads
+    /// unknown rather than claiming to be current; a repo whose own fetch
+    /// keeps failing (offline, VPN, auth) must not borrow another repo's
+    /// success just because they polled in the same cycle. Sticky per repo:
+    /// a later fetch-less reprobe doesn't downgrade a repo that has
+    /// genuinely fetched before.
     pub fetched_repos: BTreeSet<usize>,
+    /// Each repo's `FETCH_HEAD` timestamp as of the first probe that saw it,
+    /// so a later probe can tell a fetch that happened since from one that
+    /// happened days ago. Absent means never probed; `None` means probed and
+    /// it had never fetched. This is what credits a fetch mrx did not
+    /// perform: an `update` action pulls, and the re-probe that follows sees
+    /// the newer timestamp.
+    pub fetch_baseline: BTreeMap<usize, Option<SystemTime>>,
     /// Set by the `r` key; the run loop owns actually spawning the probe
     /// task, since `on_key` has no runtime handle to spawn one with.
     pub probe_requested: bool,
@@ -268,6 +276,7 @@ impl App {
             probing: BTreeSet::new(),
             probe_generation: 0,
             fetched_repos: BTreeSet::new(),
+            fetch_baseline: BTreeMap::new(),
             probe_requested: false,
             run_id: 0,
             run_results: vec![None; n],
@@ -660,6 +669,7 @@ impl App {
         self.probes = vec![None; n];
         self.probing.clear();
         self.fetched_repos.clear();
+        self.fetch_baseline.clear();
         self.run_results = vec![None; n];
         self.detail_scroll.clear();
 
@@ -831,13 +841,30 @@ impl App {
         // Sticky per repo, and set as soon as this one result lands rather
         // than waiting on the rest of the cycle: a repo whose own fetch
         // failed must not borrow another repo's success.
-        if state.fetched {
+        if state.fetched || self.fetch_head_moved(&state) {
             self.fetched_repos.insert(state.index);
         }
         if let Some(slot) = self.probes.get_mut(state.index) {
             *slot = Some(state);
         }
         self.maybe_complete_poll(generation);
+    }
+
+    /// Whether this result's `FETCH_HEAD` is newer than the one the first
+    /// probe of the session recorded, which means something fetched the repo
+    /// meanwhile. Records the baseline on the way through, so the first
+    /// sighting is never itself treated as a fetch: mrx has no idea how old
+    /// a timestamp it has only just read for the first time is.
+    fn fetch_head_moved(&mut self, state: &RepoState) -> bool {
+        match self.fetch_baseline.entry(state.index) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(state.fetch_head);
+                false
+            }
+            std::collections::btree_map::Entry::Occupied(baseline) => {
+                state.fetch_head > *baseline.get()
+            }
+        }
     }
 
     /// The tick loop's poll `Interval` arm always fires; this is what
@@ -1329,6 +1356,12 @@ impl App {
         self.cursor = visible[next];
     }
 
+    /// Move the cursor `dir` half-pages, the same jump `Ctrl-D`/`Ctrl-U`
+    /// make in the detail view, so the chord means the same thing in both.
+    pub fn move_cursor_half_page(&mut self, dir: isize) {
+        self.move_cursor(dir * self.half_page() as isize);
+    }
+
     pub fn move_to_first(&mut self) {
         if let Some(&first) = self.visible_indices().first() {
             self.cursor = first;
@@ -1697,6 +1730,7 @@ mod tests {
             present: true,
             timed_out: false,
             fetched: false,
+            fetch_head: None,
         }
     }
 
@@ -1710,6 +1744,78 @@ mod tests {
             !a.probing.contains(&0),
             "an applied result clears in-flight"
         );
+    }
+
+    /// A repo behind its upstream, so `dirty_text` has a number to either
+    /// print or withhold.
+    fn behind_by(index: usize, behind: u32, fetch_head: Option<SystemTime>) -> RepoState {
+        RepoState {
+            upstream: Some("origin/main".into()),
+            behind,
+            fetch_head,
+            ..probed(index, "main")
+        }
+    }
+
+    #[test]
+    fn the_first_probe_of_a_repo_is_not_itself_evidence_of_a_fetch() {
+        let mut a = app(&["foo"]);
+        let generation = a.begin_probe(&[0]);
+        a.on_probe(generation, behind_by(0, 3, Some(SystemTime::now())));
+        assert!(
+            !a.fetched_repos.contains(&0),
+            "mrx has no idea how old a timestamp it has only just read is"
+        );
+        assert!(a.probe_display(0).state.contains("↓?"));
+    }
+
+    /// The case that makes an update look broken: `u` runs `git pull`, the
+    /// re-probe after it finds a clean repo, and the behind column has to
+    /// stop saying unknown. mrx never fetched, so the moved `FETCH_HEAD` is
+    /// the only evidence there is.
+    #[test]
+    fn a_fetch_mrx_did_not_perform_still_settles_the_behind_count() {
+        let mut a = app(&["foo"]);
+        let before = SystemTime::now();
+        let generation = a.begin_probe(&[0]);
+        a.on_probe(generation, behind_by(0, 3, Some(before)));
+
+        let generation = a.begin_probe(&[0]);
+        a.on_probe(
+            generation,
+            behind_by(0, 0, Some(before + Duration::from_secs(1))),
+        );
+
+        assert!(a.fetched_repos.contains(&0));
+        assert_eq!(a.probe_display(0).state, "clean");
+    }
+
+    #[test]
+    fn a_repo_that_has_never_fetched_starts_counting_from_its_first_one() {
+        let mut a = app(&["foo"]);
+        let generation = a.begin_probe(&[0]);
+        a.on_probe(generation, behind_by(0, 3, None));
+
+        let generation = a.begin_probe(&[0]);
+        a.on_probe(generation, behind_by(0, 3, Some(SystemTime::now())));
+
+        assert!(
+            a.fetched_repos.contains(&0),
+            "a FETCH_HEAD appearing where there was none is a first fetch"
+        );
+        assert!(a.probe_display(0).state.contains("↓3"));
+    }
+
+    #[test]
+    fn an_unchanged_fetch_head_leaves_the_behind_count_unknown() {
+        let mut a = app(&["foo"]);
+        let stamp = Some(SystemTime::now());
+        for _ in 0..3 {
+            let generation = a.begin_probe(&[0]);
+            a.on_probe(generation, behind_by(0, 3, stamp));
+        }
+        assert!(!a.fetched_repos.contains(&0));
+        assert!(a.probe_display(0).state.contains("↓?"));
     }
 
     #[test]
@@ -2454,6 +2560,7 @@ mod tests {
             present: true,
             timed_out: false,
             fetched: true,
+            fetch_head: None,
         };
         let mut dirty = clean.clone();
         dirty.index = 1;
@@ -2497,6 +2604,7 @@ mod tests {
                     present: true,
                     timed_out: false,
                     fetched: true,
+                    fetch_head: None,
                 },
             );
         }
@@ -2576,6 +2684,7 @@ mod tests {
                 present: true,
                 timed_out: false,
                 fetched: false,
+                fetch_head: None,
             },
         );
         assert!(

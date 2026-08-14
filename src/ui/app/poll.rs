@@ -232,6 +232,7 @@ mod tests {
             present,
             timed_out: false,
             fetched: false,
+            fetch_head: None,
         }
     }
 

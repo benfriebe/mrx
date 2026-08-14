@@ -50,6 +50,7 @@ pub const LIST_KEYS: &[Binding] = &[
     Binding::new(":", "action"),
     Binding::new("q", "quit"),
     Binding::new("tab", "set"),
+    Binding::overlay_only("^d/^u", "half page"),
     Binding::overlay_only("g/G", "first/last"),
     Binding::overlay_only("a/A", "select all/none"),
     Binding::overlay_only("i", "invert selection"),
@@ -75,8 +76,6 @@ pub const DETAIL_KEYS: &[Binding] = &[
 
 const FILTER_KEYS: &[Binding] = &[Binding::new("esc", "clear"), Binding::new("enter", "keep")];
 
-const SIDEBAR_KEYS: &[Binding] = &[Binding::new("j/k", "move"), Binding::new("esc", "back")];
-
 /// Only bound while a run is live, so it is appended rather than listed: a
 /// hint for a key that does nothing is worse than no hint.
 const CANCEL: Binding = Binding::new("esc", "cancel");
@@ -85,20 +84,20 @@ const CANCEL: Binding = Binding::new("esc", "cancel");
 /// keymap cannot show.
 pub const NOTES: &[&str] = &[
     "  an empty selection acts on the row under the cursor",
-    "  ↓? means this repo has not been fetched, so its",
-    "     behind count is unknown. F starts the poll.",
+    "  ↓? means nothing has fetched this repo since mrx",
+    "     started, so its behind count is unknown. u, f and",
+    "     F all resolve it, as does a pull in another shell.",
     "  with mouse capture on, hold your terminal's modifier",
     "     (option, or shift) to select text as usual",
 ];
 
-/// What the footer should offer right now. `sidebar` distinguishes the
-/// narrow list beside an open detail view from the full-width one.
-pub fn bindings_for(app: &App, sidebar: bool) -> Vec<Binding> {
+/// What the footer should offer right now. There is one footer under the
+/// detail split rather than one per pane, and its keys are the detail
+/// view's: with the split open, those are what every keystroke reaches,
+/// whichever pane the pointer happens to be over.
+pub fn bindings_for(app: &App) -> Vec<Binding> {
     if app.filtering {
         return FILTER_KEYS.to_vec();
-    }
-    if sidebar {
-        return SIDEBAR_KEYS.to_vec();
     }
     if app.detail_open {
         return DETAIL_KEYS.to_vec();

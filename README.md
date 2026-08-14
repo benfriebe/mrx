@@ -109,7 +109,8 @@ with `…` standing in for the rest. `? help` is budgeted first and drawn last, 
 survives every width. **`?` opens the full keymap**, listing the keys the footer left
 out along with the detail view's.
 
-`j`/`k` (or the arrow keys) move the cursor, `g`/`G` jump to the first or last row.
+`j`/`k` (or the arrow keys) move the cursor, `Ctrl-D`/`Ctrl-U` move half a page, and
+`g`/`G` jump to the first or last row.
 `space` toggles the cursor row's selection and moves on, `a` selects every row the
 filter currently shows, `A` clears the selection, and `i` inverts it. An empty
 selection means "the row under the cursor", which is why the header always shows at
@@ -134,6 +135,22 @@ detail view following. Each step of a run is its own labelled section rather tha
 scrollback. `Ctrl-D`/`Ctrl-U` scroll half a page, kept per repo; `y` copies the
 visible step's output, falling back to a temp file when there's no clipboard binary
 on `PATH`. `Esc` goes back to the full-width list.
+
+```
+  mrx · work                     │  guest-gateway · update
+   REPO                STATE     │  2 steps · exit 0
+─────────────────────────────────┼──────────────────────────────────────────────────────────────────
+   crew-frontend       clean     │  $ git pull  ✓
+ ▸ guest-gateway       clean     │  Updating b31d942..5013b52
+   integration-config  clean     │  Fast-forward
+─────────────────────────────────┴──────────────────────────────────────────────────────────────────
+  j/k move  ^d/^u scroll  y copy  esc back  q quit  ? help
+```
+
+The split is one frame divided, not two windows: the panes rule off their headers on
+the same row, a rule runs between them, and one key line sits under both. The line
+under the detail title says how the run ended and, when the output is longer than the
+pane, which slice of it you're looking at.
 
 `o` opens the cursor row's repo in `$EDITOR` (`vi` if it's unset), from either the
 plain list or the detail view. The app suspends properly to do it: raw mode, the
@@ -162,7 +179,10 @@ live they ask first, since losing sight of an in-flight action isn't something t
 do by reflex.
 
 The ahead/behind counts only ever reflect the last fetch, so a repo that's ↓3
-behind reads ↓? until something updates the remote-tracking ref. `F` toggles a
+behind reads ↓? until something updates the remote-tracking ref. Anything that
+fetches counts, not just mrx: the probe reads `FETCH_HEAD`'s timestamp, so running
+`update` on a repo, or pulling it in another terminal, settles its count on the
+next probe. `F` toggles a
 freshness poll, `git fetch --quiet` across the set on an interval (5 minutes by
 default), suspended rather than queued while a run is live; `Ctrl-A` layers a
 narrow, opt-in auto-update on top, fast-forwarding whatever a poll finds behind
