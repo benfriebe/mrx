@@ -2,11 +2,14 @@ mod cli;
 mod config;
 mod executor;
 mod operations;
+mod render_plain;
+mod sets;
 mod summarize;
 mod tui;
 
 use clap::Parser;
 use cli::{Cli, Command};
+use std::io::{stdout, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
@@ -20,27 +23,56 @@ fn absolutize(p: &Path) -> PathBuf {
     }
 }
 
+/// `-c` wins outright. Otherwise the set named by `-s` or `$MRX_SET` must exist:
+/// a named set that resolves to nothing is a typo, not a reason to silently
+/// operate on a different repo list. Only the implicit default set falls back to
+/// ~/.mrconfig, which keeps an untouched setup working.
 fn resolve_config_path(cli: &Cli) -> PathBuf {
-    let raw = if let Some(ref p) = cli.config {
-        p.clone()
-    } else {
-        dirs::home_dir()
-            .expect("cannot determine home directory")
-            .join(".mrconfig")
+    if let Some(ref p) = cli.config {
+        return absolutize(p);
+    }
+
+    let named = cli
+        .set
+        .clone()
+        .or_else(|| std::env::var("MRX_SET").ok())
+        .filter(|s| !s.trim().is_empty());
+
+    let raw = match named {
+        Some(name) => sets::resolve(&name).unwrap_or_else(|| {
+            eprintln!("error: no config for set '{}'. Looked in:", name);
+            for candidate in sets::candidates(&name) {
+                eprintln!("  {}", candidate.display());
+            }
+            eprintln!("run `mrx sets` to see what is defined");
+            std::process::exit(2);
+        }),
+        None => sets::resolve(sets::DEFAULT_SET)
+            .or_else(sets::legacy_config)
+            .expect("cannot determine home directory"),
     };
     absolutize(&raw)
 }
 
-fn resolve_base_dir(cli: &Cli, config_path: &Path) -> PathBuf {
-    let raw = if let Some(ref d) = cli.directory {
-        d.clone()
-    } else {
-        config_path
-            .parent()
-            .expect("config has no parent dir")
-            .to_path_buf()
-    };
-    absolutize(&raw)
+fn print_sets(active: &Path) {
+    let found = sets::discover();
+
+    if found.is_empty() {
+        let dir = sets::config_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| "~/.config/mrx".into());
+        println!("no sets defined. Create {}/<name>{}", dir, sets::SET_SUFFIX);
+    }
+
+    for (name, path) in &found {
+        let marker = if path == active { "*" } else { " " };
+        println!("{} {:16} {}", marker, name, path.display());
+    }
+
+    // The active config may be an unnamed one: ~/.mrconfig, or an explicit -c.
+    if !found.iter().any(|(_, p)| p == active) {
+        println!("* {:16} {}", "(unnamed)", active.display());
+    }
 }
 
 fn max_jobs(cli: &Cli) -> usize {
@@ -52,12 +84,23 @@ async fn main() {
     let cli = Cli::parse();
 
     let config_path = resolve_config_path(&cli);
-    let base_dir = resolve_base_dir(&cli, &config_path);
-    let (repos, defaults) = config::parse_config(&config_path, &base_dir);
+
+    // Sets command: independent of the config's contents.
+    if matches!(cli.command, Command::Sets) {
+        print_sets(&config_path);
+        return;
+    }
+
+    let dir_override = cli.directory.as_deref().map(absolutize);
+    let config::Config {
+        repos,
+        defaults,
+        base,
+    } = config::load(&config_path, dir_override.as_deref());
 
     // Register command: add current dir to config
     if cli.command.is_register() {
-        register(&config_path, &base_dir);
+        register(&config_path, &base);
         return;
     }
 
@@ -96,8 +139,11 @@ async fn main() {
     let jobs = max_jobs(&cli);
     let rx = executor::execute_all(&repos, ops, jobs, config_path.clone());
 
-    // Run TUI
-    let success = tui::run(repos, &cli.command, rx).expect("TUI error");
+    let success = if stdout().is_terminal() && !cli.plain {
+        tui::run(repos, &cli.command, rx, cli.exit_on_done).expect("TUI error")
+    } else {
+        render_plain::run(repos, cli.command.display_name(), rx).await
+    };
 
     std::process::exit(if success { 0 } else { 1 });
 }

@@ -18,7 +18,12 @@ pub enum Operation {
         work_dir: PathBuf,
         action: String,
         args: Vec<String>,
+        /// Config keys exported as MR_<KEY>, so a section can hand its command
+        /// context without the command string having to interpolate anything.
+        env: Vec<(String, String)>,
     },
+    /// Steps in order; the first non-zero exit ends the chain.
+    Sequence(Vec<Operation>),
     /// Nothing to do (e.g. checkout for already-existing repo)
     Skip { reason: String },
     /// Repo doesn't exist and we can't clone (no URL)
@@ -37,35 +42,132 @@ fn resolve_body<'a>(
         .or_else(|| defaults.get(action).map(String::as_str))
 }
 
+/// Every config key visible to this repo, as `MR_<KEY>` pairs.
+///
+/// Passing `branch` and friends as environment rather than interpolating them into
+/// the command string means a branch name can never break out of the shell word it
+/// sits in. Keys that can't spell an environment variable name are dropped.
+fn config_env(repo: &Repo, defaults: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    let mut env: BTreeMap<&str, &str> = BTreeMap::new();
+    for (k, v) in defaults.iter().chain(repo.keys.iter()) {
+        env.insert(k, v);
+    }
+    env.into_iter()
+        .filter(|(k, _)| !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()))
+        .map(|(k, v)| (env_var_name(k), v.to_string()))
+        .collect()
+}
+
+/// Environment variable name for a config key: `post_update` becomes `MR_POST_UPDATE`.
+/// Anything that can't spell an identifier becomes an underscore.
+fn env_var_name(key: &str) -> String {
+    let mut name = String::with_capacity(key.len() + 3);
+    name.push_str("MR_");
+    name.extend(key.chars().map(|c| {
+        if c.is_ascii_alphanumeric() {
+            c.to_ascii_uppercase()
+        } else {
+            '_'
+        }
+    }));
+    name
+}
+
+fn shell(
+    body: &str,
+    work_dir: PathBuf,
+    action: &str,
+    args: Vec<String>,
+    repo: &Repo,
+    defaults: &BTreeMap<String, String>,
+) -> Operation {
+    Operation::Shell {
+        cmd: body.to_string(),
+        work_dir,
+        action: action.to_string(),
+        args,
+        env: config_env(repo, defaults),
+    }
+}
+
+/// Collapse steps into one operation, leaving a lone step unwrapped.
+fn sequence(mut steps: Vec<Operation>) -> Operation {
+    match steps.len() {
+        0 => Operation::Skip {
+            reason: "nothing to do".into(),
+        },
+        1 => steps.remove(0),
+        _ => Operation::Sequence(steps),
+    }
+}
+
+/// How this repo gets onto disk: its own `checkout` body if it has one, else the
+/// URL parsed out of that key.
+fn clone_step(repo: &Repo, defaults: &BTreeMap<String, String>) -> Option<Operation> {
+    if let Some(body) = resolve_body(repo, defaults, "checkout") {
+        let parent = repo
+            .path
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| repo.path.clone());
+        return Some(shell(body, parent, "checkout", vec![], repo, defaults));
+    }
+    repo.clone_url.as_ref().map(|url| Operation::Clone {
+        url: url.clone(),
+        dest: repo.path.clone(),
+    })
+}
+
+/// A `post_<action>` step, if one is defined anywhere in the cascade.
+fn post_step(repo: &Repo, defaults: &BTreeMap<String, String>, action: &str) -> Option<Operation> {
+    let key = format!("post_{action}");
+    resolve_body(repo, defaults, &key)
+        .map(|body| shell(body, repo.path.clone(), &key, vec![], repo, defaults))
+}
+
 pub fn plan(command: &Command, repo: &Repo, defaults: &BTreeMap<String, String>) -> Operation {
     let exists = repo.path.is_dir();
 
     match command {
         Command::Update | Command::Pull => {
-            if let Some(body) = resolve_body(repo, defaults, "update") {
-                if exists {
-                    return Operation::Shell {
-                        cmd: body.to_string(),
-                        work_dir: repo.path.clone(),
-                        action: "update".into(),
-                        args: vec![],
-                    };
+            let mut steps = Vec::new();
+
+            if !exists {
+                match clone_step(repo, defaults) {
+                    Some(step) => steps.push(step),
+                    None => return Operation::NotCheckedOut,
                 }
-                // not checked out: fall through to clone-if-possible
-            }
-            if exists {
-                Operation::Git {
+                // A fresh clone still needs whatever the repo's update does, which is
+                // where install steps live. Without this, a newly cloned repo is the
+                // one repo in the set that never gets set up.
+                if let Some(body) = resolve_body(repo, defaults, "update") {
+                    steps.push(shell(
+                        body,
+                        repo.path.clone(),
+                        "update",
+                        vec![],
+                        repo,
+                        defaults,
+                    ));
+                }
+            } else if let Some(body) = resolve_body(repo, defaults, "update") {
+                steps.push(shell(
+                    body,
+                    repo.path.clone(),
+                    "update",
+                    vec![],
+                    repo,
+                    defaults,
+                ));
+            } else {
+                steps.push(Operation::Git {
                     args: vec!["pull".into()],
                     work_dir: repo.path.clone(),
-                }
-            } else if let Some(url) = &repo.clone_url {
-                Operation::Clone {
-                    url: url.clone(),
-                    dest: repo.path.clone(),
-                }
-            } else {
-                Operation::NotCheckedOut
+                });
             }
+
+            steps.extend(post_step(repo, defaults, "update"));
+            sequence(steps)
         }
 
         Command::Status => builtin_or_shell(
@@ -94,43 +196,28 @@ pub fn plan(command: &Command, repo: &Repo, defaults: &BTreeMap<String, String>)
                     reason: "already exists".into(),
                 };
             }
-            if let Some(body) = resolve_body(repo, defaults, "checkout") {
-                let parent = repo
-                    .path
-                    .parent()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| repo.path.clone());
-                return Operation::Shell {
-                    cmd: body.to_string(),
-                    work_dir: parent,
-                    action: "checkout".into(),
-                    args: vec![],
-                };
-            }
-            if let Some(url) = &repo.clone_url {
-                Operation::Clone {
-                    url: url.clone(),
-                    dest: repo.path.clone(),
-                }
-            } else {
-                Operation::Skip {
+            let Some(step) = clone_step(repo, defaults) else {
+                return Operation::Skip {
                     reason: "no clone URL".into(),
-                }
-            }
+                };
+            };
+            let mut steps = vec![step];
+            steps.extend(post_step(repo, defaults, "checkout"));
+            sequence(steps)
         }
 
         Command::Run { cmd } => {
-            let full_cmd = cmd.join(" ");
-            if exists {
-                Operation::Shell {
-                    cmd: full_cmd,
-                    work_dir: repo.path.clone(),
-                    action: "run".into(),
-                    args: vec![],
-                }
-            } else {
-                Operation::NotCheckedOut
+            if !exists {
+                return Operation::NotCheckedOut;
             }
+            shell(
+                &cmd.join(" "),
+                repo.path.clone(),
+                "run",
+                vec![],
+                repo,
+                defaults,
+            )
         }
 
         Command::Custom(parts) => {
@@ -145,20 +232,17 @@ pub fn plan(command: &Command, repo: &Repo, defaults: &BTreeMap<String, String>)
             if !exists {
                 return Operation::NotCheckedOut;
             }
-            match resolve_body(repo, defaults, &name) {
-                Some(body) => Operation::Shell {
-                    cmd: body.to_string(),
-                    work_dir: repo.path.clone(),
-                    action: name,
-                    args: tail,
-                },
-                None => Operation::Skip {
+            let Some(body) = resolve_body(repo, defaults, &name) else {
+                return Operation::Skip {
                     reason: format!("no {} action defined", name),
-                },
-            }
+                };
+            };
+            let mut steps = vec![shell(body, repo.path.clone(), &name, tail, repo, defaults)];
+            steps.extend(post_step(repo, defaults, &name));
+            sequence(steps)
         }
 
-        Command::List | Command::Ls | Command::Register => {
+        Command::List | Command::Ls | Command::Sets | Command::Register => {
             unreachable!("command doesn't use operations")
         }
     }
@@ -174,20 +258,17 @@ fn builtin_or_shell(
     if !exists {
         return Operation::NotCheckedOut;
     }
-    if let Some(body) = resolve_body(repo, defaults, action) {
-        return Operation::Shell {
-            cmd: body.to_string(),
+    let body = match resolve_body(repo, defaults, action) {
+        Some(body) => shell(body, repo.path.clone(), action, vec![], repo, defaults),
+        None => Operation::Git {
+            args: git_args,
             work_dir: repo.path.clone(),
-            action: action.into(),
-            args: vec![],
-        };
-    }
-    Operation::Git {
-        args: git_args,
-        work_dir: repo.path.clone(),
-    }
+        },
+    };
+    let mut steps = vec![body];
+    steps.extend(post_step(repo, defaults, action));
+    sequence(steps)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +377,135 @@ mod tests {
             Operation::NotCheckedOut => {}
             other => panic!("expected NotCheckedOut, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn missing_repo_with_update_plans_clone_then_update() {
+        let repo = Repo {
+            name: "r".into(),
+            path: PathBuf::from("/this/path/does/not/exist/ever"),
+            clone_url: Some("git@example.com:r.git".into()),
+            keys: BTreeMap::new(),
+        };
+        let defs = defaults(&[("update", "yarn install")]);
+
+        match plan(&Command::Update, &repo, &defs) {
+            Operation::Sequence(steps) => {
+                assert_eq!(steps.len(), 2);
+                assert!(matches!(steps[0], Operation::Clone { .. }));
+                match &steps[1] {
+                    Operation::Shell { cmd, work_dir, .. } => {
+                        assert_eq!(cmd, "yarn install");
+                        assert_eq!(work_dir, &repo.path, "setup runs inside the fresh clone");
+                    }
+                    other => panic!("expected Shell, got {other:?}"),
+                }
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn checkout_body_wins_over_parsed_clone_url() {
+        let repo = Repo {
+            name: "r".into(),
+            path: PathBuf::from("/nope/r"),
+            clone_url: Some("git@example.com:r.git".into()),
+            keys: BTreeMap::from([(
+                "checkout".to_string(),
+                "git clone --depth 1 x r".to_string(),
+            )]),
+        };
+
+        match plan(&Command::Checkout, &repo, &BTreeMap::new()) {
+            Operation::Shell { cmd, work_dir, .. } => {
+                assert_eq!(cmd, "git clone --depth 1 x r");
+                assert_eq!(work_dir, PathBuf::from("/nope"), "clones from the parent");
+            }
+            other => panic!("expected Shell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn post_action_appends_to_builtin_and_override_alike() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let repo = repo_with_keys(dir.path().to_path_buf(), &[]);
+        let defs = defaults(&[("post_update", "./setup.sh")]);
+        match plan(&Command::Update, &repo, &defs) {
+            Operation::Sequence(steps) => {
+                assert!(matches!(steps[0], Operation::Git { .. }));
+                assert!(matches!(&steps[1], Operation::Shell { cmd, .. } if cmd == "./setup.sh"));
+            }
+            other => panic!("expected Sequence after git pull, got {other:?}"),
+        }
+
+        let repo = repo_with_keys(dir.path().to_path_buf(), &[("status", "git status -sb")]);
+        let defs = defaults(&[("post_status", "echo done")]);
+        match plan(&Command::Status, &repo, &defs) {
+            Operation::Sequence(steps) => assert_eq!(steps.len(), 2),
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn existing_repo_without_overrides_still_plans_a_bare_pull() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo_with_keys(dir.path().to_path_buf(), &[]);
+
+        match plan(&Command::Update, &repo, &BTreeMap::new()) {
+            Operation::Git { args, .. } => assert_eq!(args, vec!["pull".to_string()]),
+            other => panic!("default behaviour changed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_keys_are_exported_with_section_winning() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo_with_keys(
+            dir.path().to_path_buf(),
+            &[("branch", "master"), ("update", "sync.sh")],
+        );
+        let defs = defaults(&[("branch", "main"), ("reset", "false")]);
+
+        match plan(&Command::Update, &repo, &defs) {
+            Operation::Shell { env, .. } => {
+                let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+                assert_eq!(get("MR_BRANCH"), Some("master"), "section beats DEFAULT");
+                assert_eq!(get("MR_RESET"), Some("false"), "DEFAULT still reaches env");
+                assert_eq!(get("MR_UPDATE"), Some("sync.sh"));
+            }
+            other => panic!("expected Shell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn env_names_are_sanitised() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo_with_keys(
+            dir.path().to_path_buf(),
+            &[("post-hook", "x"), ("2fast", "y"), ("update", "sync.sh")],
+        );
+
+        match plan(&Command::Update, &repo, &BTreeMap::new()) {
+            Operation::Shell { env, .. } => {
+                let names: Vec<&str> = env.iter().map(|(n, _)| n.as_str()).collect();
+                assert!(names.contains(&"MR_POST_HOOK"), "got {names:?}");
+                assert!(
+                    !names.iter().any(|n| n.contains("2FAST")),
+                    "leading-digit keys are dropped: {names:?}"
+                );
+            }
+            other => panic!("expected Shell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn env_var_name_uppercases_and_sanitises() {
+        assert_eq!(env_var_name("branch"), "MR_BRANCH");
+        assert_eq!(env_var_name("post_update"), "MR_POST_UPDATE");
+        assert_eq!(env_var_name("Reset"), "MR_RESET");
+        assert_eq!(env_var_name("deploy-target"), "MR_DEPLOY_TARGET");
+        assert_eq!(env_var_name("a.b c"), "MR_A_B_C");
     }
 }

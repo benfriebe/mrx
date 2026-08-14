@@ -6,15 +6,47 @@ pub fn summarize(action: &str, stdout: &str, stderr: &str, exit_code: i32) -> St
         return msg;
     }
 
-    match action {
-        "update" => summarize_pull(stdout, stderr),
-        "status" => summarize_status(stdout),
-        "diff" => summarize_diff(stdout),
-        "push" => summarize_push(stdout, stderr),
-        "fetch" => summarize_fetch(stdout, stderr),
-        "checkout" => summarize_clone(stderr),
-        "list" | "register" => String::new(),
-        _ => summarize_generic(stdout, stderr),
+    match Shape::of(action) {
+        Shape::Pull => summarize_pull(stdout, stderr),
+        Shape::Status => summarize_status(stdout),
+        Shape::Diff => summarize_diff(stdout),
+        Shape::Push => summarize_push(stdout, stderr),
+        Shape::Fetch => summarize_fetch(stdout, stderr),
+        Shape::Clone => summarize_clone(stderr),
+        Shape::Silent => String::new(),
+        Shape::Generic => summarize_generic(stdout, stderr),
+    }
+}
+
+/// How an action's output should be read.
+///
+/// Action names are an open set because `.mrconfig` can define its own, so the
+/// name is narrowed here, once. Consumers match on the shape and stay exhaustive,
+/// which is what the old `match command` gave us before custom actions existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    Pull,
+    Status,
+    Diff,
+    Push,
+    Fetch,
+    Clone,
+    Silent,
+    Generic,
+}
+
+impl Shape {
+    pub fn of(action: &str) -> Self {
+        match action {
+            "update" => Shape::Pull,
+            "status" => Shape::Status,
+            "diff" => Shape::Diff,
+            "push" => Shape::Push,
+            "fetch" => Shape::Fetch,
+            "checkout" => Shape::Clone,
+            "list" | "register" => Shape::Silent,
+            _ => Shape::Generic,
+        }
     }
 }
 
@@ -150,4 +182,44 @@ fn first_meaningful_line(s: &str) -> Option<String> {
                 l.to_string()
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_actions_map_to_their_own_shape() {
+        assert_eq!(Shape::of("update"), Shape::Pull);
+        assert_eq!(Shape::of("status"), Shape::Status);
+        assert_eq!(Shape::of("diff"), Shape::Diff);
+        assert_eq!(Shape::of("push"), Shape::Push);
+        assert_eq!(Shape::of("fetch"), Shape::Fetch);
+        assert_eq!(Shape::of("checkout"), Shape::Clone);
+        assert_eq!(Shape::of("list"), Shape::Silent);
+        assert_eq!(Shape::of("register"), Shape::Silent);
+    }
+
+    #[test]
+    fn unknown_actions_fall_back_to_generic() {
+        assert_eq!(Shape::of("deploy"), Shape::Generic);
+        assert_eq!(Shape::of("run"), Shape::Generic);
+        assert_eq!(Shape::of(""), Shape::Generic);
+    }
+
+    #[test]
+    fn aliases_are_normalised_before_they_get_here() {
+        // cli::Command::display_name maps pull -> update, co -> checkout, ls -> list,
+        // so the bare alias is not a name summarize ever sees.
+        assert_eq!(Shape::of("pull"), Shape::Generic);
+    }
+
+    #[test]
+    fn a_failure_reports_its_error_whatever_the_shape() {
+        assert_eq!(
+            summarize("status", "", "fatal: not a repo\n", 128),
+            "fatal: not a repo"
+        );
+        assert_eq!(summarize("deploy", "", "", 3), "exit code 3");
+    }
 }

@@ -32,6 +32,7 @@ pub fn run(
     repos: Vec<Repo>,
     command: &Command,
     mut rx: mpsc::UnboundedReceiver<TaskEvent>,
+    exit_on_done: bool,
 ) -> io::Result<bool> {
     install_panic_hook();
 
@@ -59,6 +60,12 @@ pub fn run(
 
         // Render
         terminal.draw(|frame| render::draw(frame, &state))?;
+
+        // Sticking around after the work finishes is the point of the TUI, so this
+        // is opt-in; without the flag the loop still waits for `q`.
+        if state.all_done && exit_on_done {
+            break;
+        }
 
         // Handle input
         if let Some(app_event) = event::poll(Duration::from_millis(80)) {
