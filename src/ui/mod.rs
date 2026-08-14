@@ -32,11 +32,24 @@ pub fn install_panic_hook() {
     }));
 }
 
-/// Enter raw mode and the alternate screen, returning a ready-to-draw terminal.
+/// Enter raw mode and the alternate screen, returning a ready-to-draw
+/// terminal. Rolls back whatever it already did if a later step fails, so a
+/// caller that gets `Err` back never has to wonder whether raw mode or the
+/// alternate screen were left engaged: neither is.
 pub fn setup_terminal() -> io::Result<Term> {
     terminal::enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen)?;
-    Terminal::new(CrosstermBackend::new(stdout()))
+    if let Err(e) = execute!(stdout(), EnterAlternateScreen) {
+        let _ = terminal::disable_raw_mode();
+        return Err(e);
+    }
+    match Terminal::new(CrosstermBackend::new(stdout())) {
+        Ok(term) => Ok(term),
+        Err(e) => {
+            let _ = execute!(stdout(), LeaveAlternateScreen);
+            let _ = terminal::disable_raw_mode();
+            Err(e)
+        }
+    }
 }
 
 /// Leave the alternate screen and restore normal terminal input.

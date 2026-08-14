@@ -363,6 +363,118 @@ fn an_early_return_restores_the_terminal_over_a_real_pty_without_panicking() {
     );
 }
 
+/// `setup_terminal` must roll back raw mode itself if a later step of its
+/// own setup fails, rather than leaving it on with no guard yet
+/// constructed to undo it: the `setup_terminal_partial_failure` fixture
+/// breaks stdout before raw mode is even entered, so raw mode succeeds
+/// (it goes through the tty, not stdout) but entering the alternate screen
+/// fails right after.
+#[test]
+fn setup_terminal_rolls_back_raw_mode_when_a_later_step_fails() {
+    require_script();
+    let build = Command::new("cargo")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "build",
+            "--example",
+            "setup_terminal_partial_failure",
+            "--quiet",
+        ])
+        .status()
+        .expect("failed to build the setup_terminal fixture");
+    assert!(build.success(), "the setup_terminal fixture must build");
+
+    let example_bin = Path::new(env!("CARGO_BIN_EXE_mrx"))
+        .parent()
+        .expect("target/debug")
+        .join("examples")
+        .join("setup_terminal_partial_failure");
+    assert!(
+        example_bin.is_file(),
+        "expected the fixture at {}",
+        example_bin.display()
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let before = dir.path().join("before.txt");
+    let after = dir.path().join("after.txt");
+    let command_line = sh_quote(&example_bin.display().to_string());
+    let driver = write_driver_script(dir.path(), &command_line, &before, &after);
+
+    let session = run_in_pty(&driver, &[], &[], Duration::from_secs(10));
+
+    assert!(
+        !session.timed_out,
+        "the fixture must return promptly once its own setup fails"
+    );
+    let out = String::from_utf8_lossy(&session.output);
+    assert!(
+        out.contains("setup_terminal failed as expected"),
+        "the fixture must actually hit the failure it means to exercise, got: {out}"
+    );
+
+    let before_txt = std::fs::read_to_string(&before).unwrap_or_default();
+    let after_txt = std::fs::read_to_string(&after).unwrap_or_default();
+    assert_eq!(
+        normalize_stty(&before_txt),
+        normalize_stty(&after_txt),
+        "raw mode must not survive a setup_terminal that itself returned Err, got: {out}"
+    );
+}
+
+/// `run` (the one-shot progress view) must restore the terminal on an
+/// early `Err` return from inside its own draw loop, not just on the
+/// normal quit path: the `run_view_draw_failure` fixture breaks stdout
+/// well after `run` has already entered raw mode and the alternate screen
+/// successfully, forcing a later `terminal.draw` to fail instead.
+#[test]
+fn the_one_shot_view_restores_raw_mode_on_an_early_draw_failure() {
+    require_script();
+    let build = Command::new("cargo")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["build", "--example", "run_view_draw_failure", "--quiet"])
+        .status()
+        .expect("failed to build the run-view fixture");
+    assert!(build.success(), "the run-view fixture must build");
+
+    let example_bin = Path::new(env!("CARGO_BIN_EXE_mrx"))
+        .parent()
+        .expect("target/debug")
+        .join("examples")
+        .join("run_view_draw_failure");
+    assert!(
+        example_bin.is_file(),
+        "expected the fixture at {}",
+        example_bin.display()
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let before = dir.path().join("before.txt");
+    let after = dir.path().join("after.txt");
+    let command_line = sh_quote(&example_bin.display().to_string());
+    let driver = write_driver_script(dir.path(), &command_line, &before, &after);
+
+    let session = run_in_pty(&driver, &[], &[], Duration::from_secs(10));
+
+    assert!(
+        !session.timed_out,
+        "the fixture must return promptly once its forced draw failure hits"
+    );
+    let out = String::from_utf8_lossy(&session.output);
+    assert!(
+        out.contains("run() returned Err as expected"),
+        "the fixture must actually hit the draw failure it means to exercise, got: {out}"
+    );
+
+    let before_txt = std::fs::read_to_string(&before).unwrap_or_default();
+    let after_txt = std::fs::read_to_string(&after).unwrap_or_default();
+    assert_eq!(
+        normalize_stty(&before_txt),
+        normalize_stty(&after_txt),
+        "raw mode must not survive an early Err return from inside run's draw loop, got: {out}"
+    );
+}
+
 #[test]
 fn a_panic_restores_the_terminal_over_a_real_pty() {
     require_script();

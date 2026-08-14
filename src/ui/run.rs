@@ -29,6 +29,10 @@ pub fn run(
 ) -> io::Result<bool> {
     super::install_panic_hook();
     let mut terminal = super::setup_terminal()?;
+    // The explicit `teardown_terminal()` call below covers the normal quit
+    // path; this guard is what restores the terminal on every early `?`
+    // return from the loop instead, most notably a failed `terminal.draw`.
+    let _terminal_guard = super::TerminalGuard;
 
     let action = command.display_name().to_string();
     let mut state = AppState::new(repos, &action);

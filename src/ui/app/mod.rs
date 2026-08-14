@@ -17,8 +17,7 @@ use crossterm::execute;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -45,61 +44,106 @@ const GATE_POLL_INTERVAL: Duration = Duration::from_millis(30);
 /// merely closing the gate isn't enough on its own: the thread could have
 /// already passed its own open check and be mid `poll`/`read` when the gate
 /// closes, and nothing stops it from sending that stray event before it
-/// next notices. `park` closes the gate and then blocks until the thread itself
-/// reports, via `parked`, that it has actually reached the paused branch
-/// with no read in flight, turning "probably stopped by now" into an
-/// explicit handshake.
+/// next notices. `park` closes the gate and then blocks until the thread
+/// itself reports, via a generation counter, that it has actually reached
+/// the paused branch with no read in flight, turning "probably stopped by
+/// now" into an explicit handshake.
+///
+/// The acknowledgment is tagged with a generation, bumped on every `park`
+/// call, rather than a plain flag: a plain flag set once and never cleared
+/// would let a later `park` return instantly on an acknowledgment left over
+/// from an earlier pause, before the thread has actually parked for *this*
+/// one. And because a thread whose own loop has already ended (a read
+/// error, stdin closing) can never acknowledge anything again, `park` also
+/// gives up and returns once the thread reports it has exited, rather than
+/// waiting on an acknowledgment that will never come.
 #[derive(Clone)]
 struct InputGate {
-    open: Arc<AtomicBool>,
-    /// Set by the input thread itself, only from inside the paused branch:
-    /// true exactly when it is safe to assume no `poll`/`read` is in flight.
-    parked: Arc<AtomicBool>,
-    stop: Arc<AtomicBool>,
+    state: Arc<Mutex<GateState>>,
+    /// Wakes a blocked `park` when the reader acknowledges (at any
+    /// generation) or reports it has exited.
+    condvar: Arc<Condvar>,
+}
+
+struct GateState {
+    open: bool,
+    stop: bool,
+    /// Bumped by every `park` call, so an acknowledgment can be checked
+    /// against the specific pause it answers.
+    generation: u64,
+    /// The generation the reader last confirmed it has actually parked
+    /// for, if any.
+    parked_generation: Option<u64>,
+    /// Set once, by the reader's own exit path, when its loop ends for any
+    /// reason.
+    exited: bool,
 }
 
 impl InputGate {
     fn new() -> Self {
         Self {
-            open: Arc::new(AtomicBool::new(true)),
-            parked: Arc::new(AtomicBool::new(false)),
-            stop: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(Mutex::new(GateState {
+                open: true,
+                stop: false,
+                generation: 0,
+                parked_generation: None,
+                exited: false,
+            })),
+            condvar: Arc::new(Condvar::new()),
         }
     }
 
-    /// Close the gate and block until the input thread acknowledges it has
-    /// actually parked, not just observed the flag. Bounded to roughly
-    /// [`GATE_POLL_INTERVAL`] past whatever poll/read cycle was already in
-    /// flight when this was called.
+    /// Close the gate and block until the reader acknowledges this specific
+    /// pause, or reports it has exited.
     fn park(&self) {
-        self.open.store(false, Ordering::SeqCst);
-        while !self.parked.load(Ordering::SeqCst) {
-            std::thread::sleep(GATE_POLL_INTERVAL);
+        let my_generation = {
+            let mut state = self.state.lock().unwrap();
+            state.generation += 1;
+            state.open = false;
+            state.generation
+        };
+        let mut state = self.state.lock().unwrap();
+        while state.parked_generation != Some(my_generation) && !state.exited {
+            state = self.condvar.wait(state).unwrap();
         }
     }
 
     fn resume(&self) {
-        self.open.store(true, Ordering::SeqCst);
+        self.state.lock().unwrap().open = true;
     }
 
     fn is_open(&self) -> bool {
-        self.open.load(Ordering::SeqCst)
+        self.state.lock().unwrap().open
     }
 
-    /// Called by the input thread itself, between poll/read cycles, to
-    /// record whether one could currently be in flight.
-    fn mark_parked(&self, parked: bool) {
-        self.parked.store(parked, Ordering::SeqCst);
+    /// Called by the input thread itself, from inside the paused branch, to
+    /// record that it has actually parked for whichever pause is current
+    /// right now.
+    fn mark_parked(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.parked_generation = Some(state.generation);
+        drop(state);
+        self.condvar.notify_all();
+    }
+
+    /// Called once by the input thread's own exit path, however its loop
+    /// ends, so a `park` call waiting on a reader that will never
+    /// acknowledge again returns instead of spinning forever.
+    fn mark_exited(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.exited = true;
+        drop(state);
+        self.condvar.notify_all();
     }
 
     /// Ask the input thread to end its loop for good; [`run`] joins the
     /// thread's handle afterward to wait it out.
     fn stop(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.state.lock().unwrap().stop = true;
     }
 
     fn should_stop(&self) -> bool {
-        self.stop.load(Ordering::SeqCst)
+        self.state.lock().unwrap().stop
     }
 }
 
@@ -120,30 +164,69 @@ fn input_thread() -> (
     let (tx, rx) = mpsc::unbounded_channel();
     let gate = InputGate::new();
     let thread_gate = gate.clone();
-    let handle = std::thread::spawn(move || loop {
-        if thread_gate.should_stop() {
-            break;
+    let handle = std::thread::spawn(move || {
+        // Marks the gate exited when this loop ends for any reason,
+        // including a panic unwinding out of it, so a `park` call left
+        // waiting on this reader isn't stuck waiting on one that no longer
+        // exists to acknowledge it.
+        struct MarkExitedOnDrop(InputGate);
+        impl Drop for MarkExitedOnDrop {
+            fn drop(&mut self) {
+                self.0.mark_exited();
+            }
         }
-        if !thread_gate.is_open() {
-            thread_gate.mark_parked(true);
-            std::thread::sleep(GATE_POLL_INTERVAL);
-            continue;
-        }
-        thread_gate.mark_parked(false);
-        match crossterm::event::poll(GATE_POLL_INTERVAL) {
-            Ok(true) => match crossterm::event::read() {
-                Ok(ev) => {
-                    if tx.send(ev).is_err() {
-                        break;
+        let _exit_guard = MarkExitedOnDrop(thread_gate.clone());
+
+        loop {
+            if thread_gate.should_stop() {
+                break;
+            }
+            if !thread_gate.is_open() {
+                thread_gate.mark_parked();
+                std::thread::sleep(GATE_POLL_INTERVAL);
+                continue;
+            }
+            match crossterm::event::poll(GATE_POLL_INTERVAL) {
+                Ok(true) => match crossterm::event::read() {
+                    Ok(ev) => {
+                        if tx.send(ev).is_err() {
+                            break;
+                        }
                     }
-                }
+                    Err(_) => break,
+                },
+                Ok(false) => continue,
                 Err(_) => break,
-            },
-            Ok(false) => continue,
-            Err(_) => break,
+            }
         }
     });
     (rx, gate, handle)
+}
+
+/// Stops and joins the input thread on every way out of [`run`]: the normal
+/// quit, and every early `?` return from a draw, mouse-capture, or editor
+/// failure. Without this, only the happy path joined the thread, so an
+/// error return left it detached and still polling stdin for up to
+/// [`GATE_POLL_INTERVAL`] after the terminal was handed back, competing
+/// with the shell for the user's next keystroke.
+///
+/// Declared after `TerminalGuard` in [`run`] so it drops first: the input
+/// thread must stop touching stdin *before* raw mode and the alternate
+/// screen are torn down, for the same reason the join has to happen at
+/// all. Reversed, the terminal would already be back in the caller's hands
+/// while this thread could still be mid `poll`/`read` racing it for input.
+struct InputThreadGuard {
+    gate: InputGate,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for InputThreadGuard {
+    fn drop(&mut self) {
+        self.gate.stop();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 fn apply_mouse_capture(enabled: bool) -> io::Result<()> {
@@ -310,6 +393,14 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
     // that overflows below.
     app.poll_interval = poll::clamp_interval(app.poll_interval);
     let (mut input, input_gate, input_handle) = input_thread();
+    // Declared after `_terminal_guard` so it drops first; see the type's
+    // own doc comment for why the order matters. Dropped explicitly, ahead
+    // of the terminal teardown below, on the normal quit path; left to
+    // `Drop` on every early `?` return instead.
+    let input_guard = InputThreadGuard {
+        gate: input_gate.clone(),
+        handle: Some(input_handle),
+    };
     let mut ticker = tokio::time::interval(Duration::from_millis(200));
     // The interval arm always ticks, whether or not the poll is on
     // (section 05); `on_poll_due` is what actually decides. Delayed a full
@@ -434,13 +525,13 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
         app.terminal_height = completed.area.height;
     }
 
-    // Ask the input thread to end its loop and wait for it to actually do
-    // so before handing the tty back: otherwise it's still polling stdin
-    // for up to GATE_POLL_INTERVAL after this returns, competing with the
-    // shell the terminal is about to be restored to for the first key the
-    // user types.
-    input_gate.stop();
-    let _ = input_handle.join();
+    // Stop and join the input thread before handing the tty back: otherwise
+    // it's still polling stdin for up to GATE_POLL_INTERVAL after this
+    // returns, competing with the shell the terminal is about to be
+    // restored to for the first key the user types. An explicit drop here
+    // rather than waiting for scope exit, so this happens before the
+    // teardown below rather than after it.
+    drop(input_guard);
 
     apply_mouse_capture(false)?;
     super::teardown_terminal()?;
@@ -455,17 +546,25 @@ mod tests {
     fn a_new_input_gate_starts_open_and_not_parked() {
         let gate = InputGate::new();
         assert!(gate.is_open());
-        assert!(!gate.parked.load(Ordering::SeqCst));
+        assert!(gate.state.lock().unwrap().parked_generation.is_none());
         assert!(!gate.should_stop());
     }
 
     #[test]
     fn resume_reopens_a_gate_the_reader_has_already_acknowledged() {
-        // Simulates the reader thread having caught up and parked, so
-        // `park()` itself doesn't block this test.
         let gate = InputGate::new();
-        gate.mark_parked(true);
+        let reader = gate.clone();
+        let acker = std::thread::spawn(move || {
+            // Stands in for the input thread noticing the gate closed and
+            // acknowledging it, so `park()` below doesn't block forever.
+            while reader.is_open() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            reader.mark_parked();
+        });
+
         gate.park();
+        acker.join().unwrap();
         assert!(!gate.is_open());
         gate.resume();
         assert!(gate.is_open());
@@ -477,8 +576,16 @@ mod tests {
         // loop's copy must be visible to the thread's.
         let gate = InputGate::new();
         let clone = gate.clone();
-        clone.mark_parked(true); // so this gate's own park() below doesn't block
+        let acker = clone.clone();
+        let acker_thread = std::thread::spawn(move || {
+            while acker.is_open() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            acker.mark_parked();
+        });
+
         gate.park();
+        acker_thread.join().unwrap();
         assert!(!clone.is_open(), "a clone must observe the same state");
     }
 
@@ -497,6 +604,8 @@ mod tests {
     /// means the reader has stopped.
     #[test]
     fn park_blocks_until_the_reader_marks_itself_parked() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
         let gate = InputGate::new();
         let acknowledged_before_park_returned = Arc::new(AtomicBool::new(false));
         let flag = acknowledged_before_park_returned.clone();
@@ -506,7 +615,7 @@ mod tests {
             // cycle was already in flight when the gate closed.
             std::thread::sleep(Duration::from_millis(50));
             flag.store(true, Ordering::SeqCst);
-            reader.mark_parked(true);
+            reader.mark_parked();
         });
 
         gate.park();
@@ -515,6 +624,73 @@ mod tests {
             "park() must not return before the reader acknowledges it has parked"
         );
         simulated_reader.join().unwrap();
+    }
+
+    /// A flag set once and never cleared would let this second pause return
+    /// immediately on the first pause's leftover acknowledgment, before the
+    /// reader has actually parked for this one; this is why the
+    /// acknowledgment is tagged with a generation instead.
+    #[test]
+    fn a_stale_acknowledgement_from_an_earlier_pause_does_not_satisfy_a_later_one() {
+        let gate = InputGate::new();
+
+        // First pause cycle: closes, gets acknowledged, and resumes, the
+        // same shape a completed `$EDITOR` session leaves behind.
+        let first_acker = gate.clone();
+        let first_ack_thread = std::thread::spawn(move || {
+            while first_acker.is_open() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            first_acker.mark_parked();
+        });
+        gate.park();
+        first_ack_thread.join().unwrap();
+        gate.resume();
+
+        // Second pause cycle: nobody acknowledges it. If the first cycle's
+        // acknowledgment could satisfy this one, `park()` returns almost
+        // immediately instead of blocking.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let waiter = gate.clone();
+        let waiter_thread = std::thread::spawn(move || {
+            waiter.park();
+            let _ = done_tx.send(());
+        });
+
+        let returned_on_stale_ack = done_rx.recv_timeout(Duration::from_millis(200)).is_ok();
+        assert!(
+            !returned_on_stale_ack,
+            "park() must not return on an acknowledgment left over from an earlier pause"
+        );
+
+        // Satisfy the pending pause so the waiter thread doesn't leak
+        // blocked forever, and confirm it actually was still waiting on it.
+        gate.mark_parked();
+        waiter_thread.join().unwrap();
+    }
+
+    /// A reader whose own loop has already ended (a read error, stdin
+    /// closing) can never acknowledge a pause again; `park()` has to give
+    /// up once it learns that, rather than waiting on stdin forever with
+    /// the UI thread stuck and the terminal left in raw mode.
+    #[test]
+    fn park_returns_once_the_reader_reports_it_has_exited_instead_of_hanging_forever() {
+        let gate = InputGate::new();
+        // Simulates the input thread's own loop having already ended,
+        // without ever acknowledging the pause that is about to be
+        // requested below.
+        gate.mark_exited();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let waiter = gate.clone();
+        std::thread::spawn(move || {
+            waiter.park();
+            let _ = done_tx.send(());
+        });
+
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("park() must return once the reader has exited, rather than spin forever");
     }
 
     /// The other half of the input-channel-close fix: `run`'s select arm
