@@ -1,14 +1,16 @@
-//! Layout for the resident app: header, repo table, and status bar. This
-//! phase's table shows name and path only; the branch, dirty, and result
-//! columns arrive with the probe and the executor in later phases.
+//! Layout for the resident app: header, repo table, and status bar. Branch
+//! and working-tree state come from the background probe; the result column
+//! arrives with the executor in a later phase.
 
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use super::state::App;
-use crate::ui::widgets::{display_width, truncate};
+use crate::ui::widgets::{display_width, frame as spinner_frame, truncate};
 
 const COL_GAP: usize = 2;
+/// Width of the leading " ▸ ● " cursor and selection markers.
+const PREFIX_W: usize = 5;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -25,9 +27,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let start = scroll_offset(cursor_pos, visible.len(), list_height);
     let end = visible.len().min(start + list_height);
 
-    let (name_col, path_col) = column_widths(app, width.saturating_sub(4 + COL_GAP));
+    let (name_col, branch_col, state_col) = column_widths(app, width.saturating_sub(PREFIX_W));
     for &idx in &visible[start..end] {
-        lines.push(repo_line(app, idx, name_col, path_col));
+        lines.push(repo_line(app, idx, name_col, branch_col, state_col));
     }
 
     lines.push(separator(width));
@@ -61,7 +63,13 @@ fn separator(width: usize) -> Line<'static> {
     ))
 }
 
-fn repo_line(app: &App, idx: usize, name_col: usize, path_col: usize) -> Line<'static> {
+fn repo_line(
+    app: &App,
+    idx: usize,
+    name_col: usize,
+    branch_col: usize,
+    state_col: usize,
+) -> Line<'static> {
     let repo = &app.repos[idx];
     let is_cursor = idx == app.cursor;
     let is_selected = app.selected.contains(&idx);
@@ -81,7 +89,16 @@ fn repo_line(app: &App, idx: usize, name_col: usize, path_col: usize) -> Line<'s
 
     let name = truncate(&repo.name, name_col);
     let name_padding = name_col.saturating_sub(display_width(&name)) + COL_GAP;
-    let path = truncate(&repo.path.display().to_string(), path_col);
+
+    let probe = app.probe_display(idx);
+    let (branch_text, state_text) = if probe.spinner {
+        (spinner_frame(app.tick).to_string(), String::new())
+    } else {
+        (probe.branch, probe.state)
+    };
+    let branch = truncate(&branch_text, branch_col);
+    let branch_padding = branch_col.saturating_sub(display_width(&branch)) + COL_GAP;
+    let state = truncate(&state_text, state_col);
 
     Line::from(vec![
         Span::styled(
@@ -90,7 +107,9 @@ fn repo_line(app: &App, idx: usize, name_col: usize, path_col: usize) -> Line<'s
         ),
         Span::styled(name, name_style),
         Span::raw(" ".repeat(name_padding)),
-        Span::styled(path, Style::default().fg(Color::DarkGray)),
+        Span::styled(branch, Style::default().fg(Color::DarkGray)),
+        Span::raw(" ".repeat(branch_padding)),
+        Span::styled(state, Style::default().fg(Color::DarkGray)),
     ])
 }
 
@@ -106,14 +125,14 @@ fn status_line(app: &App) -> Line<'static> {
     let keys = if app.filtering {
         "  esc clear  enter keep"
     } else {
-        "  j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter  q quit"
+        "  j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter  r reprobe  q quit"
     };
     Line::from(Span::styled(keys, Style::default().fg(Color::DarkGray)))
 }
 
-/// Column widths for the two-column repo table: NAME gets its natural width
-/// up to half of `avail`, PATH gets whatever is left.
-fn column_widths(app: &App, avail: usize) -> (usize, usize) {
+/// Column widths for the three-column repo table: NAME and BRANCH each get
+/// their natural width up to a third of `avail`, STATE gets whatever is left.
+fn column_widths(app: &App, avail: usize) -> (usize, usize, usize) {
     let name_nat = app
         .repos
         .iter()
@@ -121,9 +140,16 @@ fn column_widths(app: &App, avail: usize) -> (usize, usize) {
         .max()
         .unwrap_or(0)
         .max(display_width("NAME"));
-    let name = name_nat.min(avail / 2);
-    let path = avail.saturating_sub(name + COL_GAP);
-    (name, path)
+    let branch_nat = (0..app.repos.len())
+        .map(|i| display_width(&app.probe_display(i).branch))
+        .max()
+        .unwrap_or(0)
+        .max(display_width("BRANCH"));
+
+    let name = name_nat.min(avail / 3);
+    let branch = branch_nat.min(avail / 3);
+    let state = avail.saturating_sub(name + branch + 2 * COL_GAP);
+    (name, branch, state)
 }
 
 /// First visible-list index to draw, so the cursor stays on screen once it
@@ -172,11 +198,11 @@ mod tests {
     }
 
     #[test]
-    fn name_column_never_exceeds_half_the_available_width() {
+    fn name_column_never_exceeds_a_third_of_the_available_width() {
         let long_name = "a-name-that-is-extremely-long-past-any-reasonable-column-width";
         let app = App::new(vec![repo(long_name)], "work".into(), 4);
-        let (name, path) = column_widths(&app, 40);
+        let (name, branch, state) = column_widths(&app, 60);
         assert!(name <= 20, "got name width {name}");
-        assert_eq!(name + path + COL_GAP, 40);
+        assert_eq!(name + branch + state + 2 * COL_GAP, 60);
     }
 }

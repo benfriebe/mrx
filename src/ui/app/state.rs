@@ -2,6 +2,7 @@
 //! Every decision worth testing lives here as a method that returns data;
 //! `render.rs` only turns that data into widgets.
 
+use super::probe::{self, RepoState};
 use crate::config::Repo;
 use std::collections::BTreeSet;
 
@@ -19,10 +20,27 @@ pub struct App {
     /// Whether `/` is currently capturing keystrokes into `filter`.
     pub filtering: bool,
     pub tick: usize,
+    /// Latest known probe result per repo, `None` until the first one for
+    /// that repo arrives.
+    pub probes: Vec<Option<RepoState>>,
+    /// Repos with an in-flight probe in the current generation, so a row
+    /// shows a spinner instead of stale or blank data.
+    pub probing: BTreeSet<usize>,
+    /// Bumped every time a probe run starts; a result tagged with an older
+    /// generation is dropped rather than painted over newer data (section
+    /// 07, "superseded, not queued").
+    pub probe_generation: u64,
+    /// Whether anything has fetched remote refs this session. Until it has,
+    /// the behind column reads unknown rather than claiming to be current.
+    pub fetched_this_session: bool,
+    /// Set by the `r` key; the run loop owns actually spawning the probe
+    /// task, since `on_key` has no runtime handle to spawn one with.
+    pub probe_requested: bool,
 }
 
 impl App {
     pub fn new(repos: Vec<Repo>, set_label: String, jobs: usize) -> Self {
+        let n = repos.len();
         Self {
             repos,
             set_label,
@@ -32,6 +50,68 @@ impl App {
             filter: String::new(),
             filtering: false,
             tick: 0,
+            probes: vec![None; n],
+            probing: BTreeSet::new(),
+            probe_generation: 0,
+            fetched_this_session: false,
+            probe_requested: false,
+        }
+    }
+
+    /// Repos to re-probe for `r`: the selection, or everything when nothing
+    /// is selected. The same reading of an empty selection as
+    /// `effective_selection` uses, since "probe what I'm about to act on" is
+    /// the useful interpretation here too.
+    pub fn reprobe_targets(&self) -> Vec<usize> {
+        if self.selected.is_empty() {
+            (0..self.repos.len()).collect()
+        } else {
+            self.selected.iter().copied().collect()
+        }
+    }
+
+    /// Start a new probe generation over `targets`: bumps the counter, marks
+    /// every target in-flight, and returns the generation so the caller can
+    /// tag the probe it is about to spawn with it.
+    pub fn begin_probe(&mut self, targets: &[usize]) -> u64 {
+        self.probe_generation += 1;
+        self.probing = targets.iter().copied().collect();
+        self.probe_generation
+    }
+
+    /// Apply one probe result, unless it belongs to a generation a later
+    /// probe has since superseded.
+    pub fn on_probe(&mut self, generation: u64, state: RepoState) {
+        if generation < self.probe_generation {
+            return;
+        }
+        self.probing.remove(&state.index);
+        if let Some(slot) = self.probes.get_mut(state.index) {
+            *slot = Some(state);
+        }
+    }
+
+    /// Set by `r`; consumed by the run loop, which is the only thing with a
+    /// runtime handle to spawn the resulting probe with.
+    pub fn take_probe_request(&mut self) -> bool {
+        std::mem::take(&mut self.probe_requested)
+    }
+
+    /// Branch and working-tree text for a row, resolved once so `render.rs`
+    /// only has to lay strings out. `spinner` is true while the row's probe
+    /// is still in flight and there's nothing to show yet.
+    pub fn probe_display(&self, idx: usize) -> ProbeDisplay {
+        match self.probes.get(idx).and_then(|p| p.as_ref()) {
+            Some(state) => ProbeDisplay {
+                branch: probe::branch_text(state),
+                state: probe::dirty_text(state, self.fetched_this_session),
+                spinner: false,
+            },
+            None => ProbeDisplay {
+                branch: String::new(),
+                state: String::new(),
+                spinner: self.probing.contains(&idx),
+            },
         }
     }
 
@@ -158,6 +238,14 @@ impl App {
     }
 }
 
+/// Branch and working-tree text for one row, plus whether its probe is still
+/// in flight.
+pub struct ProbeDisplay {
+    pub branch: String,
+    pub state: String,
+    pub spinner: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +367,62 @@ mod tests {
         a.filter_push('b'); // "foo" no longer matches
         assert_ne!(a.cursor, 0);
         assert!(a.visible_indices().contains(&a.cursor));
+    }
+
+    fn probed(index: usize, branch: &str) -> RepoState {
+        RepoState {
+            index,
+            branch: Some(branch.to_string()),
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            changed: 0,
+            present: true,
+            timed_out: false,
+        }
+    }
+
+    #[test]
+    fn a_probe_result_for_the_current_generation_is_applied() {
+        let mut a = app(&["foo"]);
+        let generation = a.begin_probe(&[0]);
+        a.on_probe(generation, probed(0, "main"));
+        assert!(a.probes[0].is_some());
+        assert!(
+            !a.probing.contains(&0),
+            "an applied result clears in-flight"
+        );
+    }
+
+    #[test]
+    fn a_stale_probe_result_is_dropped() {
+        let mut a = app(&["foo", "bar"]);
+        a.begin_probe(&[0, 1]); // generation 1
+        a.begin_probe(&[0, 1]); // generation 2 supersedes it
+        a.on_probe(1, probed(0, "stale-branch"));
+        assert!(
+            a.probes[0].is_none(),
+            "a result from a superseded generation must be dropped"
+        );
+    }
+
+    #[test]
+    fn reprobe_targets_default_to_everything_when_nothing_is_selected() {
+        let a = app(&["foo", "bar", "baz"]);
+        assert_eq!(a.reprobe_targets(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn reprobe_targets_are_the_selection_when_something_is_selected() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        a.selected.insert(1);
+        assert_eq!(a.reprobe_targets(), vec![1]);
+    }
+
+    #[test]
+    fn a_row_with_no_probe_result_yet_shows_a_spinner_while_in_flight() {
+        let mut a = app(&["foo"]);
+        a.begin_probe(&[0]);
+        assert!(a.probe_display(0).spinner);
     }
 }

@@ -1,5 +1,8 @@
 use crate::config::Repo;
-use std::process::Command;
+use crate::ui::app::probe::{self, RepoState};
+
+/// Shown for a repo whose branch the probe hasn't reported back for yet.
+const PROBING: &str = "…";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RepoStatus {
@@ -29,47 +32,50 @@ impl RepoStatus {
 pub struct AppState {
     pub repos: Vec<Repo>,
     pub statuses: Vec<RepoStatus>,
-    pub branches: Vec<Option<String>>,
+    /// Branch label per repo, resolved from the background probe. Reads
+    /// [`PROBING`] until that repo's first result arrives.
+    pub branch_labels: Vec<String>,
     pub selected: usize,
     pub expanded: Option<usize>,
     pub scroll_offset: usize,
     pub tick: usize,
     pub command_name: String,
     pub all_done: bool,
-}
-
-/// Detect the current branch for each repo via `git branch --show-current`.
-/// Returns `None` for repos that aren't checked out or report no branch.
-fn compute_branches(repos: &[Repo]) -> Vec<Option<String>> {
-    repos
-        .iter()
-        .map(|r| {
-            Command::new("git")
-                .args(["branch", "--show-current"])
-                .current_dir(&r.path)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
-        .collect()
+    probe_generation: u64,
 }
 
 impl AppState {
     pub fn new(repos: Vec<Repo>, command_name: &str) -> Self {
         let n = repos.len();
-        let branches = compute_branches(&repos);
         Self {
             repos,
             statuses: vec![RepoStatus::Pending; n],
-            branches,
+            branch_labels: vec![PROBING.to_string(); n],
             selected: 0,
             expanded: None,
             scroll_offset: 0,
             tick: 0,
             command_name: command_name.to_string(),
             all_done: false,
+            probe_generation: 0,
+        }
+    }
+
+    /// Bump the probe generation and return it, so the caller can tag the
+    /// probe it is about to spawn; [`on_probe`](Self::on_probe) drops a
+    /// result tagged with an older one.
+    pub fn begin_probe(&mut self) -> u64 {
+        self.probe_generation += 1;
+        self.probe_generation
+    }
+
+    /// Apply one probe result, unless a later probe has since superseded it.
+    pub fn on_probe(&mut self, generation: u64, state: RepoState) {
+        if generation < self.probe_generation {
+            return;
+        }
+        if let Some(slot) = self.branch_labels.get_mut(state.index) {
+            *slot = probe::branch_text(&state);
         }
     }
 
@@ -86,12 +92,13 @@ impl AppState {
     }
 
     /// Reset all per-repo state so the command can be executed again. Statuses
-    /// return to `Pending`, branches are re-detected (an update may have created
-    /// new clones or switched branches), and any expanded view is collapsed.
+    /// return to `Pending`, branch labels go back to [`PROBING`] until the
+    /// caller's fresh probe fills them in (an update may have created new
+    /// clones or switched branches), and any expanded view is collapsed.
     pub fn reset_for_rerun(&mut self) {
         let n = self.repos.len();
         self.statuses = vec![RepoStatus::Pending; n];
-        self.branches = compute_branches(&self.repos);
+        self.branch_labels = vec![PROBING.to_string(); n];
         self.expanded = None;
         self.scroll_offset = 0;
         self.all_done = false;
@@ -163,10 +170,10 @@ impl AppState {
     }
 
     pub fn branch_label(&self, idx: usize) -> &str {
-        match self.branches.get(idx).and_then(|b| b.as_deref()) {
-            Some(b) => b,
-            None => "-",
-        }
+        self.branch_labels
+            .get(idx)
+            .map(String::as_str)
+            .unwrap_or("-")
     }
 
     pub fn summary_line(&self) -> String {
@@ -233,5 +240,54 @@ mod tests {
         state.selected = 5; // somehow out of range
         state.reset_for_rerun();
         assert_eq!(state.selected, 1); // clamped to last index
+    }
+
+    #[test]
+    fn a_repo_shows_a_placeholder_branch_until_the_probe_reports_back() {
+        let state = AppState::new(vec![repo("a")], "status");
+        assert_eq!(state.branch_label(0), PROBING);
+    }
+
+    fn probed(index: usize, branch: &str) -> RepoState {
+        RepoState {
+            index,
+            branch: Some(branch.to_string()),
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            changed: 0,
+            present: true,
+            timed_out: false,
+        }
+    }
+
+    #[test]
+    fn a_probe_result_for_the_current_generation_sets_the_branch_label() {
+        let mut state = AppState::new(vec![repo("a")], "status");
+        let generation = state.begin_probe();
+        state.on_probe(generation, probed(0, "main"));
+        assert_eq!(state.branch_label(0), "main");
+    }
+
+    #[test]
+    fn a_stale_probe_result_is_dropped() {
+        let mut state = AppState::new(vec![repo("a")], "status");
+        state.begin_probe(); // generation 1
+        state.begin_probe(); // generation 2 supersedes it
+        state.on_probe(1, probed(0, "stale-branch"));
+        assert_eq!(
+            state.branch_label(0),
+            PROBING,
+            "a result from a superseded generation must be dropped"
+        );
+    }
+
+    #[test]
+    fn reset_for_rerun_goes_back_to_the_probing_placeholder() {
+        let mut state = AppState::new(vec![repo("a")], "status");
+        let generation = state.begin_probe();
+        state.on_probe(generation, probed(0, "main"));
+        state.reset_for_rerun();
+        assert_eq!(state.branch_label(0), PROBING);
     }
 }

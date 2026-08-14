@@ -35,6 +35,7 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('A') => app.clear_selection(),
         KeyCode::Char('i') => app.invert_selection(),
         KeyCode::Char('/') => app.start_filter(),
+        KeyCode::Char('r') => app.probe_requested = true,
         _ => {}
     }
     false
@@ -119,5 +120,12 @@ mod tests {
         on_input(&mut a, press(KeyCode::Char(' ')));
         assert!(a.selected.contains(&0));
         assert_eq!(a.cursor, 1);
+    }
+
+    #[test]
+    fn r_requests_a_reprobe() {
+        let mut a = app(&["foo"]);
+        assert!(!on_input(&mut a, press(KeyCode::Char('r'))));
+        assert!(a.probe_requested);
     }
 }

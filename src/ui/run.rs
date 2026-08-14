@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use super::app::probe::{self, Probed};
 use super::event;
 use super::render;
 use super::state::{AppState, RepoStatus};
@@ -33,10 +34,16 @@ pub fn run(
     let mut state = AppState::new(repos, &action);
     let mut all_succeeded = true;
 
+    let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+    spawn_probe_for_all(&mut state, jobs, &probe_tx);
+
     loop {
         // Drain pending events from executor
         while let Ok(evt) = rx.try_recv() {
             apply_event(&mut state, &evt, &action);
+        }
+        while let Ok(probed) = probe_rx.try_recv() {
+            state.on_probe(probed.generation, probed.state);
         }
 
         // Check if all done
@@ -102,6 +109,7 @@ pub fn run(
                                     config_path.clone(),
                                 );
                                 state.reset_for_rerun();
+                                spawn_probe_for_all(&mut state, jobs, &probe_tx);
                             }
                             _ => {}
                         }
@@ -132,6 +140,14 @@ pub fn run(
     }
 
     Ok(all_succeeded)
+}
+
+/// Probe every repo, tagged with a freshly begun generation so an older
+/// rerun's results can't land on top of a newer rerun's.
+fn spawn_probe_for_all(state: &mut AppState, jobs: usize, tx: &mpsc::UnboundedSender<Probed>) {
+    let targets: Vec<usize> = (0..state.repos.len()).collect();
+    let generation = state.begin_probe();
+    probe::spawn_probe_generation(&state.repos, targets, jobs, generation, tx.clone());
 }
 
 fn apply_event(state: &mut AppState, event: &TaskEvent, action: &str) {
