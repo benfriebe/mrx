@@ -4,7 +4,14 @@
 
 use super::probe::{self, RepoState};
 use crate::config::Repo;
+use crate::executor::{StepResult, TaskEvent};
+use crate::summarize;
 use std::collections::BTreeSet;
+
+/// Shown for a repo that has never taken part in a run this session, per
+/// section 02: "a repo that has never been run shows `·` rather than a fake
+/// 'pending'".
+const NEVER_RUN: &str = "·";
 
 pub struct App {
     pub repos: Vec<Repo>,
@@ -36,6 +43,32 @@ pub struct App {
     /// Set by the `r` key; the run loop owns actually spawning the probe
     /// task, since `on_key` has no runtime handle to spawn one with.
     pub probe_requested: bool,
+    /// Bumped every time a run starts; an executor event tagged with an
+    /// older id belongs to a run that's since been cancelled and superseded,
+    /// and is dropped by [`on_task`](Self::on_task) rather than painted over
+    /// a newer run's results.
+    pub run_id: u64,
+    /// Each repo's outcome from the most recent run it took part in, `None`
+    /// for a repo that has never run this session.
+    pub run_results: Vec<Option<RunStatus>>,
+}
+
+/// A repo's outcome from the most recent run it took part in.
+#[derive(Debug, Clone)]
+pub enum RunStatus {
+    Running,
+    /// The step currently in flight, named so a row reads "post_update"
+    /// instead of a fixed "running..." (section 06).
+    Step {
+        label: String,
+    },
+    Finished {
+        steps: Vec<StepResult>,
+        exit_code: i32,
+    },
+    Skipped {
+        reason: String,
+    },
 }
 
 impl App {
@@ -55,6 +88,52 @@ impl App {
             probe_generation: 0,
             fetched_this_session: false,
             probe_requested: false,
+            run_id: 0,
+            run_results: vec![None; n],
+        }
+    }
+
+    /// Start a new run generation and return its id, so the caller can tag
+    /// the `spawn_run` call it is about to make with it.
+    pub fn begin_run(&mut self) -> u64 {
+        self.run_id += 1;
+        self.run_id
+    }
+
+    /// Apply one executor event, unless it belongs to a run a later one has
+    /// since superseded.
+    pub fn on_task(&mut self, run_id: u64, event: TaskEvent) {
+        if run_id != self.run_id {
+            return;
+        }
+        let (index, status) = match event {
+            TaskEvent::Started { index } => (index, RunStatus::Running),
+            TaskEvent::Step { index, label } => (index, RunStatus::Step { label }),
+            TaskEvent::Finished {
+                index,
+                steps,
+                exit_code,
+            } => (index, RunStatus::Finished { steps, exit_code }),
+            TaskEvent::Skipped { index, reason } => (index, RunStatus::Skipped { reason }),
+        };
+        if let Some(slot) = self.run_results.get_mut(index) {
+            *slot = Some(status);
+        }
+    }
+
+    /// The result column's text for a row: a summary once the repo's most
+    /// recent run has finished, the live step label while one is running or
+    /// queued, or [`NEVER_RUN`] for a repo that hasn't taken part in a run
+    /// this session.
+    pub fn result_text(&self, idx: usize) -> String {
+        match self.run_results.get(idx).and_then(|r| r.as_ref()) {
+            None => NEVER_RUN.into(),
+            Some(RunStatus::Running) => "running".into(),
+            Some(RunStatus::Step { label }) => label.clone(),
+            Some(RunStatus::Skipped { reason }) => reason.clone(),
+            Some(RunStatus::Finished { steps, exit_code }) => {
+                summarize::summarize_steps(steps, *exit_code)
+            }
         }
     }
 
@@ -424,5 +503,72 @@ mod tests {
         let mut a = app(&["foo"]);
         a.begin_probe(&[0]);
         assert!(a.probe_display(0).spinner);
+    }
+
+    #[test]
+    fn a_repo_that_has_never_run_shows_the_never_run_placeholder() {
+        let a = app(&["foo"]);
+        assert_eq!(a.result_text(0), NEVER_RUN);
+    }
+
+    #[test]
+    fn on_task_tracks_a_run_from_started_through_step_to_finished() {
+        let mut a = app(&["foo"]);
+        let run_id = a.begin_run();
+
+        a.on_task(run_id, TaskEvent::Started { index: 0 });
+        assert_eq!(a.result_text(0), "running");
+
+        a.on_task(
+            run_id,
+            TaskEvent::Step {
+                index: 0,
+                label: "post_update".into(),
+            },
+        );
+        assert_eq!(a.result_text(0), "post_update");
+
+        a.on_task(
+            run_id,
+            TaskEvent::Finished {
+                index: 0,
+                steps: vec![StepResult {
+                    label: "post_update".into(),
+                    shape: crate::summarize::Shape::Generic,
+                    stdout: "wrote 3 files".into(),
+                    stderr: String::new(),
+                    code: 0,
+                }],
+                exit_code: 0,
+            },
+        );
+        assert_eq!(a.result_text(0), "wrote 3 files");
+    }
+
+    #[test]
+    fn a_skipped_task_reports_its_reason() {
+        let mut a = app(&["foo"]);
+        let run_id = a.begin_run();
+        a.on_task(
+            run_id,
+            TaskEvent::Skipped {
+                index: 0,
+                reason: "no update action defined".into(),
+            },
+        );
+        assert_eq!(a.result_text(0), "no update action defined");
+    }
+
+    #[test]
+    fn an_event_from_a_superseded_run_is_dropped() {
+        let mut a = app(&["foo"]);
+        let stale = a.begin_run();
+        a.begin_run(); // a newer run supersedes it
+        a.on_task(stale, TaskEvent::Started { index: 0 });
+        assert_eq!(
+            a.result_text(0),
+            NEVER_RUN,
+            "an event tagged with an old run id must not be applied"
+        );
     }
 }

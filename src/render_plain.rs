@@ -32,23 +32,18 @@ pub async fn run(
         let Some(event) = rx.recv().await else { break };
 
         match event {
-            TaskEvent::Started { .. } => continue,
+            TaskEvent::Started { .. } | TaskEvent::Step { .. } => continue,
             TaskEvent::Skipped { index, reason } => {
                 done += 1;
                 println!("{:width$} | skipped: {}", repos[index].name, reason);
             }
             TaskEvent::Finished {
                 index,
-                stdout,
-                stderr,
+                steps,
                 exit_code,
-                failed_step,
             } => {
                 done += 1;
-                let summary = summarize::with_step(
-                    failed_step.as_deref(),
-                    summarize::summarize(action, &stdout, &stderr, exit_code),
-                );
+                let summary = summarize::summarize_steps(&steps, exit_code);
                 if exit_code == 0 {
                     println!("{:width$} | {}", repos[index].name, summary);
                 } else {
@@ -60,9 +55,9 @@ pub async fn run(
                     // A summary is enough to spot the failure; the log needs enough
                     // to diagnose it without re-running. One-line failures are
                     // already fully described by the summary above.
-                    let detail: Vec<&str> = stdout
-                        .lines()
-                        .chain(stderr.lines())
+                    let detail: Vec<&str> = steps
+                        .iter()
+                        .flat_map(|s| s.stdout.lines().chain(s.stderr.lines()))
                         .filter(|l| !l.trim().is_empty())
                         .collect();
                     if detail.len() > 1 {

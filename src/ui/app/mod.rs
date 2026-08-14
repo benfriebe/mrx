@@ -2,6 +2,7 @@
 //! phase is a browsable list with cursor, selection, and filter; the probe,
 //! the executor, and the detail view join the event loop in later phases.
 
+pub mod actions;
 pub mod keys;
 pub mod probe;
 pub mod render;

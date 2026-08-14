@@ -1,4 +1,22 @@
-pub fn summarize(action: &str, stdout: &str, stderr: &str, exit_code: i32) -> String {
+use crate::executor::StepResult;
+
+/// How a step's output should be read: `operations::plan` decides this, since
+/// it is the only place that knows whether a step is a built-in git call, a
+/// config-defined body, or a `post_` hook, rather than it being guessed here
+/// from the action's name (which is what used to make a custom `status`
+/// action get parsed as if it were `git status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    Pull,
+    Status,
+    Diff,
+    Push,
+    Fetch,
+    Clone,
+    Generic,
+}
+
+pub fn summarize(shape: Shape, stdout: &str, stderr: &str, exit_code: i32) -> String {
     if exit_code != 0 {
         let msg = error_line(stderr)
             .or_else(|| error_line(stdout))
@@ -8,48 +26,34 @@ pub fn summarize(action: &str, stdout: &str, stderr: &str, exit_code: i32) -> St
         return msg;
     }
 
-    match Shape::of(action) {
+    match shape {
         Shape::Pull => summarize_pull(stdout, stderr),
         Shape::Status => summarize_status(stdout),
         Shape::Diff => summarize_diff(stdout),
         Shape::Push => summarize_push(stdout, stderr),
         Shape::Fetch => summarize_fetch(stdout, stderr),
         Shape::Clone => summarize_clone(stderr),
-        Shape::Silent => String::new(),
         Shape::Generic => summarize_generic(stdout, stderr),
     }
 }
 
-/// How an action's output should be read.
+/// Summarise a finished run from its steps.
 ///
-/// Action names are an open set because `.mrconfig` can define its own, so the
-/// name is narrowed here, once. Consumers match on the shape and stay exhaustive,
-/// which is what the old `match command` gave us before custom actions existed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Shape {
-    Pull,
-    Status,
-    Diff,
-    Push,
-    Fetch,
-    Clone,
-    Silent,
-    Generic,
-}
-
-impl Shape {
-    pub fn of(action: &str) -> Self {
-        match action {
-            "update" => Shape::Pull,
-            "status" => Shape::Status,
-            "diff" => Shape::Diff,
-            "push" => Shape::Push,
-            "fetch" => Shape::Fetch,
-            "checkout" => Shape::Clone,
-            "list" | "register" => Shape::Silent,
-            _ => Shape::Generic,
-        }
-    }
+/// The chain stops at the first failing step, so the last step present is
+/// always the one that decided the outcome, whichever way it went: its shape
+/// and output are what the row shows. Selecting by shape rather than parsing
+/// a concatenation of every step's output is what keeps a `post_update` that
+/// runs long after a no-op pull from being summarised as "already up to
+/// date".
+pub fn summarize_steps(steps: &[StepResult], exit_code: i32) -> String {
+    let Some(last) = steps.last() else {
+        return "done".into();
+    };
+    let label = (steps.len() > 1).then_some(last.label.as_str());
+    with_step(
+        label,
+        summarize(last.shape, &last.stdout, &last.stderr, exit_code),
+    )
 }
 
 fn summarize_pull(stdout: &str, stderr: &str) -> String {
@@ -227,38 +231,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_actions_map_to_their_own_shape() {
-        assert_eq!(Shape::of("update"), Shape::Pull);
-        assert_eq!(Shape::of("status"), Shape::Status);
-        assert_eq!(Shape::of("diff"), Shape::Diff);
-        assert_eq!(Shape::of("push"), Shape::Push);
-        assert_eq!(Shape::of("fetch"), Shape::Fetch);
-        assert_eq!(Shape::of("checkout"), Shape::Clone);
-        assert_eq!(Shape::of("list"), Shape::Silent);
-        assert_eq!(Shape::of("register"), Shape::Silent);
-    }
-
-    #[test]
-    fn unknown_actions_fall_back_to_generic() {
-        assert_eq!(Shape::of("deploy"), Shape::Generic);
-        assert_eq!(Shape::of("run"), Shape::Generic);
-        assert_eq!(Shape::of(""), Shape::Generic);
-    }
-
-    #[test]
-    fn aliases_are_normalised_before_they_get_here() {
-        // cli::Command::display_name maps pull -> update, co -> checkout, ls -> list,
-        // so the bare alias is not a name summarize ever sees.
-        assert_eq!(Shape::of("pull"), Shape::Generic);
-    }
-
-    #[test]
     fn a_failure_reports_its_error_whatever_the_shape() {
         assert_eq!(
-            summarize("status", "", "fatal: not a repo\n", 128),
+            summarize(Shape::Status, "", "fatal: not a repo\n", 128),
             "fatal: not a repo"
         );
-        assert_eq!(summarize("deploy", "", "", 3), "exit code 3");
+        assert_eq!(summarize(Shape::Generic, "", "", 3), "exit code 3");
     }
 
     #[test]
@@ -267,7 +245,7 @@ mod tests {
                       npm warn deprecated inflight@1.0.6\n\
                       npm error Missing script: \"build\"\n";
         assert_eq!(
-            summarize("update", "", stderr, 1),
+            summarize(Shape::Pull, "", stderr, 1),
             "npm error Missing script: \"build\""
         );
     }
@@ -275,7 +253,12 @@ mod tests {
     #[test]
     fn a_failure_with_nothing_error_shaped_still_says_something() {
         assert_eq!(
-            summarize("update", "", "husky - install command is DEPRECATED\n", 1),
+            summarize(
+                Shape::Pull,
+                "",
+                "husky - install command is DEPRECATED\n",
+                1
+            ),
             "husky - install command is DEPRECATED"
         );
     }
@@ -283,7 +266,12 @@ mod tests {
     #[test]
     fn a_failure_reads_stdout_when_the_error_went_there() {
         assert_eq!(
-            summarize("update", "npm error code ENOENT\n", "some warning\n", 254),
+            summarize(
+                Shape::Pull,
+                "npm error code ENOENT\n",
+                "some warning\n",
+                254
+            ),
             "npm error code ENOENT"
         );
     }
@@ -301,8 +289,68 @@ mod tests {
     #[test]
     fn a_long_line_is_cut_on_a_char_boundary() {
         let line = "✗".repeat(200);
-        let cut = summarize("update", "", &line, 1);
+        let cut = summarize(Shape::Pull, "", &line, 1);
         assert_eq!(cut.chars().count(), 80);
         assert!(cut.ends_with("..."));
+    }
+
+    fn step(label: &str, shape: Shape, stdout: &str, code: i32) -> StepResult {
+        StepResult {
+            label: label.into(),
+            shape,
+            stdout: stdout.into(),
+            stderr: String::new(),
+            code,
+        }
+    }
+
+    #[test]
+    fn a_slow_post_update_after_an_up_to_date_pull_summarises_as_the_post_steps_result() {
+        // The bug this fixes: concatenating every step's output made "Already up
+        // to date" from the pull win the summary even though post_update, which
+        // ran afterwards and actually did something, is what the row should say.
+        let steps = vec![
+            step("git pull", Shape::Pull, "Already up to date.\n", 0),
+            step("post_update", Shape::Generic, "wrote 3 files\n", 0),
+        ];
+        assert_eq!(summarize_steps(&steps, 0), "post_update: wrote 3 files");
+    }
+
+    #[test]
+    fn a_config_defined_status_body_keeps_its_own_output_instead_of_the_porcelain_parser() {
+        let steps = vec![step("status", Shape::Generic, "OK: 3 services up\n", 0)];
+        assert_eq!(summarize_steps(&steps, 0), "OK: 3 services up");
+
+        // What used to happen when the shape was guessed from the action name:
+        // one line of output that doesn't look like porcelain still gets read as
+        // one changed file.
+        assert_eq!(
+            summarize(Shape::Status, "OK: 3 services up\n", "", 0),
+            "1 changed"
+        );
+    }
+
+    #[test]
+    fn a_single_step_run_is_summarised_without_a_label() {
+        let steps = vec![step("git pull", Shape::Pull, "Already up to date.\n", 0)];
+        assert_eq!(summarize_steps(&steps, 0), "already up to date");
+    }
+
+    #[test]
+    fn a_failing_step_is_named_the_same_way_a_finishing_one_is() {
+        let steps = vec![
+            step("git pull", Shape::Pull, "Already up to date.\n", 0),
+            StepResult {
+                label: "post_update".into(),
+                shape: Shape::Generic,
+                stdout: String::new(),
+                stderr: "npm error code ENOENT\n".into(),
+                code: 1,
+            },
+        ];
+        assert_eq!(
+            summarize_steps(&steps, 1),
+            "post_update: npm error code ENOENT"
+        );
     }
 }

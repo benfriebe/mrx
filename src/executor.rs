@@ -1,7 +1,9 @@
 use crate::config::Repo;
 use crate::operations::Operation;
+use crate::summarize::Shape;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Semaphore};
@@ -11,18 +13,57 @@ pub enum TaskEvent {
     Started {
         index: usize,
     },
+    /// Emitted as each step begins, so a row can report what it is doing
+    /// rather than which action it belongs to.
+    Step {
+        index: usize,
+        label: String,
+    },
     Finished {
         index: usize,
-        stdout: String,
-        stderr: String,
+        steps: Vec<StepResult>,
         exit_code: i32,
-        /// Which step ended the chain, when there was more than one to choose from.
-        failed_step: Option<String>,
     },
     Skipped {
         index: usize,
         reason: String,
     },
+}
+
+/// One step's output, labelled and shaped by `operations::plan`, the only
+/// place that knows whether it was a built-in git call, a config-defined
+/// body, or a `post_` hook.
+#[derive(Debug, Clone)]
+pub struct StepResult {
+    pub label: String,
+    pub shape: Shape,
+    pub stdout: String,
+    pub stderr: String,
+    pub code: i32,
+}
+
+/// A live run: the flag `spawn_run` checks to skip queued work, the id every
+/// event it emits is tagged with, and how many targets it covers.
+pub struct RunHandle {
+    cancel: Arc<AtomicBool>,
+    pub run_id: u64,
+    pub total: usize,
+}
+
+impl RunHandle {
+    /// Stop every repo still queued from starting. Repos already past their
+    /// semaphore permit keep running to completion; see `spawn_run`.
+    pub fn request_cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// One executor event, tagged with the run it belongs to so a receiver can
+/// drop events from a run that has since been cancelled and superseded
+/// rather than painting them over a newer run's results.
+pub struct RunEvent {
+    pub run_id: u64,
+    pub kind: TaskEvent,
 }
 
 /// Per-repo context every step of a chain shares.
@@ -38,76 +79,141 @@ struct StepOutput {
     code: i32,
 }
 
-pub fn execute_all(
+/// Spawn a run over `targets`, pairs of global repo index and planned
+/// operation. Events carry the global index so a subset run attributes
+/// output to the right repo, and are tagged with `run_id` so a cancelled
+/// run's in-flight events don't paint over a newer one's.
+pub fn spawn_run(
     repos: &[Repo],
-    operations: Vec<Operation>,
+    targets: Vec<(usize, Operation)>,
     max_jobs: usize,
     config_path: PathBuf,
-) -> mpsc::UnboundedReceiver<TaskEvent> {
-    let (tx, rx) = mpsc::unbounded_channel();
+    tx: mpsc::UnboundedSender<RunEvent>,
+    run_id: u64,
+) -> RunHandle {
     let semaphore = Arc::new(Semaphore::new(max_jobs));
     let config_path = Arc::new(config_path);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let total = targets.len();
 
-    for (i, op) in operations.into_iter().enumerate() {
+    for (index, op) in targets {
+        let Some(repo) = repos.get(index) else {
+            continue;
+        };
         let tx = tx.clone();
         let sem = semaphore.clone();
+        let cancel = cancel.clone();
         let ctx = StepContext {
-            repo_name: repos[i].name.clone(),
-            repo_path: repos[i].path.clone(),
+            repo_name: repo.name.clone(),
+            repo_path: repo.path.clone(),
             config_path: config_path.clone(),
         };
 
         tokio::spawn(async move {
+            let send = |kind| {
+                let _ = tx.send(RunEvent { run_id, kind });
+            };
+
             match op {
-                Operation::Skip { reason } => {
-                    let _ = tx.send(TaskEvent::Skipped { index: i, reason });
-                }
-                Operation::NotCheckedOut => {
-                    let _ = tx.send(TaskEvent::Skipped {
-                        index: i,
-                        reason: "not checked out".into(),
-                    });
-                }
+                Operation::Skip { reason } => send(TaskEvent::Skipped { index, reason }),
+                Operation::NotCheckedOut => send(TaskEvent::Skipped {
+                    index,
+                    reason: "not checked out".into(),
+                }),
                 runnable => {
+                    // Stage A queue cancellation: checked once before queuing and
+                    // again once the permit is granted, since the permit is where
+                    // the waiting happens. A repo already past this point runs to
+                    // completion; killing it is stage B (section 06).
+                    if cancel.load(Ordering::Relaxed) {
+                        send(TaskEvent::Skipped {
+                            index,
+                            reason: "cancelled".into(),
+                        });
+                        return;
+                    }
                     let _permit = sem.acquire().await.unwrap();
-                    let _ = tx.send(TaskEvent::Started { index: i });
+                    if cancel.load(Ordering::Relaxed) {
+                        send(TaskEvent::Skipped {
+                            index,
+                            reason: "cancelled".into(),
+                        });
+                        return;
+                    }
+
+                    send(TaskEvent::Started { index });
 
                     let steps = match runnable {
                         Operation::Sequence(steps) => steps,
                         single => vec![single],
                     };
 
-                    // Naming the step only earns its keep when the row could be
-                    // reporting any of several.
-                    let name_steps = steps.len() > 1;
-
-                    let (mut stdout, mut stderr, mut code) = (String::new(), String::new(), 0);
-                    let mut failed_step = None;
+                    let mut results = Vec::new();
+                    let mut code = 0;
                     for step in steps {
                         let label = step.label();
-                        let result = run_step(step, &ctx).await;
-                        stdout.push_str(&result.stdout);
-                        stderr.push_str(&result.stderr);
-                        if result.code != 0 {
-                            // Keep the output collected so far; stop the chain.
-                            code = result.code;
-                            failed_step = name_steps.then_some(label);
+                        let shape = step.shape();
+                        send(TaskEvent::Step {
+                            index,
+                            label: label.clone(),
+                        });
+                        let out = run_step(step, &ctx).await;
+                        code = out.code;
+                        results.push(StepResult {
+                            label,
+                            shape,
+                            stdout: out.stdout,
+                            stderr: out.stderr,
+                            code: out.code,
+                        });
+                        if out.code != 0 {
+                            // Keep the steps collected so far; stop the chain.
                             break;
                         }
                     }
 
-                    let _ = tx.send(TaskEvent::Finished {
-                        index: i,
-                        stdout,
-                        stderr,
+                    send(TaskEvent::Finished {
+                        index,
+                        steps: results,
                         exit_code: code,
-                        failed_step,
                     });
                 }
             }
         });
     }
 
+    RunHandle {
+        cancel,
+        run_id,
+        total,
+    }
+}
+
+/// The one-shot CLI path keeps its old shape: make a channel, run
+/// everything, and hand back a receiver that closes once the run is done.
+///
+/// It must not share `spawn_run`'s channel design with the resident app:
+/// `render_plain.rs` loops until the channel closes, which only happens
+/// once every sender has dropped, and the app holds a sender for its whole
+/// life.
+pub fn execute_all(
+    repos: &[Repo],
+    operations: Vec<Operation>,
+    max_jobs: usize,
+    config_path: PathBuf,
+) -> mpsc::UnboundedReceiver<TaskEvent> {
+    let targets: Vec<(usize, Operation)> = operations.into_iter().enumerate().collect();
+    let (run_tx, mut run_rx) = mpsc::unbounded_channel();
+    spawn_run(repos, targets, max_jobs, config_path, run_tx, 0);
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(event) = run_rx.recv().await {
+            if tx.send(event.kind).is_err() {
+                break;
+            }
+        }
+    });
     rx
 }
 
@@ -244,5 +350,83 @@ mod tests {
         )
         .await;
         assert_eq!(out.stdout.trim(), "mrx --offline");
+    }
+
+    fn repos(names: &[&str], dir: &std::path::Path) -> Vec<Repo> {
+        names
+            .iter()
+            .map(|n| Repo {
+                name: (*n).to_string(),
+                path: dir.to_path_buf(),
+                clone_url: None,
+                keys: Default::default(),
+            })
+            .collect()
+    }
+
+    fn noop_at(dir: &std::path::Path, action: &str) -> Operation {
+        Operation::Shell {
+            cmd: "true".into(),
+            work_dir: dir.to_path_buf(),
+            action: action.into(),
+            args: vec![],
+            env: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn a_subset_run_attributes_events_to_the_global_repo_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let names: Vec<String> = (0..10).map(|i| format!("r{i}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let repos = repos(&names, dir.path());
+
+        let targets = vec![
+            (3, noop_at(dir.path(), "noop")),
+            (7, noop_at(dir.path(), "noop")),
+        ];
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_run(&repos, targets, 4, PathBuf::from("/dev/null"), tx, 1);
+
+        let mut finished_indices = Vec::new();
+        while let Some(evt) = rx.recv().await {
+            if let TaskEvent::Finished { index, .. } = evt.kind {
+                finished_indices.push(index);
+                if finished_indices.len() == 2 {
+                    break;
+                }
+            }
+        }
+        finished_indices.sort();
+        assert_eq!(
+            finished_indices,
+            vec![3, 7],
+            "events must carry the global repo index, not a position in the target list"
+        );
+    }
+
+    #[tokio::test]
+    async fn step_labels_arrive_in_order_for_a_three_step_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let repos = repos(&["r"], dir.path());
+        let seq = Operation::Sequence(vec![
+            noop_at(dir.path(), "one"),
+            noop_at(dir.path(), "two"),
+            noop_at(dir.path(), "three"),
+        ]);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_run(&repos, vec![(0, seq)], 1, PathBuf::from("/dev/null"), tx, 1);
+
+        let mut labels = Vec::new();
+        while let Some(evt) = rx.recv().await {
+            match evt.kind {
+                TaskEvent::Step { label, .. } => labels.push(label),
+                TaskEvent::Finished { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(labels, vec!["one", "two", "three"]);
     }
 }

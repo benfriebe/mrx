@@ -40,7 +40,7 @@ pub fn run(
     loop {
         // Drain pending events from executor
         while let Ok(evt) = rx.try_recv() {
-            apply_event(&mut state, &evt, &action);
+            apply_event(&mut state, &evt);
         }
         while let Ok(probed) = probe_rx.try_recv() {
             state.on_probe(probed.generation, probed.state);
@@ -150,26 +150,26 @@ fn spawn_probe_for_all(state: &mut AppState, jobs: usize, tx: &mpsc::UnboundedSe
     probe::spawn_probe_generation(&state.repos, targets, jobs, generation, tx.clone());
 }
 
-fn apply_event(state: &mut AppState, event: &TaskEvent, action: &str) {
+fn apply_event(state: &mut AppState, event: &TaskEvent) {
     match event {
         TaskEvent::Started { index } => {
             state.statuses[*index] = RepoStatus::Running;
         }
+        // Which step is live doesn't have anywhere to show yet in this view;
+        // the row keeps its fixed "pulling..."-style text until Finished.
+        TaskEvent::Step { .. } => {}
         TaskEvent::Finished {
             index,
-            stdout,
-            stderr,
+            steps,
             exit_code,
-            failed_step,
         } => {
-            let summary = summarize::with_step(
-                failed_step.as_deref(),
-                summarize::summarize(action, stdout, stderr, *exit_code),
-            );
+            let summary = summarize::summarize_steps(steps, *exit_code);
+            let stdout: String = steps.iter().map(|s| s.stdout.as_str()).collect();
+            let stderr: String = steps.iter().map(|s| s.stderr.as_str()).collect();
             state.statuses[*index] = RepoStatus::Done {
                 summary,
-                stdout: stdout.clone(),
-                stderr: stderr.clone(),
+                stdout,
+                stderr,
                 exit_code: *exit_code,
             };
         }

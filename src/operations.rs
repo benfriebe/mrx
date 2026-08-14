@@ -1,5 +1,6 @@
 use crate::cli::Command;
 use crate::config::Repo;
+use crate::summarize::Shape;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -41,6 +42,29 @@ impl Operation {
             // Flattened or resolved before anything runs, as in `run_step`.
             Operation::Sequence(_) | Operation::Skip { .. } | Operation::NotCheckedOut => {
                 String::new()
+            }
+        }
+    }
+
+    /// How this step's output should be read. Decided here, not guessed later
+    /// from the action name, because `plan` is the only place that knows
+    /// whether a step is a built-in git call, a config-defined body, or a
+    /// `post_` hook: a config-defined body is always `Shape::Generic`, whatever
+    /// its action happens to be named.
+    pub fn shape(&self) -> Shape {
+        match self {
+            Operation::Git { args, .. } => match args.first().map(String::as_str) {
+                Some("pull") => Shape::Pull,
+                Some("status") => Shape::Status,
+                Some("diff") => Shape::Diff,
+                Some("push") => Shape::Push,
+                Some("fetch") => Shape::Fetch,
+                _ => Shape::Generic,
+            },
+            Operation::Clone { .. } => Shape::Clone,
+            Operation::Shell { .. } => Shape::Generic,
+            Operation::Sequence(_) | Operation::Skip { .. } | Operation::NotCheckedOut => {
+                Shape::Generic
             }
         }
     }
@@ -529,6 +553,68 @@ mod tests {
             }
             other => panic!("expected Sequence, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn builtin_git_operations_carry_their_matching_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo_with_keys(dir.path().to_path_buf(), &[]);
+
+        assert_eq!(
+            plan(&Command::Update, &repo, &BTreeMap::new()).shape(),
+            Shape::Pull
+        );
+        assert_eq!(
+            plan(&Command::Status, &repo, &BTreeMap::new()).shape(),
+            Shape::Status
+        );
+        assert_eq!(
+            plan(&Command::Diff, &repo, &BTreeMap::new()).shape(),
+            Shape::Diff
+        );
+        assert_eq!(
+            plan(&Command::Push, &repo, &BTreeMap::new()).shape(),
+            Shape::Push
+        );
+        assert_eq!(
+            plan(&Command::Fetch, &repo, &BTreeMap::new()).shape(),
+            Shape::Fetch
+        );
+    }
+
+    #[test]
+    fn a_config_defined_body_is_generic_shaped_even_when_named_like_a_builtin() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo_with_keys(dir.path().to_path_buf(), &[("status", "./health-check.sh")]);
+
+        assert_eq!(
+            plan(&Command::Status, &repo, &BTreeMap::new()).shape(),
+            Shape::Generic,
+            "a shell body's output isn't git's, whatever the action is named"
+        );
+    }
+
+    #[test]
+    fn a_bare_clone_is_clone_shaped_but_a_checkout_body_is_generic() {
+        let repo = Repo {
+            name: "r".into(),
+            path: PathBuf::from("/nope/r"),
+            clone_url: Some("git@example.com:r.git".into()),
+            keys: BTreeMap::new(),
+        };
+        assert_eq!(
+            plan(&Command::Checkout, &repo, &BTreeMap::new()).shape(),
+            Shape::Clone
+        );
+
+        let with_body = repo_with_keys(
+            PathBuf::from("/nope/r2"),
+            &[("checkout", "git clone --depth 1 x r2")],
+        );
+        assert_eq!(
+            plan(&Command::Checkout, &with_body, &BTreeMap::new()).shape(),
+            Shape::Generic
+        );
     }
 
     #[test]
