@@ -52,9 +52,12 @@ pub const LIST_KEYS: &[Binding] = &[
     Binding::new("tab", "set"),
     Binding::overlay_only("^d/^u", "half page"),
     Binding::overlay_only("g/G", "first/last"),
-    Binding::overlay_only("a/A", "select all/none"),
+    Binding::overlay_only("a", "select all shown"),
+    Binding::overlay_only("A", "select whole set"),
+    Binding::overlay_only("c", "clear selection"),
     Binding::overlay_only("i", "invert selection"),
     Binding::overlay_only("s/f/d", "status/fetch/diff"),
+    Binding::overlay_only("!", "shell in repo"),
     Binding::overlay_only("r", "re-probe"),
     Binding::overlay_only("o", "open in $EDITOR"),
     Binding::overlay_only("F", "freshness poll"),
@@ -64,12 +67,14 @@ pub const LIST_KEYS: &[Binding] = &[
 ];
 
 pub const DETAIL_KEYS: &[Binding] = &[
+    Binding::new("tab", "focus"),
     Binding::new("j/k", "move"),
     Binding::new("^d/^u", "scroll"),
     Binding::new("y", "copy"),
     Binding::new("esc", "back"),
     Binding::new("q", "quit"),
-    Binding::overlay_only("o", "open in $EDITOR"),
+    Binding::overlay_only("o", "open the log"),
+    Binding::overlay_only("!", "shell in repo"),
     Binding::overlay_only("^r", "reload config"),
     Binding::overlay_only("m", "mouse capture"),
 ];
@@ -83,10 +88,10 @@ const CANCEL: Binding = Binding::new("esc", "cancel");
 /// Notes the overlay carries that are not themselves keys, for behaviour a
 /// keymap cannot show.
 pub const NOTES: &[&str] = &[
-    "  an empty selection acts on the row under the cursor",
-    "  ↓? means nothing has fetched this repo since mrx",
-    "     started, so its behind count is unknown. u, f and",
-    "     F all resolve it, as does a pull in another shell.",
+    "  an empty selection acts on every repo on screen",
+    "  no ↓ count means nothing has fetched this repo since",
+    "     mrx started, so its distance behind is unknown. u,",
+    "     f and F all settle it, as does a pull elsewhere.",
     "  with mouse capture on, hold your terminal's modifier",
     "     (option, or shift) to select text as usual",
 ];

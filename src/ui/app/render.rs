@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use super::actions::Source;
 use super::detail::{self, DetailLayout};
 use super::keymap;
-use super::state::{App, PendingRun, RunStatus};
+use super::state::{App, Pane, PendingRun, RunStatus};
 use crate::ui::widgets::{display_width, frame as spinner_frame, truncate};
 
 const COL_GAP: usize = 2;
@@ -25,11 +25,13 @@ const BRANCH_LABEL: &str = "BRANCH";
 /// what the last run reported.
 const STATE_LABEL: &str = "STATE";
 const RESULT_LABEL: &str = "RESULT";
-/// Title line, a second line of labels, and the rule under them: the chrome
-/// above the body of every pane, list and detail alike, so their rules meet
-/// across a split. Click resolution derives its row offset from this, so a
-/// click's row and the row the table actually painted never disagree.
-pub(crate) const LIST_HEADER_ROWS: usize = 3;
+/// Title line, a blank one, a line of labels, and the rule under them: the
+/// chrome above the body of every pane, list and detail alike, so their
+/// rules meet across a split. The blank row is what stops the app's own
+/// title reading as part of the table it sits above. Click resolution
+/// derives its row offset from this, so a click's row and the row the table
+/// actually painted never disagree.
+pub(crate) const LIST_HEADER_ROWS: usize = 4;
 /// The rule and key line under the body, drawn once per frame: by the pane
 /// itself when it owns the whole width, by the split when it doesn't.
 const FOOTER_ROWS: u16 = 2;
@@ -135,7 +137,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
     let width = area.width as usize;
     let mut lines: Vec<Line> = Vec::new();
 
-    lines.push(header_line(app, width));
+    lines.push(header_line(app, width, sidebar));
+    lines.push(Line::default());
 
     let visible = app.visible_indices();
     // As a sidebar the pane's area already stops above the shared footer, so
@@ -204,48 +207,49 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, split: bool) {
     let mut body: Vec<Line> = Vec::new();
     let mut position = None;
 
-    match app.run_results.get(app.cursor).and_then(|r| r.as_ref()) {
-        Some(RunStatus::Finished { steps, .. }) => {
-            let detail_lines = detail::detail_lines(steps);
-            let raw_scroll = app.detail_scroll.get(&app.cursor).copied().unwrap_or(0);
-            let scroll = detail::clamp_scroll(raw_scroll, detail_lines.len(), content_height);
-            for line in detail_lines.iter().skip(scroll).take(content_height) {
+    match transcript_lines(app) {
+        Some(lines) => {
+            // A run still arriving follows its own tail, until a scroll
+            // says otherwise: the interesting end of a live log is the one
+            // being written, and reading it should not need a keystroke per
+            // screenful. Any scroll leaves an entry behind and pins it.
+            let scroll = match app.detail_scroll.get(&app.cursor) {
+                Some(&scroll) => detail::clamp_scroll(scroll, lines.len(), content_height),
+                None => lines.len().saturating_sub(content_height),
+            };
+            for line in lines.iter().skip(scroll).take(content_height) {
                 body.push(render_detail_line(line));
             }
-            position = scroll_position(scroll, detail_lines.len(), content_height);
+            position = scroll_position(scroll, lines.len(), content_height);
         }
-        Some(RunStatus::Running) => {
-            body.push(Line::from(Span::styled(
-                "  running…",
-                Style::default().fg(Color::Yellow),
-            )));
-        }
-        Some(RunStatus::Step { label }) => {
-            body.push(Line::from(Span::styled(
-                format!("  {label}…"),
-                Style::default().fg(Color::Yellow),
-            )));
-        }
-        Some(RunStatus::Skipped { reason }) => {
-            body.push(Line::from(Span::raw(format!("  skipped: {reason}"))));
-        }
-        None => {
-            body.push(Line::from(Span::styled(
-                "  this repo hasn't run yet",
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
+        None => body.push(
+            match app.run_results.get(app.cursor).and_then(|r| r.as_ref()) {
+                Some(RunStatus::Skipped { reason }) => {
+                    Line::from(Span::raw(format!("  skipped: {reason}")))
+                }
+                Some(_) => Line::from(Span::styled(
+                    "  waiting for output…",
+                    Style::default().fg(Color::Yellow),
+                )),
+                None => Line::from(Span::styled(
+                    "  this repo hasn't run yet",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            },
+        ),
     }
 
     let repo_name = app.repos.get(app.cursor).map(|r| r.name.as_str());
+    let lead = focus_marker(app, Pane::Output, split);
     let title = match (repo_name, &app.run_action) {
-        (Some(name), Some(action)) => format!("  {name} · {action}"),
-        (Some(name), None) => format!("  {name} · output"),
-        (None, _) => "  (no repo)".into(),
+        (Some(name), Some(action)) => format!("{lead}{name} · {action}"),
+        (Some(name), None) => format!("{lead}{name} · output"),
+        (None, _) => format!("{lead}(no repo)"),
     };
 
     let mut lines = vec![
-        Line::from(Span::styled(title, Style::default().bold())),
+        Line::from(Span::styled(title, title_style(app, Pane::Output, split))),
+        Line::default(),
         // Where the list puts its column labels, so the two rules meet.
         two_column_line(&detail_summary(app), &position.unwrap_or_default(), width),
         separator(width),
@@ -264,6 +268,22 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, split: bool) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// The cursor row's output, finished or still arriving, or `None` when
+/// there is nothing to lay out yet. A live run is preferred over a stale
+/// finished one: the row is being written to right now, and the previous
+/// answer is no longer the one being asked about.
+fn transcript_lines(app: &App) -> Option<Vec<detail::DetailLine>> {
+    if let Some(live) = app.live.get(&app.cursor) {
+        if !live.steps.is_empty() {
+            return Some(detail::live_lines(&live.steps));
+        }
+    }
+    match app.run_results.get(app.cursor)? {
+        Some(RunStatus::Finished { steps, .. }) => Some(detail::detail_lines(steps)),
+        _ => None,
+    }
+}
+
 /// How the cursor row's last run ended, for the line under the detail
 /// title: the one thing the title can't say and the output alone makes you
 /// count.
@@ -276,7 +296,9 @@ fn detail_summary(app: &App) -> String {
         Some(RunStatus::Running) => "running".into(),
         Some(RunStatus::Step { label }) => format!("running {label}"),
         Some(RunStatus::Skipped { .. }) => "skipped".into(),
-        None => "no output yet".into(),
+        // The body already says the repo has not run; the line above it
+        // saying so too is one statement too many.
+        None => String::new(),
     }
 }
 
@@ -296,10 +318,10 @@ fn scroll_position(scroll: usize, total: usize, viewport: usize) -> Option<Strin
 fn render_detail_line(line: &detail::DetailLine) -> Line<'static> {
     match line {
         detail::DetailLine::StepHeader { label, code, .. } => {
-            let (marker, color) = if *code == 0 {
-                ("✓", Color::Green)
-            } else {
-                ("✗", Color::Red)
+            let (marker, color) = match code {
+                None => ("…", Color::Yellow),
+                Some(0) => ("✓", Color::Green),
+                Some(_) => ("✗", Color::Red),
             };
             Line::from(Span::styled(
                 format!("  $ {label}  {marker}"),
@@ -315,30 +337,61 @@ fn render_detail_line(line: &detail::DetailLine) -> Line<'static> {
     }
 }
 
-fn header_line(app: &App, width: usize) -> Line<'static> {
-    let title = format!("mrx · {}", app.set_label);
+fn header_line(app: &App, width: usize, split: bool) -> Line<'static> {
+    let title = format!(
+        "{}mrx · {}",
+        focus_marker(app, Pane::List, split),
+        app.set_label
+    );
     styled_two_column_line(
         &title,
         &app.header_right_text(),
         width,
-        Style::default().bold(),
+        title_style(app, Pane::List, split),
     )
+}
+
+/// Whether this pane has the keys, said twice over: a bar in the margin
+/// where the other pane has blank indent, and the title's own colour. One
+/// cue is easy to miss on a dark theme, and the bar alone is easy to read
+/// as decoration.
+fn focus_marker(app: &App, pane: Pane, split: bool) -> &'static str {
+    if split && app.focus == pane {
+        "▌ "
+    } else {
+        LEAD_IN
+    }
+}
+
+fn title_style(app: &App, pane: Pane, split: bool) -> Style {
+    match (split, app.focus == pane) {
+        (false, _) => Style::default().bold(),
+        (true, true) => Style::default().fg(Color::Cyan).bold(),
+        (true, false) => Style::default().fg(Color::DarkGray).bold(),
+    }
 }
 
 /// `left` at the table's indent and `right` against the far edge, dimmed.
 /// A line too narrow for both keeps the left half and drops the right,
 /// rather than letting them collide or spill past the pane.
 fn two_column_line(left: &str, right: &str, width: usize) -> Line<'static> {
-    styled_two_column_line(left, right, width, Style::default().fg(Color::DarkGray))
+    styled_two_column_line(
+        &format!("{LEAD_IN}{left}"),
+        right,
+        width,
+        Style::default().fg(Color::DarkGray),
+    )
 }
 
+/// `left` is already indented by its caller, since the margin is where the
+/// split's focus marker goes.
 fn styled_two_column_line(
     left: &str,
     right: &str,
     width: usize,
     left_style: Style,
 ) -> Line<'static> {
-    let left = format!("{LEAD_IN}{left}");
+    let left = left.to_string();
     let right = if right.is_empty() {
         String::new()
     } else {
@@ -1203,6 +1256,70 @@ mod tests {
     }
 
     #[test]
+    fn the_focused_pane_is_the_one_wearing_the_marker() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.open_detail();
+        let (list, output) = split_panes(&a, 140, 20);
+        assert!(list[0].starts_with('▌'), "got {:?}", list[0]);
+        assert!(!output[0].starts_with('▌'), "got {:?}", output[0]);
+
+        a.toggle_focus();
+        let (list, output) = split_panes(&a, 140, 20);
+        assert!(!list[0].starts_with('▌'), "got {:?}", list[0]);
+        assert!(output[0].starts_with('▌'), "got {:?}", output[0]);
+    }
+
+    /// Nothing has focus when only one pane is on screen, so nothing should
+    /// claim it: a marker there would point at a distinction that isn't
+    /// being made.
+    #[test]
+    fn the_full_width_list_wears_no_focus_marker() {
+        let a = app(vec![repo("bill-api")]);
+        let rows = frame_rows(&a, 90, 12);
+        assert!(!rows[0].starts_with('▌'), "got {:?}", rows[0]);
+    }
+
+    #[test]
+    fn a_blank_row_separates_the_app_title_from_the_column_labels() {
+        let a = app(vec![repo("bill-api")]);
+        let rows = frame_rows(&a, 90, 12);
+        assert!(rows[0].contains("mrx · "), "got {:?}", rows[0]);
+        assert!(rows[1].is_empty(), "got {:?}", rows[1]);
+        assert!(rows[2].contains(REPO_LABEL), "got {:?}", rows[2]);
+    }
+
+    #[test]
+    fn a_live_step_is_marked_as_running_rather_than_as_having_succeeded() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.detail_open = true;
+        let run_id = a.begin_run();
+        a.on_task(
+            run_id,
+            crate::executor::TaskEvent::Step {
+                index: 0,
+                label: "update".into(),
+            },
+        );
+        a.on_task(
+            run_id,
+            crate::executor::TaskEvent::Output {
+                index: 0,
+                step: 0,
+                stderr: false,
+                line: "step 1 of 6".into(),
+            },
+        );
+
+        let rows = frame_rows(&a, 90, 12);
+        let joined = rows.join("\n");
+        assert!(joined.contains("step 1 of 6"), "got {joined}");
+        assert!(
+            joined.contains("$ update  …"),
+            "a step still running has no ✓ to show, got {joined}"
+        );
+    }
+
+    #[test]
     fn the_detail_pane_says_how_the_run_ended() {
         let mut a = app(vec![repo("bill-api")]);
         a.detail_open = true;
@@ -1213,7 +1330,11 @@ mod tests {
         assert_eq!(detail_summary(&a), "0 steps · exit 1");
 
         a.run_results[0] = None;
-        assert_eq!(detail_summary(&a), "no output yet");
+        assert_eq!(
+            detail_summary(&a),
+            "",
+            "the body already says the repo has not run"
+        );
     }
 
     #[test]

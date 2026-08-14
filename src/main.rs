@@ -209,6 +209,12 @@ async fn main() {
             force: cli.force,
             dir_override: dir_override.clone(),
             session: ui_session.unwrap_or_default(),
+            // `--result-ttl off` arrives as zero; see `cli::parse_duration`.
+            result_ttl: match cli.result_ttl {
+                None => Some(ui::app::state::DEFAULT_RESULT_TTL),
+                Some(d) if d.is_zero() => None,
+                Some(d) => Some(d),
+            },
         })
         .await
         .expect("ui error");

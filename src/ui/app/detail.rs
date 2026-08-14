@@ -4,6 +4,7 @@
 
 use crate::executor::StepResult;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 /// Below this width the detail view takes the whole screen instead of
@@ -39,29 +40,42 @@ pub fn sidebar_width(width: u16) -> u16 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DetailLine {
     /// A step's own header: its label and exit code, so steps read as
-    /// separate sections rather than one scrollback.
+    /// separate sections rather than one scrollback. `code` is `None` for a
+    /// step still running, which has no outcome to report yet.
     StepHeader {
         step: usize,
         label: String,
-        code: i32,
+        code: Option<i32>,
     },
     Stdout(String),
     Stderr(String),
     Blank,
 }
 
-/// Flatten a run's steps into a scrollable transcript, one labelled section
-/// per step, in order.
+/// Flatten a finished run's steps into a scrollable transcript, one
+/// labelled section per step, in order.
 pub fn detail_lines(steps: &[StepResult]) -> Vec<DetailLine> {
+    lines(steps, false)
+}
+
+/// The same, for a run still in flight: the last step is the one running,
+/// so its heading reports no exit code rather than the zero it is carrying
+/// as a placeholder.
+pub fn live_lines(steps: &[StepResult]) -> Vec<DetailLine> {
+    lines(steps, true)
+}
+
+fn lines(steps: &[StepResult], last_is_running: bool) -> Vec<DetailLine> {
     let mut out = Vec::new();
     for (i, step) in steps.iter().enumerate() {
         if i > 0 {
             out.push(DetailLine::Blank);
         }
+        let running = last_is_running && i + 1 == steps.len();
         out.push(DetailLine::StepHeader {
             step: i,
             label: step.label.clone(),
-            code: step.code,
+            code: (!running).then_some(step.code),
         });
         out.extend(
             step.stdout
@@ -75,6 +89,33 @@ pub fn detail_lines(steps: &[StepResult]) -> Vec<DetailLine> {
         );
     }
     out
+}
+
+/// The whole run as plain text, step headings included, for handing to
+/// something that is not this app: an editor, a pager, a paste.
+pub fn transcript(steps: &[StepResult]) -> String {
+    let mut text = String::new();
+    for (i, step) in steps.iter().enumerate() {
+        if i > 0 {
+            text.push('\n');
+        }
+        text.push_str(&format!("$ {}  (exit {})\n", step.label, step.code));
+        text.push_str(&step.stdout);
+        text.push_str(&step.stderr);
+    }
+    text
+}
+
+/// Write [`transcript`] to a temp file and hand back its path. Named after
+/// the repo so a couple of them open at once are still tellable apart.
+pub fn write_transcript(steps: &[StepResult], repo: &str) -> std::io::Result<PathBuf> {
+    let safe: String = repo
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let path = std::env::temp_dir().join(format!("mrx-{safe}.log"));
+    std::fs::write(&path, transcript(steps))?;
+    Ok(path)
 }
 
 /// The step whose header is at or above `scroll`: the one the viewport is

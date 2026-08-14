@@ -33,6 +33,8 @@ pub async fn run(
 
         match event {
             TaskEvent::Started { .. } | TaskEvent::Step { .. } => continue,
+            // Never emitted here: the plain path opts out of streaming.
+            TaskEvent::Output { .. } => continue,
             TaskEvent::Skipped { index, reason } => {
                 done += 1;
                 println!("{:width$} | skipped: {}", repos[index].name, reason);

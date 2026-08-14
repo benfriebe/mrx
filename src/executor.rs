@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Semaphore};
 
@@ -18,6 +19,18 @@ pub enum TaskEvent {
     Step {
         index: usize,
         label: String,
+    },
+    /// One line of a step's output, as it arrives. `Finished` still carries
+    /// the whole transcript and remains the record of what a step produced;
+    /// this only exists so a long run can be read while it runs instead of
+    /// waited out.
+    Output {
+        index: usize,
+        /// Position in the step chain, so a line lands under the right
+        /// heading when several steps have already scrolled past.
+        step: usize,
+        stderr: bool,
+        line: String,
     },
     Finished {
         index: usize,
@@ -79,10 +92,39 @@ struct StepOutput {
     code: i32,
 }
 
+/// Where a step's output goes line by line while it is still running.
+/// `None` for the one-shot CLI path, which prints once at the end and has
+/// nothing to do with a line until then.
+struct StepSink {
+    tx: mpsc::UnboundedSender<RunEvent>,
+    run_id: u64,
+    index: usize,
+    step: usize,
+}
+
+impl StepSink {
+    fn line(&self, stderr: bool, line: &str) {
+        let _ = self.tx.send(RunEvent {
+            run_id: self.run_id,
+            kind: TaskEvent::Output {
+                index: self.index,
+                step: self.step,
+                stderr,
+                line: line.to_string(),
+            },
+        });
+    }
+}
+
 /// Spawn a run over `targets`, pairs of global repo index and planned
 /// operation. Events carry the global index so a subset run attributes
 /// output to the right repo, and are tagged with `run_id` so a cancelled
 /// run's in-flight events don't paint over a newer one's.
+///
+/// `stream` adds a [`TaskEvent::Output`] per line as it is produced, for a
+/// caller that shows a run while it runs. A caller that only prints at the
+/// end passes `false` rather than filtering thousands of events it will
+/// never look at.
 pub fn spawn_run(
     repos: &[Repo],
     targets: Vec<(usize, Operation)>,
@@ -90,6 +132,7 @@ pub fn spawn_run(
     config_path: PathBuf,
     tx: mpsc::UnboundedSender<RunEvent>,
     run_id: u64,
+    stream: bool,
 ) -> RunHandle {
     let semaphore = Arc::new(Semaphore::new(max_jobs));
     let config_path = Arc::new(config_path);
@@ -150,14 +193,20 @@ pub fn spawn_run(
 
                     let mut results = Vec::new();
                     let mut code = 0;
-                    for step in steps {
+                    for (position, step) in steps.into_iter().enumerate() {
                         let label = step.label();
                         let shape = step.shape();
                         send(TaskEvent::Step {
                             index,
                             label: label.clone(),
                         });
-                        let out = run_step(step, &ctx).await;
+                        let sink = stream.then(|| StepSink {
+                            tx: tx.clone(),
+                            run_id,
+                            index,
+                            step: position,
+                        });
+                        let out = run_step(step, &ctx, sink.as_ref()).await;
                         code = out.code;
                         results.push(StepResult {
                             label,
@@ -204,7 +253,7 @@ pub fn execute_all(
 ) -> mpsc::UnboundedReceiver<TaskEvent> {
     let targets: Vec<(usize, Operation)> = operations.into_iter().enumerate().collect();
     let (run_tx, mut run_rx) = mpsc::unbounded_channel();
-    spawn_run(repos, targets, max_jobs, config_path, run_tx, 0);
+    spawn_run(repos, targets, max_jobs, config_path, run_tx, 0, false);
 
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
@@ -217,7 +266,7 @@ pub fn execute_all(
     rx
 }
 
-async fn run_step(op: Operation, ctx: &StepContext) -> StepOutput {
+async fn run_step(op: Operation, ctx: &StepContext, sink: Option<&StepSink>) -> StepOutput {
     let mut command = match &op {
         Operation::Git { args, work_dir } => {
             let mut c = Command::new("git");
@@ -276,18 +325,60 @@ async fn run_step(op: Operation, ctx: &StepContext) -> StepOutput {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    match command.output().await {
-        Ok(output) => StepOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            code: output.status.code().unwrap_or(1),
-        },
-        Err(e) => StepOutput {
-            stdout: String::new(),
-            stderr: format!("failed to execute: {}", e),
-            code: 1,
-        },
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            return StepOutput {
+                stdout: String::new(),
+                stderr: format!("failed to execute: {e}"),
+                code: 1,
+            }
+        }
+    };
+
+    // Both pipes are drained concurrently: a step that fills one while the
+    // reader is blocked on the other deadlocks against the pipe buffer.
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (out, err) = tokio::join!(drain(stdout, false, sink), drain(stderr, true, sink));
+
+    let code = match child.wait().await {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => {
+            return StepOutput {
+                stdout: out,
+                stderr: format!("{err}failed to wait on the process: {e}"),
+                code: 1,
+            }
+        }
+    };
+
+    StepOutput {
+        stdout: out,
+        stderr: err,
+        code,
     }
+}
+
+/// Read one pipe to EOF, handing each line to `sink` as it arrives and
+/// returning the whole thing for the step's own record.
+async fn drain<R>(pipe: Option<R>, stderr: bool, sink: Option<&StepSink>) -> String
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let Some(pipe) = pipe else {
+        return String::new();
+    };
+    let mut lines = tokio::io::BufReader::new(pipe).lines();
+    let mut text = String::new();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let Some(sink) = sink {
+            sink.line(stderr, &line);
+        }
+        text.push_str(&line);
+        text.push('\n');
+    }
+    text
 }
 
 #[cfg(test)]
@@ -310,6 +401,7 @@ mod tests {
                 env: vec![],
             },
             &ctx,
+            None,
         )
         .await
     }
@@ -347,6 +439,7 @@ mod tests {
                 env: vec![],
             },
             &ctx,
+            None,
         )
         .await;
         assert_eq!(out.stdout.trim(), "mrx --offline");
@@ -387,7 +480,7 @@ mod tests {
         ];
 
         let (tx, mut rx) = mpsc::unbounded_channel();
-        spawn_run(&repos, targets, 4, PathBuf::from("/dev/null"), tx, 1);
+        spawn_run(&repos, targets, 4, PathBuf::from("/dev/null"), tx, 1, false);
 
         let mut finished_indices = Vec::new();
         while let Some(evt) = rx.recv().await {
@@ -417,7 +510,15 @@ mod tests {
         ]);
 
         let (tx, mut rx) = mpsc::unbounded_channel();
-        spawn_run(&repos, vec![(0, seq)], 1, PathBuf::from("/dev/null"), tx, 1);
+        spawn_run(
+            &repos,
+            vec![(0, seq)],
+            1,
+            PathBuf::from("/dev/null"),
+            tx,
+            1,
+            false,
+        );
 
         let mut labels = Vec::new();
         while let Some(evt) = rx.recv().await {
@@ -428,6 +529,101 @@ mod tests {
             }
         }
         assert_eq!(labels, vec!["one", "two", "three"]);
+    }
+
+    /// The point of streaming: a line has to be readable while the step is
+    /// still running, so it must arrive before that step's `Finished`.
+    #[tokio::test]
+    async fn output_lines_arrive_before_the_step_that_produced_them_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let repos = repos(&["r"], dir.path());
+        let op = shell_at(dir.path(), "echo first\nsleep 0.2\necho second");
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_run(
+            &repos,
+            vec![(0, op)],
+            1,
+            PathBuf::from("/dev/null"),
+            tx,
+            1,
+            true,
+        );
+
+        let mut streamed = Vec::new();
+        let mut finished = None;
+        while let Some(evt) = rx.recv().await {
+            match evt.kind {
+                TaskEvent::Output { line, .. } => streamed.push(line),
+                TaskEvent::Finished { steps, .. } => {
+                    finished = Some(steps);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(streamed, vec!["first", "second"]);
+        let steps = finished.expect("the run finished");
+        assert_eq!(
+            steps[0].stdout, "first\nsecond\n",
+            "the finished result still carries the whole thing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_caller_that_did_not_ask_for_streaming_gets_no_output_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let repos = repos(&["r"], dir.path());
+        let op = shell_at(dir.path(), "echo hello");
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_run(
+            &repos,
+            vec![(0, op)],
+            1,
+            PathBuf::from("/dev/null"),
+            tx,
+            1,
+            false,
+        );
+
+        while let Some(evt) = rx.recv().await {
+            match evt.kind {
+                TaskEvent::Output { .. } => panic!("streaming was not asked for"),
+                TaskEvent::Finished { .. } => break,
+                _ => {}
+            }
+        }
+    }
+
+    /// Both pipes are read concurrently, so a step that fills one while
+    /// writing nothing to the other still completes rather than blocking on
+    /// a full pipe buffer.
+    #[tokio::test]
+    async fn a_step_that_floods_one_pipe_still_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let repos = repos(&["r"], dir.path());
+        let op = shell_at(dir.path(), "seq 1 20000 >&2");
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_run(
+            &repos,
+            vec![(0, op)],
+            1,
+            PathBuf::from("/dev/null"),
+            tx,
+            1,
+            false,
+        );
+
+        let mut code = None;
+        while let Some(evt) = rx.recv().await {
+            if let TaskEvent::Finished { exit_code, .. } = evt.kind {
+                code = Some(exit_code);
+                break;
+            }
+        }
+        assert_eq!(code, Some(0));
     }
 
     fn shell_at(dir: &std::path::Path, cmd: &str) -> Operation {
@@ -456,7 +652,7 @@ mod tests {
         ];
 
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let handle = spawn_run(&repos, targets, 1, PathBuf::from("/dev/null"), tx, 1);
+        let handle = spawn_run(&repos, targets, 1, PathBuf::from("/dev/null"), tx, 1, false);
 
         // Whichever target wins the single permit first; the test doesn't
         // care which index that is, only that cancelling now must let it

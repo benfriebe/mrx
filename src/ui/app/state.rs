@@ -13,12 +13,18 @@ use crate::sets;
 use crate::summarize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Shown for a repo that has never taken part in a run this session, per
 /// section 02: "a repo that has never been run shows `·` rather than a fake
 /// 'pending'".
 const NEVER_RUN: &str = "·";
+
+/// How long a result stays on its row before the column goes back to
+/// [`NEVER_RUN`]. Long enough to run something, go and read it, and come
+/// back; short enough that a table left open all afternoon isn't still
+/// reporting this morning.
+pub const DEFAULT_RESULT_TTL: Duration = Duration::from_secs(6 * 60);
 
 pub struct App {
     pub repos: Vec<Repo>,
@@ -72,6 +78,17 @@ pub struct App {
     /// Each repo's outcome from the most recent run it took part in, `None`
     /// for a repo that has never run this session.
     pub run_results: Vec<Option<RunStatus>>,
+    /// Output arriving from runs still in flight, keyed by repo. Dropped as
+    /// soon as that repo's `Finished` lands, which carries the same text.
+    pub live: BTreeMap<usize, LiveRun>,
+    /// When each repo's result last changed, so
+    /// [`expire_results`](Self::expire_results) can clear a stale one.
+    pub result_at: BTreeMap<usize, Instant>,
+    /// How long a finished result stays on the row before the column goes
+    /// back to `·`. `None` keeps every result until the next run replaces
+    /// it. A result is a statement about a moment, and an hour later it is
+    /// mostly a claim about the past dressed as the present.
+    pub result_ttl: Option<Duration>,
     /// `[DEFAULT]` keys for the active config, so a run started from inside
     /// the app can plan an operation the same way the CLI does.
     pub defaults: BTreeMap<String, String>,
@@ -163,11 +180,16 @@ pub struct App {
     /// `?`: whether the keymap overlay is showing. Purely a view concern, so
     /// it gates nothing and blocks no operation.
     pub help_open: bool,
+    /// Which half of the split `j`/`k` drive. Meaningless with the detail
+    /// view closed, and reset every time it opens, so `tab` never leaves
+    /// focus somewhere the next open would inherit.
+    pub focus: Pane,
 
-    /// `o`: set by [`request_open_editor`](Self::request_open_editor); the
-    /// run loop owns actually suspending the terminal, since state has no
-    /// I/O of its own (mirrors `probe_requested`, `mouse_capture_dirty`).
-    pub open_editor_requested: bool,
+    /// `o` and `!`: what to run in the foreground once the app has stepped
+    /// out of the way. The run loop owns actually suspending the terminal,
+    /// since state has no I/O of its own (mirrors `probe_requested`,
+    /// `mouse_capture_dirty`).
+    pub foreground: Option<Foreground>,
 
     /// `F`: whether the freshness poll is currently on. Off by default,
     /// since freshness is an opt-in loop (section 07).
@@ -233,6 +255,82 @@ pub struct RunRequest {
     pub targets: Vec<usize>,
 }
 
+/// Which pane of the detail split has the keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    /// The repo list. `j`/`k` move the cursor and the output follows.
+    List,
+    /// The output. `j`/`k` scroll it and the cursor stays put.
+    Output,
+}
+
+impl Pane {
+    fn other(self) -> Self {
+        match self {
+            Pane::List => Pane::Output,
+            Pane::Output => Pane::List,
+        }
+    }
+}
+
+/// A pending request to hand the terminal to something else. Resolved
+/// against the cursor when the run loop takes it, not when it is set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Foreground {
+    /// `$EDITOR` on the cursor row's repo.
+    Repo,
+    /// `$EDITOR` on a file already written, such as a run transcript.
+    Path(PathBuf),
+    /// `$SHELL` in the cursor row's repo.
+    Shell,
+}
+
+/// A resolved [`Foreground`]: the same request with the cursor's repo
+/// already looked up, which is all the run loop needs.
+pub enum Suspend {
+    Editor(PathBuf),
+    Shell(PathBuf),
+}
+
+/// A run's output as it arrives, before `Finished` delivers the whole
+/// thing. Each entry is one step, in the order the chain runs them, holding
+/// only the lines seen so far.
+#[derive(Debug, Default, Clone)]
+pub struct LiveRun {
+    pub steps: Vec<StepResult>,
+}
+
+impl LiveRun {
+    /// Open a section for a step that has just started.
+    fn begin(&mut self, label: &str) {
+        self.steps.push(StepResult {
+            label: label.to_string(),
+            shape: summarize::Shape::Generic,
+            stdout: String::new(),
+            stderr: String::new(),
+            // Nothing to report yet; the finished result carries the real
+            // code, and [`crate::ui::app::detail`] draws a live step's
+            // heading without one.
+            code: 0,
+        });
+    }
+
+    /// Append one line to `step`. A line for a step that never announced
+    /// itself is dropped rather than inventing a section for it.
+    fn push(&mut self, step: usize, stderr: bool, line: &str) {
+        let Some(slot) = self.steps.get_mut(step) else {
+            return;
+        };
+        let text = if stderr {
+            &mut slot.stderr
+        } else {
+            &mut slot.stdout
+        };
+        text.push_str(line);
+        text.push('\n');
+    }
+}
+
 /// A repo's outcome from the most recent run it took part in.
 #[derive(Debug, Clone)]
 pub enum RunStatus {
@@ -280,6 +378,9 @@ impl App {
             probe_requested: false,
             run_id: 0,
             run_results: vec![None; n],
+            live: BTreeMap::new(),
+            result_at: BTreeMap::new(),
+            result_ttl: Some(DEFAULT_RESULT_TTL),
             defaults,
             config_path,
             dir_override,
@@ -311,7 +412,8 @@ impl App {
             cancel_requested: false,
             quit_pending: false,
             help_open: false,
-            open_editor_requested: false,
+            foreground: None,
+            focus: Pane::List,
             poll_enabled: false,
             poll_interval: poll::DEFAULT_POLL_INTERVAL,
             auto_update: false,
@@ -388,15 +490,42 @@ impl App {
             return;
         }
         let (index, status) = match event {
-            TaskEvent::Started { index } => (index, RunStatus::Running),
-            TaskEvent::Step { index, label } => (index, RunStatus::Step { label }),
+            TaskEvent::Started { index } => {
+                self.live.remove(&index);
+                (index, RunStatus::Running)
+            }
+            TaskEvent::Step { index, label } => {
+                self.live.entry(index).or_default().begin(&label);
+                (index, RunStatus::Step { label })
+            }
+            TaskEvent::Output {
+                index,
+                step,
+                stderr,
+                line,
+            } => {
+                if let Some(live) = self.live.get_mut(&index) {
+                    live.push(step, stderr, &line);
+                }
+                return;
+            }
             TaskEvent::Finished {
                 index,
                 steps,
                 exit_code,
-            } => (index, RunStatus::Finished { steps, exit_code }),
-            TaskEvent::Skipped { index, reason } => (index, RunStatus::Skipped { reason }),
+            } => {
+                // The finished steps supersede the partial ones, which are
+                // the same text either way; keeping both would only be a
+                // second answer to the same question.
+                self.live.remove(&index);
+                (index, RunStatus::Finished { steps, exit_code })
+            }
+            TaskEvent::Skipped { index, reason } => {
+                self.live.remove(&index);
+                (index, RunStatus::Skipped { reason })
+            }
         };
+        self.result_at.insert(index, Instant::now());
 
         let counts_toward_completion = matches!(
             status,
@@ -416,6 +545,33 @@ impl App {
             if self.run_total > 0 && self.run_completed == self.run_total {
                 self.post_run_targets = Some(std::mem::take(&mut self.run_targets));
                 self.run_action = None;
+            }
+        }
+    }
+
+    /// Drop results older than [`result_ttl`](Self::result_ttl), so a row
+    /// stops reporting an outcome from long enough ago that it says nothing
+    /// about the repo now. Called on the tick; a run still in flight is
+    /// never touched, since it has not finished saying anything yet.
+    pub fn expire_results(&mut self) {
+        let Some(ttl) = self.result_ttl else {
+            return;
+        };
+        if self.run_action.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        let stale: Vec<usize> = self
+            .result_at
+            .iter()
+            .filter(|(_, &at)| now.duration_since(at) >= ttl)
+            .map(|(&index, _)| index)
+            .collect();
+        for index in stale {
+            self.result_at.remove(&index);
+            self.detail_scroll.remove(&index);
+            if let Some(slot) = self.run_results.get_mut(index) {
+                *slot = None;
             }
         }
     }
@@ -1053,11 +1209,7 @@ impl App {
             return run;
         }
         let mut text = if self.filter.is_empty() {
-            format!(
-                "{} repos · {} selected",
-                self.repos.len(),
-                self.effective_selection().len()
-            )
+            format!("{} repos", self.repos.len())
         } else {
             format!(
                 "{} of {} repos · filter",
@@ -1065,6 +1217,13 @@ impl App {
                 self.repos.len()
             )
         };
+        // Only ever a count of what was actually picked. An empty selection
+        // means every visible repo, and calling that "42 selected" would
+        // make the two states impossible to tell apart on the one line
+        // that is supposed to distinguish them.
+        if !self.selected.is_empty() {
+            text.push_str(&format!(" · {} selected", self.selected.len()));
+        }
         if let Some(poll) = self.poll_status_text() {
             text.push_str(&format!(" · {poll}"));
         }
@@ -1159,11 +1318,19 @@ impl App {
             return;
         }
         self.detail_open = true;
+        // Opening from a row means "show me this one", so the list keeps
+        // the keys and `j`/`k` keep walking rows with the output following.
+        self.focus = Pane::List;
     }
 
     /// Back to the full-width list.
     pub fn close_detail(&mut self) {
         self.detail_open = false;
+    }
+
+    /// `tab` in the detail view: hand the keys to the other pane.
+    pub fn toggle_focus(&mut self) {
+        self.focus = self.focus.other();
     }
 
     /// Half a screen page for `Ctrl-D`/`Ctrl-U`, floored at one line so a
@@ -1226,8 +1393,11 @@ impl App {
         std::mem::take(&mut self.mouse_capture_dirty)
     }
 
-    /// `o`: open `$EDITOR` on the cursor row's repo, from either the plain
-    /// list or the detail view (section 03, "o is worth including early").
+    /// `o`: open `$EDITOR` on whatever the current view is about (section
+    /// 03, "o is worth including early"). In the list that is the cursor
+    /// row's repo; in the detail view it is the transcript on screen, since
+    /// that is what you are looking at and the repo is one `esc` away.
+    ///
     /// A no-op with a status message when the filter hides every row, for
     /// the same reason [`open_detail`](Self::open_detail) is. Also refused
     /// by [`mutation_blocker`](Self::mutation_blocker): a live run or
@@ -1235,25 +1405,64 @@ impl App {
     /// editor has the terminal, and the user should not open one on a repo
     /// something else is mid-write to.
     pub fn request_open_editor(&mut self) {
+        if self.detail_open {
+            self.request_open_transcript();
+            return;
+        }
+        self.request_foreground(Foreground::Repo);
+    }
+
+    /// `!`: a shell in the cursor row's repo, for the things no action
+    /// covers. Same suspend path as the editor, and refused on the same
+    /// grounds.
+    pub fn request_shell(&mut self) {
+        self.request_foreground(Foreground::Shell);
+    }
+
+    /// `o` from the detail view: write the transcript somewhere real and
+    /// open that. A file rather than a pipe, so the editor gets a name to
+    /// show and the text survives being closed.
+    fn request_open_transcript(&mut self) {
+        let Some(Some(RunStatus::Finished { steps, .. })) = self.run_results.get(self.cursor)
+        else {
+            self.status_message = Some("no finished output to open yet".into());
+            return;
+        };
+        let name = self
+            .repos
+            .get(self.cursor)
+            .map(|r| r.name.as_str())
+            .unwrap_or("repo");
+        match detail::write_transcript(steps, name) {
+            Ok(path) => self.foreground = Some(Foreground::Path(path)),
+            Err(e) => self.status_message = Some(format!("could not write the transcript: {e}")),
+        }
+    }
+
+    fn request_foreground(&mut self, what: Foreground) {
         if self.visible_indices().is_empty() {
             self.status_message = Some(self.no_visible_rows_message());
             return;
         }
-        if self.refuse_if_mutation_blocked("open the editor") {
+        let verb = match what {
+            Foreground::Shell => "open a shell",
+            _ => "open the editor",
+        };
+        if self.refuse_if_mutation_blocked(verb) {
             return;
         }
-        self.open_editor_requested = true;
+        self.foreground = Some(what);
     }
 
-    /// Set by [`request_open_editor`](Self::request_open_editor); consumed
-    /// by the run loop, the only thing that can suspend and restore the
-    /// terminal. Resolves to the cursor's repo path at the moment it's
-    /// taken rather than when requested.
-    pub fn take_open_editor_requested(&mut self) -> Option<PathBuf> {
-        if std::mem::take(&mut self.open_editor_requested) {
-            self.repos.get(self.cursor).map(|r| r.path.clone())
-        } else {
-            None
+    /// Set by the requests above; consumed by the run loop, the only thing
+    /// that can suspend and restore the terminal. Resolves against the
+    /// cursor at the moment it's taken rather than when it was requested.
+    pub fn take_foreground(&mut self) -> Option<Suspend> {
+        let repo = self.repos.get(self.cursor);
+        match self.foreground.take()? {
+            Foreground::Repo => Some(Suspend::Editor(repo?.path.clone())),
+            Foreground::Path(path) => Some(Suspend::Editor(path)),
+            Foreground::Shell => Some(Suspend::Shell(repo?.path.clone())),
         }
     }
 
@@ -1298,28 +1507,23 @@ impl App {
             .collect()
     }
 
-    /// The repos a run would target: the explicit selection, or the row under
-    /// the cursor when nothing is explicitly selected. Without this rule the
-    /// common case (open the app, act on one repo) needs a redundant select
-    /// first.
+    /// The repos a run would target: the explicit selection, or every
+    /// visible row when nothing is selected. "No selection" reads as "all of
+    /// them", which is what a multi-repo tool is for; narrowing to one repo
+    /// is what `space` and `/` are for.
     ///
     /// An explicit selection is honored even if the active filter currently
     /// hides every member of it: the user chose those repos on purpose, and
     /// a filter narrows what's on screen, not what was already selected
-    /// (`selection_survives_a_filter_change`). The cursor fallback has no
-    /// such choice behind it, so it is empty whenever there is no visible
-    /// row to fall back to, rather than acting on whatever the cursor still
-    /// happens to index from before the filter narrowed to nothing: a
-    /// zero-match filter must not leave a hidden repo runnable.
+    /// (`selection_survives_a_filter_change`). The fallback has no such
+    /// choice behind it, so it follows the filter exactly, and a zero-match
+    /// filter targets nothing rather than reaching a repo that is no longer
+    /// on screen.
     pub fn effective_selection(&self) -> Vec<usize> {
         if !self.selected.is_empty() {
             return self.selected.iter().copied().collect();
         }
-        if self.visible_indices().is_empty() {
-            Vec::new()
-        } else {
-            vec![self.cursor]
-        }
+        self.visible_indices()
     }
 
     /// Status text for an action that would otherwise act on a repo the
@@ -1406,6 +1610,20 @@ impl App {
         self.selected = visible.into_iter().collect();
     }
 
+    /// Select every repo in the set, filter or no filter. The filter-aware
+    /// [`select_all_visible`](Self::select_all_visible) is the common one;
+    /// this is for building a selection that outlives the filter you used to
+    /// find part of it.
+    pub fn select_all_in_set(&mut self) {
+        if self.repos.is_empty() {
+            self.status_message = Some("no repos".into());
+            return;
+        }
+        self.selected = (0..self.repos.len()).collect();
+    }
+
+    /// Back to no selection, which means every visible repo again rather
+    /// than none: see [`effective_selection`](Self::effective_selection).
     pub fn clear_selection(&mut self) {
         self.selected.clear();
     }
@@ -1527,13 +1745,20 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_selection_means_the_cursor_row() {
-        let a = app(&["foo", "bar"]);
-        assert_eq!(a.effective_selection(), vec![0]);
+    fn an_empty_selection_means_every_visible_repo() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        assert_eq!(a.effective_selection(), vec![0, 1, 2]);
+
+        a.filter = "ba".into();
+        assert_eq!(
+            a.effective_selection(),
+            vec![1, 2],
+            "the fallback follows the filter, since that is what is on screen"
+        );
     }
 
     #[test]
-    fn an_explicit_selection_overrides_the_cursor_row() {
+    fn an_explicit_selection_overrides_the_fallback() {
         let mut a = app(&["foo", "bar", "baz"]);
         a.cursor = 2;
         a.selected.insert(0);
@@ -1604,7 +1829,7 @@ mod tests {
         let mut a = app(&["foo"]);
         a.filter = "zzz".into();
         a.request_open_editor();
-        assert!(!a.open_editor_requested);
+        assert!(a.foreground.is_none());
         assert!(a.status_message.is_some());
     }
 
@@ -1616,7 +1841,7 @@ mod tests {
         let mut a = app(&["foo"]);
         a.begin_named_run("update".into(), vec![0]);
         a.request_open_editor();
-        assert!(!a.open_editor_requested);
+        assert!(a.foreground.is_none());
         assert!(a.status_message.is_some());
     }
 
@@ -1626,7 +1851,7 @@ mod tests {
         let mut a = app(&["foo"]);
         a.auto_update_total = 1;
         a.request_open_editor();
-        assert!(!a.open_editor_requested);
+        assert!(a.foreground.is_none());
         assert!(a.status_message.is_some());
     }
 
@@ -1766,7 +1991,7 @@ mod tests {
             !a.fetched_repos.contains(&0),
             "mrx has no idea how old a timestamp it has only just read is"
         );
-        assert!(a.probe_display(0).state.contains("↓?"));
+        assert!(!a.probe_display(0).state.contains('↓'));
     }
 
     /// The case that makes an update look broken: `u` runs `git pull`, the
@@ -1815,7 +2040,7 @@ mod tests {
             a.on_probe(generation, behind_by(0, 3, stamp));
         }
         assert!(!a.fetched_repos.contains(&0));
-        assert!(a.probe_display(0).state.contains("↓?"));
+        assert!(!a.probe_display(0).state.contains('↓'));
     }
 
     #[test]
@@ -1854,6 +2079,175 @@ mod tests {
     fn a_repo_that_has_never_run_shows_the_never_run_placeholder() {
         let a = app(&["foo"]);
         assert_eq!(a.result_text(0), NEVER_RUN);
+    }
+
+    #[test]
+    fn output_arriving_mid_run_builds_a_transcript_before_the_run_ends() {
+        let mut a = app(&["foo"]);
+        let run_id = a.begin_run();
+        a.on_task(run_id, TaskEvent::Started { index: 0 });
+        a.on_task(
+            run_id,
+            TaskEvent::Step {
+                index: 0,
+                label: "git pull".into(),
+            },
+        );
+        for line in ["remote: counting", "Fast-forward"] {
+            a.on_task(
+                run_id,
+                TaskEvent::Output {
+                    index: 0,
+                    step: 0,
+                    stderr: false,
+                    line: line.into(),
+                },
+            );
+        }
+
+        let live = a.live.get(&0).expect("a step in flight has a section");
+        assert_eq!(live.steps.len(), 1);
+        assert_eq!(live.steps[0].stdout, "remote: counting\nFast-forward\n");
+    }
+
+    #[test]
+    fn a_finished_run_replaces_the_partial_output_rather_than_sitting_beside_it() {
+        let mut a = app(&["foo"]);
+        let run_id = a.begin_run();
+        a.on_task(
+            run_id,
+            TaskEvent::Step {
+                index: 0,
+                label: "git pull".into(),
+            },
+        );
+        a.on_task(
+            run_id,
+            TaskEvent::Output {
+                index: 0,
+                step: 0,
+                stderr: false,
+                line: "partial".into(),
+            },
+        );
+        a.on_task(
+            run_id,
+            TaskEvent::Finished {
+                index: 0,
+                steps: vec![StepResult {
+                    label: "git pull".into(),
+                    shape: summarize::Shape::Generic,
+                    stdout: "partial\n".into(),
+                    stderr: String::new(),
+                    code: 0,
+                }],
+                exit_code: 0,
+            },
+        );
+        assert!(!a.live.contains_key(&0));
+    }
+
+    /// A line for a step that never announced itself would otherwise have to
+    /// invent a section to hold it, and the heading it invented would be a
+    /// guess about what produced the text.
+    #[test]
+    fn output_for_an_unknown_step_is_dropped_rather_than_given_a_section() {
+        let mut a = app(&["foo"]);
+        let run_id = a.begin_run();
+        a.on_task(
+            run_id,
+            TaskEvent::Output {
+                index: 0,
+                step: 7,
+                stderr: false,
+                line: "orphan".into(),
+            },
+        );
+        assert!(!a.live.contains_key(&0));
+    }
+
+    #[test]
+    fn a_result_older_than_the_ttl_goes_back_to_never_run() {
+        let mut a = app(&["foo", "bar"]);
+        a.result_ttl = Some(Duration::from_secs(60));
+        let run_id = a.begin_run();
+        a.on_task(
+            run_id,
+            TaskEvent::Skipped {
+                index: 0,
+                reason: "not checked out".into(),
+            },
+        );
+        a.expire_results();
+        assert_eq!(a.result_text(0), "not checked out");
+
+        a.result_at
+            .insert(0, Instant::now() - Duration::from_secs(61));
+        a.expire_results();
+        assert_eq!(a.result_text(0), NEVER_RUN);
+    }
+
+    #[test]
+    fn results_never_expire_while_the_run_that_made_them_is_still_going() {
+        let mut a = app(&["foo", "bar"]);
+        a.result_ttl = Some(Duration::from_secs(60));
+        a.run_action = Some("update".into());
+        a.run_results[0] = Some(RunStatus::Running);
+        a.result_at
+            .insert(0, Instant::now() - Duration::from_secs(600));
+        a.expire_results();
+        assert!(a.run_results[0].is_some(), "a live run is not stale");
+    }
+
+    #[test]
+    fn results_are_kept_indefinitely_when_the_ttl_is_off() {
+        let mut a = app(&["foo"]);
+        a.result_ttl = None;
+        a.run_results[0] = Some(RunStatus::Skipped { reason: "x".into() });
+        a.result_at
+            .insert(0, Instant::now() - Duration::from_secs(9999));
+        a.expire_results();
+        assert!(a.run_results[0].is_some());
+    }
+
+    #[test]
+    fn a_selects_what_is_on_screen_and_shift_a_selects_the_whole_set() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        a.filter = "ba".into();
+
+        a.select_all_visible();
+        assert_eq!(a.selected, BTreeSet::from([1, 2]));
+
+        a.select_all_in_set();
+        assert_eq!(
+            a.selected,
+            BTreeSet::from([0, 1, 2]),
+            "the whole set, filter or no filter"
+        );
+
+        a.clear_selection();
+        assert!(a.selected.is_empty());
+    }
+
+    #[test]
+    fn tab_hands_the_keys_to_the_other_pane_and_back() {
+        let mut a = app(&["foo"]);
+        a.open_detail();
+        assert_eq!(a.focus, Pane::List, "opening a row is about that row");
+        a.toggle_focus();
+        assert_eq!(a.focus, Pane::Output);
+        a.toggle_focus();
+        assert_eq!(a.focus, Pane::List);
+    }
+
+    #[test]
+    fn reopening_the_detail_view_starts_on_the_list_again() {
+        let mut a = app(&["foo"]);
+        a.open_detail();
+        a.toggle_focus();
+        a.close_detail();
+        a.open_detail();
+        assert_eq!(a.focus, Pane::List);
     }
 
     #[test]
@@ -2168,17 +2562,65 @@ mod tests {
         let mut a = app(&["foo", "bar"]);
         a.cursor = 1;
         a.request_open_editor();
-        assert!(a.open_editor_requested);
+        assert!(a.foreground.is_some());
 
         // Moving the cursor before the run loop gets around to taking the
         // request is what "at the moment it's taken" means.
         a.cursor = 0;
-        assert_eq!(
-            a.take_open_editor_requested(),
-            Some(PathBuf::from("/nonexistent/foo"))
-        );
-        assert!(!a.open_editor_requested, "only taken once");
-        assert_eq!(a.take_open_editor_requested(), None);
+        match a.take_foreground() {
+            Some(Suspend::Editor(path)) => assert_eq!(path, PathBuf::from("/nonexistent/foo")),
+            _ => panic!("expected the editor on the cursor's repo"),
+        }
+        assert!(a.foreground.is_none(), "only taken once");
+        assert!(a.take_foreground().is_none());
+    }
+
+    #[test]
+    fn bang_asks_for_a_shell_in_the_cursor_repo() {
+        let mut a = app(&["foo", "bar"]);
+        a.cursor = 1;
+        a.request_shell();
+        match a.take_foreground() {
+            Some(Suspend::Shell(dir)) => assert_eq!(dir, PathBuf::from("/nonexistent/bar")),
+            _ => panic!("expected a shell in the cursor's repo"),
+        }
+    }
+
+    /// In the list `o` means the repo; in the detail view the repo is not
+    /// what is on screen, so it means the transcript instead.
+    #[test]
+    fn o_in_the_detail_view_asks_for_the_log_rather_than_the_repo() {
+        let mut a = app(&["foo"]);
+        a.detail_open = true;
+        a.run_results[0] = Some(RunStatus::Finished {
+            steps: vec![StepResult {
+                label: "update".into(),
+                shape: summarize::Shape::Generic,
+                stdout: "Already up to date.\n".into(),
+                stderr: String::new(),
+                code: 0,
+            }],
+            exit_code: 0,
+        });
+
+        a.request_open_editor();
+        match a.take_foreground() {
+            Some(Suspend::Editor(path)) => {
+                assert!(path.to_string_lossy().ends_with(".log"), "got {path:?}");
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(text.contains("Already up to date."), "got {text:?}");
+            }
+            _ => panic!("expected the transcript"),
+        }
+    }
+
+    #[test]
+    fn o_in_the_detail_view_says_so_when_there_is_no_output_to_open() {
+        let mut a = app(&["foo"]);
+        a.detail_open = true;
+        a.request_open_editor();
+        assert!(a.foreground.is_none());
+        assert!(a.status_message.is_some());
     }
 
     #[test]
@@ -2646,7 +3088,7 @@ mod tests {
             a.probe_display(targets[0]).state
         );
         assert!(
-            a.probe_display(targets[1]).state.contains("↓?"),
+            !a.probe_display(targets[1]).state.contains('↓'),
             "the repo whose own fetch failed must not borrow the other one's freshness, got {:?}",
             a.probe_display(targets[1]).state
         );

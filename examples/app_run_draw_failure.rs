@@ -85,6 +85,7 @@ async fn main() {
         force: false,
         dir_override: None,
         session: session::Session::default(),
+        result_ttl: None,
     })
     .await;
 

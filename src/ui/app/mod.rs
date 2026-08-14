@@ -238,30 +238,29 @@ fn apply_mouse_capture(enabled: bool) -> io::Result<()> {
     }
 }
 
-/// What happened when `$EDITOR` was run, once the terminal itself is known
-/// to be back in a good state. Kept separate from `open_editor`'s `Err`
-/// case, which means the terminal restoration itself failed and the
-/// caller can no longer trust `terminal` at all.
+/// What happened when the foreground program was run, once the terminal
+/// itself is known to be back in a good state. Kept separate from
+/// [`suspend_for`]'s `Err` case, which means the terminal restoration itself
+/// failed and the caller can no longer trust `terminal` at all.
 enum EditorOutcome {
     Ok,
-    /// The editor process couldn't run (a bad `$EDITOR`, typically); the
-    /// terminal was still fully restored before this is returned.
+    /// The process couldn't run (a bad `$EDITOR` or `$SHELL`, typically);
+    /// the terminal was still fully restored before this is returned.
     EditorFailed(io::Error),
 }
 
-/// `o`: suspend the alternate screen, raw mode, mouse capture (if it was
-/// on), and the input thread (via `gate`, so it stops competing with the
-/// editor for stdin), run `$EDITOR` (falling back to `vi`) on `path` to
-/// completion, then restore all of it exactly as it was. A blocking wait is
-/// the point: there is nothing useful for the app to do while the editor
-/// has the terminal, and any probe or run events that arrive in the
-/// meantime just sit in their channels until the next draw picks them up,
-/// the same eventually-consistent handling every other background result
-/// gets.
+/// `o` and `!`: suspend the alternate screen, raw mode, mouse capture (if it
+/// was on), and the input thread (via `gate`, so it stops competing for
+/// stdin), run the program to completion, then restore all of it exactly as
+/// it was. A blocking wait is the point: there is nothing useful for the app
+/// to do while something else has the terminal, and any probe or run events
+/// that arrive in the meantime just sit in their channels until the next
+/// draw picks them up, the same eventually-consistent handling every other
+/// background result gets.
 ///
 /// `gate.park()` blocks until the input thread confirms it has actually
 /// stopped touching stdin before this goes on to tear down the terminal and
-/// launch the editor: closing the gate and immediately proceeding isn't
+/// launch anything: closing the gate and immediately proceeding isn't
 /// enough, since the thread can already be mid `poll` or `read` when the
 /// gate closes, and a keystroke meant for the editor would otherwise be won
 /// by mrx's own reader instead.
@@ -270,9 +269,9 @@ enum EditorOutcome {
 /// failed and the real terminal is left in whatever state that partial
 /// attempt produced; callers must not keep drawing against `terminal` as
 /// though nothing happened; see [`run`]'s call site.
-fn open_editor(
+fn suspend_for(
     terminal: &mut super::Term,
-    path: &Path,
+    what: &state::Suspend,
     mouse_captured: bool,
     gate: &InputGate,
 ) -> io::Result<EditorOutcome> {
@@ -283,13 +282,10 @@ fn open_editor(
         }
         super::teardown_terminal()?;
 
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-        let mut parts = editor.split_whitespace();
-        let bin = parts.next().unwrap_or("vi");
-        let spawn_result = std::process::Command::new(bin)
-            .args(parts)
-            .arg(path)
-            .status();
+        let spawn_result = match what {
+            state::Suspend::Editor(path) => spawn_editor(path),
+            state::Suspend::Shell(dir) => spawn_shell(dir),
+        };
 
         *terminal = super::setup_terminal()?;
         if mouse_captured {
@@ -304,6 +300,29 @@ fn open_editor(
     })();
     gate.resume();
     outcome
+}
+
+/// `$EDITOR` (falling back to `vi`) on a path. The variable may carry flags
+/// (`code -w`, `nvim -p`), so it is split rather than taken as one binary.
+fn spawn_editor(path: &Path) -> io::Result<std::process::ExitStatus> {
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    let mut parts = editor.split_whitespace();
+    let bin = parts.next().unwrap_or("vi");
+    std::process::Command::new(bin)
+        .args(parts)
+        .arg(path)
+        .status()
+}
+
+/// An interactive `$SHELL` (falling back to `sh`) in `dir`. `MR_REPO` is
+/// exported the same way it is for an action's body, so a one-off command
+/// typed here can refer to the repo the same way `.mrconfig` does.
+fn spawn_shell(dir: &Path) -> io::Result<std::process::ExitStatus> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+    std::process::Command::new(shell)
+        .current_dir(dir)
+        .env("MR_REPO", dir)
+        .status()
 }
 
 /// Begin a new probe generation over `targets` and spawn it.
@@ -334,6 +353,9 @@ fn spawn_action_run(
         app.config_path.clone(),
         tx.clone(),
         run_id,
+        // The detail view shows output while it arrives, so the app is the
+        // one caller that wants a line at a time.
+        true,
     )
 }
 
@@ -353,6 +375,10 @@ pub struct RunOptions {
     /// on the stored one's own terms); applied once, after `App::new`, to
     /// restore the filter, selection, cursor, and poll settings.
     pub session: session::Session,
+    /// `--result-ttl`: how long a run's result stays on its row. `None` was
+    /// asked for explicitly (`off`); an absent flag arrives here as the
+    /// default, resolved by `main.rs`.
+    pub result_ttl: Option<Duration>,
 }
 
 /// Open the resident app and block until the user quits.
@@ -366,6 +392,7 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
         force,
         dir_override,
         session,
+        result_ttl,
     } = options;
 
     super::install_panic_hook();
@@ -387,6 +414,7 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
         force,
         dir_override,
     );
+    app.result_ttl = result_ttl;
     app.restore_session(&session);
     // A corrupted or hostile `ui.json` is caught at the point it's parsed
     // (`session::from_fields`); this is the last line of defense so that no
@@ -471,11 +499,16 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
                 if app.take_mouse_capture_dirty() {
                     apply_mouse_capture(app.mouse_captured)?;
                 }
-                if let Some(path) = app.take_open_editor_requested() {
-                    match open_editor(&mut terminal, &path, app.mouse_captured, &input_gate) {
+                if let Some(what) = app.take_foreground() {
+                    match suspend_for(&mut terminal, &what, app.mouse_captured, &input_gate) {
                         Ok(EditorOutcome::Ok) => {}
                         Ok(EditorOutcome::EditorFailed(e)) => {
-                            app.status_message = Some(format!("could not open $EDITOR: {e}"));
+                            app.status_message = Some(match what {
+                                state::Suspend::Shell(_) => format!("could not open $SHELL: {e}"),
+                                state::Suspend::Editor(_) => {
+                                    format!("could not open $EDITOR: {e}")
+                                }
+                            });
                         }
                         // The terminal itself could not be restored; drawing
                         // another frame against `terminal` would just paint
@@ -513,6 +546,7 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
             }
             _ = ticker.tick() => {
                 app.tick = app.tick.wrapping_add(1);
+                app.expire_results();
             }
             _ = poll_ticker.tick() => {
                 app.on_poll_due();

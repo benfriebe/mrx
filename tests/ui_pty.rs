@@ -286,6 +286,60 @@ fn dollar_editor_suspends_and_restores_the_terminal() {
     );
 }
 
+/// `!` hands the terminal over the same way `o` does, and the app has to
+/// get it back the same way. A shell is the case where getting it wrong is
+/// worst: the user is left typing into a raw-mode terminal that no longer
+/// echoes.
+#[test]
+fn bang_drops_to_a_shell_and_takes_the_terminal_back() {
+    require_script();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_minimal_config(dir.path());
+    let bin = env!("CARGO_BIN_EXE_mrx");
+    let command_line = format!(
+        "{} ui -c {}",
+        sh_quote(bin),
+        sh_quote(&config.display().to_string())
+    );
+    let before = dir.path().join("before.txt");
+    let after = dir.path().join("after.txt");
+    let driver = write_driver_script(dir.path(), &command_line, &before, &after);
+
+    // `true` stands in for an interactive shell: it exits immediately, so
+    // `!` can be exercised without one to drive.
+    let session = run_in_pty(
+        &driver,
+        &[("SHELL", "true")],
+        &[
+            (Duration::from_millis(500), b"!"),
+            (Duration::from_millis(500), b"q"),
+        ],
+        Duration::from_secs(10),
+    );
+
+    assert!(
+        !session.timed_out,
+        "the session should quit on its own after `!` then `q`"
+    );
+    let out = String::from_utf8_lossy(&session.output);
+    assert!(
+        out.contains("MRX_PTY_EXIT:0"),
+        "mrx should exit 0 after suspending for the shell and quitting, got: {out}"
+    );
+
+    let before_txt = std::fs::read_to_string(&before).unwrap_or_default();
+    let after_txt = std::fs::read_to_string(&after).unwrap_or_default();
+    assert_eq!(
+        normalize_stty(&before_txt),
+        normalize_stty(&after_txt),
+        "stty -a must match before mrx ran and after it quit, even after a shell in between"
+    );
+    assert!(
+        count_occurrences(&session.output, ALT_SCREEN_ENTER) >= 2,
+        "the alternate screen must be re-entered after the shell exits, got: {out}"
+    );
+}
+
 /// An early `Err` return (no panic) between entering the terminal's
 /// raw/alt-screen/mouse-capture state and the app's own teardown used to
 /// skip cleanup entirely, since only the panic hook restored the terminal.

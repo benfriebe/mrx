@@ -210,12 +210,17 @@ pub fn plan(command: &Command, repo: &Repo, defaults: &BTreeMap<String, String>)
             sequence(steps)
         }
 
+        // `--branch` for the `## main...origin/main [ahead 1, behind 2]`
+        // header: a status that only lists working-tree changes answers
+        // half the question, and the half it leaves out is the one that
+        // decides whether to push or pull. Counts are against the local
+        // remote-tracking ref, so they are as fresh as the last fetch.
         Command::Status => builtin_or_shell(
             repo,
             defaults,
             "status",
             exists,
-            vec!["status".into(), "--short".into()],
+            vec!["status".into(), "--short".into(), "--branch".into()],
         ),
 
         Command::Diff => builtin_or_shell(
@@ -400,7 +405,7 @@ mod tests {
         let repo = repo_with_keys(dir.path().to_path_buf(), &[]);
 
         match plan(&Command::Status, &repo, &BTreeMap::new()) {
-            Operation::Git { args, .. } => assert_eq!(args, vec!["status", "--short"]),
+            Operation::Git { args, .. } => assert_eq!(args, vec!["status", "--short", "--branch"]),
             other => panic!("expected Git fallback, got {:?}", other),
         }
     }

@@ -50,6 +50,7 @@ mrx <command> [options]
 | `-d <dir>` | Working directory (default: `[DEFAULT] base`, else config file's parent) |
 | `--exit-on-done` | Quit the TUI once every repo has finished, instead of waiting for `q` |
 | `--plain` | Never use the TUI, even on a terminal |
+| `--result-ttl <d>` | How long `ui` keeps a run's result on its row: `6m` (default), `90s`, `off` |
 | `-v` | Verbose output |
 | `-n` | No recurse |
 | `-f` | Force |
@@ -95,11 +96,12 @@ selection without leaving the screen.
 
 ```
   mrx · work                                  update 1/2 · 1 failed
+
      REPO               BRANCH  STATE       RESULT
 ────────────────────────────────────────────────────────────────────────
  ▸ ● bill-api           main    clean       already up to date
    ● crew-db-schema     main    2 modified  git pull
-     loyalty-db-schema  main    clean  ↓?   ·
+     loyalty-db-schema  main    clean  ↓3   ·
 ────────────────────────────────────────────────────────────────────────
   j/k move  space select  / filter  enter output  u update  …  ? help
 ```
@@ -112,17 +114,24 @@ out along with the detail view's.
 `j`/`k` (or the arrow keys) move the cursor, `Ctrl-D`/`Ctrl-U` move half a page, and
 `g`/`G` jump to the first or last row.
 `space` toggles the cursor row's selection and moves on, `a` selects every row the
-filter currently shows, `A` clears the selection, and `i` inverts it. An empty
-selection means "the row under the cursor", which is why the header always shows at
-least 1 selected: it's telling you what an action would target right now.
+filter currently shows, `A` selects the whole set regardless of the filter, `c` clears
+the selection, and `i` inverts it. **An empty selection means every repo on screen**,
+so `u` with nothing selected updates the lot; the header only counts a selection you
+actually made, and says nothing when there isn't one.
 
 `/` starts an incremental filter on repo name; keep typing and the table narrows live.
 `Esc` drops the filter, `Enter` keeps it. Filtering narrows what's on screen but never
 touches the selection, so selecting some repos, then filtering, then selecting again
 adds to what was already picked.
 
-`u` runs `update` on the selection; `s`, `f`, `d` run `status`, `fetch`, `diff`. `:`
-opens the action palette, a filtered list of every runnable action for the set
+`!` drops to `$SHELL` in the cursor row's repo for whatever no action covers, the same
+suspend-and-restore the editor gets. It's a key rather than an action because an action
+runs unattended across a selection, and a shell is the opposite of both.
+
+`u` runs `update` on the selection; `s`, `f`, `d` run `status`, `fetch`, `diff`. The
+built-in `status` reports the branch and its ahead/behind alongside the working tree,
+so one run answers both "what have I changed here" and "is there anything to push or
+pull". `:` opens the action palette, a filtered list of every runnable action for the set
 (built-in and custom alike), each shown with where it's defined and how many repos
 actually have it: `deploy  per-repo, 3 of 42`. If the selection includes a repo the
 last probe found dirty, running anything asks for confirmation first, showing how
@@ -130,27 +139,38 @@ many; pass `-f`/`--force` to skip that. `r` re-probes the selection (or everythi
 with nothing selected).
 
 `Enter` opens the detail view for the cursor row: the table collapses to a sidebar
-(full-width below about 100 columns) and `j`/`k` keep moving the cursor with the
-detail view following. Each step of a run is its own labelled section rather than one
-scrollback. `Ctrl-D`/`Ctrl-U` scroll half a page, kept per repo; `y` copies the
-visible step's output, falling back to a temp file when there's no clipboard binary
-on `PATH`. `Esc` goes back to the full-width list.
+(full-width below about 100 columns). Output arrives **as it is produced**, so a long
+update can be read while it runs rather than waited out; a step still going is marked
+`…` instead of a tick, and the view follows the tail until you scroll. Each step is its
+own labelled section rather than one scrollback. `Ctrl-D`/`Ctrl-U` scroll half a page,
+kept per repo; `y` copies the visible step's output and `o` opens the whole transcript
+in `$EDITOR`, both falling back to a temp file when there's no clipboard binary on
+`PATH`. `Esc` goes back to the full-width list.
 
 ```
-  mrx · work                     │  guest-gateway · update
+▌ mrx · work                     │  guest-gateway · update
+
    REPO                STATE     │  2 steps · exit 0
 ─────────────────────────────────┼──────────────────────────────────────────────────────────────────
    crew-frontend       clean     │  $ git pull  ✓
  ▸ guest-gateway       clean     │  Updating b31d942..5013b52
    integration-config  clean     │  Fast-forward
 ─────────────────────────────────┴──────────────────────────────────────────────────────────────────
-  j/k move  ^d/^u scroll  y copy  esc back  q quit  ? help
+  tab focus  j/k move  ^d/^u scroll  y copy  esc back  q quit  ? help
 ```
 
 The split is one frame divided, not two windows: the panes rule off their headers on
-the same row, a rule runs between them, and one key line sits under both. The line
-under the detail title says how the run ended and, when the output is longer than the
-pane, which slice of it you're looking at.
+the same row, a rule runs between them, and one key line sits under both. `tab` hands
+the keys from one pane to the other, marked by the `▌` in the margin and the brighter
+title, so `j`/`k` either walk the repo list with the output following or scroll the
+output with the cursor staying put. The line under the detail title says how the run
+ended and, when the output is longer than the pane, which slice of it you're looking
+at.
+
+A run's result stays on its row for six minutes and then goes back to `·`, so a table
+left open all afternoon isn't still reporting this morning. `--result-ttl` changes it:
+`--result-ttl 30m`, `--result-ttl 90s`, or `--result-ttl off` to keep every result
+until the next run replaces it.
 
 `o` opens the cursor row's repo in `$EDITOR` (`vi` if it's unset), from either the
 plain list or the detail view. The app suspends properly to do it: raw mode, the
@@ -178,11 +198,12 @@ still finishing`. `q`/`Ctrl-C` quit immediately with nothing running; with a run
 live they ask first, since losing sight of an in-flight action isn't something to
 do by reflex.
 
-The ahead/behind counts only ever reflect the last fetch, so a repo that's ↓3
-behind reads ↓? until something updates the remote-tracking ref. Anything that
-fetches counts, not just mrx: the probe reads `FETCH_HEAD`'s timestamp, so running
-`update` on a repo, or pulling it in another terminal, settles its count on the
-next probe. `F` toggles a
+The ahead/behind counts only ever reflect the last fetch, so a repo that's ↓3 behind
+shows no ↓ at all until something updates the remote-tracking ref: an absent count is
+"nobody has asked", which is not the same claim as ↓0 and so is never drawn as one.
+Anything that fetches counts, not just mrx: the probe reads `FETCH_HEAD`'s timestamp,
+so running `update` on a repo, or pulling it in another terminal, settles its count on
+the next probe. `F` toggles a
 freshness poll, `git fetch --quiet` across the set on an interval (5 minutes by
 default), suspended rather than queued while a run is live; `Ctrl-A` layers a
 narrow, opt-in auto-update on top, fast-forwarding whatever a poll finds behind

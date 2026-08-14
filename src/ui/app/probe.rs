@@ -212,10 +212,10 @@ fn working_tree_text(state: &RepoState) -> String {
 }
 
 /// Working-tree summary: clean or a modified count, plus ahead/behind when
-/// there is an upstream to compare against. `behind` reads `?` rather than a
-/// number until this specific repo has fetched: the count compares against
-/// the local remote-tracking ref, so a stale one would otherwise read as "up
-/// to date" instead of "unknown", and a repo whose own fetch failed
+/// there is an upstream to compare against. The behind count is withheld
+/// entirely until this specific repo has fetched: it compares against the
+/// local remote-tracking ref, so a stale one would read as "up to date"
+/// rather than "not asked recently", and a repo whose own fetch failed
 /// (offline, VPN, auth) must not borrow another repo's success (section 02:
 /// "up to date" and "not asked recently" must not render identically).
 pub fn dirty_text(state: &RepoState, repo_has_fetched: bool) -> String {
@@ -232,12 +232,13 @@ pub fn dirty_text(state: &RepoState, repo_has_fetched: bool) -> String {
         if state.ahead > 0 {
             text.push_str(&format!("  ↑{}", state.ahead));
         }
-        if repo_has_fetched {
-            if state.behind > 0 {
-                text.push_str(&format!("  ↓{}", state.behind));
-            }
-        } else {
-            text.push_str("  ↓?");
+        // Silence rather than a `?` for a count nothing has established
+        // yet: the question mark was on most rows most of the time, which
+        // made it read as clutter rather than as the caveat it was. An
+        // absent ↓ still isn't a claim of being up to date; a ↓0 would be,
+        // which is why one is never drawn.
+        if repo_has_fetched && state.behind > 0 {
+            text.push_str(&format!("  ↓{}", state.behind));
         }
     }
 
@@ -368,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn behind_is_unknown_until_something_fetches_this_session() {
+    fn the_behind_count_is_withheld_until_something_fetches_this_session() {
         let mut state = parse_porcelain_v2(concat!(
             "# branch.oid abc123\n",
             "# branch.head main\n",
@@ -376,7 +377,11 @@ mod tests {
             "# branch.ab +0 -3\n",
         ));
         state.present = true;
-        assert_eq!(dirty_text(&state, false), "clean  ↓?");
+        assert_eq!(
+            dirty_text(&state, false),
+            "clean",
+            "an unestablished count is left unsaid rather than marked unknown"
+        );
         assert_eq!(dirty_text(&state, true), "clean  ↓3");
     }
 

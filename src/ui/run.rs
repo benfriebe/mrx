@@ -162,6 +162,8 @@ fn apply_event(state: &mut AppState, event: &TaskEvent) {
         // Which step is live doesn't have anywhere to show yet in this view;
         // the row keeps its fixed "pulling..."-style text until Finished.
         TaskEvent::Step { .. } => {}
+        // Never emitted here: the one-shot view opts out of streaming.
+        TaskEvent::Output { .. } => {}
         TaskEvent::Finished {
             index,
             steps,

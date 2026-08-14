@@ -8,7 +8,7 @@ use crossterm::event::{
 };
 
 use super::render;
-use super::state::App;
+use super::state::{App, Pane};
 
 /// How many rows/lines one wheel tick moves, versus the half-page jump
 /// `Ctrl-D`/`Ctrl-U` use.
@@ -119,8 +119,10 @@ fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('G') => app.move_to_last(),
         KeyCode::Char(' ') => app.toggle_selection_at_cursor(),
         KeyCode::Char('a') => app.select_all_visible(),
-        KeyCode::Char('A') => app.clear_selection(),
+        KeyCode::Char('A') => app.select_all_in_set(),
+        KeyCode::Char('c') => app.clear_selection(),
         KeyCode::Char('i') => app.invert_selection(),
+        KeyCode::Char('!') => app.request_shell(),
         KeyCode::Char('/') => app.start_filter(),
         KeyCode::Char('r') => app.probe_requested = true,
         KeyCode::Char('u') => app.request_run("update"),
@@ -229,13 +231,25 @@ fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
     }
     match key.code {
         KeyCode::Char('q') => return app.request_quit(),
-        KeyCode::Char('j') | KeyCode::Down => app.move_cursor(1),
-        KeyCode::Char('k') | KeyCode::Up => app.move_cursor(-1),
+        // `j`/`k` follow the focus: on the list they walk rows and the
+        // output follows; on the output they scroll it and the cursor stays
+        // where it is. Both panes are on screen either way, so which one
+        // moves has to be something the user chose.
+        KeyCode::Char('j') | KeyCode::Down => match app.focus {
+            Pane::List => app.move_cursor(1),
+            Pane::Output => app.detail_scroll_by(1),
+        },
+        KeyCode::Char('k') | KeyCode::Up => match app.focus {
+            Pane::List => app.move_cursor(-1),
+            Pane::Output => app.detail_scroll_by(-1),
+        },
+        KeyCode::Tab => app.toggle_focus(),
         KeyCode::Esc => app.close_detail(),
         KeyCode::Char('y') => app.copy_visible_step(),
         KeyCode::Char('m') => app.toggle_mouse_capture(),
         KeyCode::Char('?') => app.help_open = true,
         KeyCode::Char('o') => app.request_open_editor(),
+        KeyCode::Char('!') => app.request_shell(),
         _ => {}
     }
     false
@@ -648,7 +662,7 @@ mod tests {
         let ev = Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 5,
-            row: 3,
+            row: render::LIST_HEADER_ROWS as u16,
             modifiers: KeyModifiers::NONE,
         });
         on_input(&mut a, ev);
@@ -735,15 +749,61 @@ mod tests {
     }
 
     #[test]
-    fn o_requests_the_editor_in_list_and_detail_modes() {
+    fn o_requests_the_editor_from_the_list() {
         let mut a = app(&["foo"]);
         on_input(&mut a, press(KeyCode::Char('o')));
-        assert!(a.open_editor_requested);
-        a.open_editor_requested = false;
+        assert!(a.foreground.is_some());
+    }
+
+    #[test]
+    fn bang_requests_a_shell_from_either_mode() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, press(KeyCode::Char('!')));
+        assert!(a.foreground.is_some());
+        a.foreground = None;
 
         a.open_detail();
-        on_input(&mut a, press(KeyCode::Char('o')));
-        assert!(a.open_editor_requested);
+        on_input(&mut a, press(KeyCode::Char('!')));
+        assert!(a.foreground.is_some());
+    }
+
+    /// The split shows both panes at once, so `j` has two plausible
+    /// meanings and `tab` is what picks between them.
+    #[test]
+    fn j_moves_the_cursor_on_the_list_and_scrolls_the_output_on_the_other_pane() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        a.open_detail();
+
+        on_input(&mut a, press(KeyCode::Char('j')));
+        assert_eq!(a.cursor, 1, "the list has the keys when the view opens");
+        assert!(a.detail_scroll.is_empty(), "and the output did not move");
+
+        on_input(&mut a, press(KeyCode::Tab));
+        on_input(&mut a, press(KeyCode::Char('j')));
+        assert_eq!(
+            a.cursor, 1,
+            "the cursor stays put once the output has focus"
+        );
+        assert_eq!(a.detail_scroll.get(&1), Some(&1));
+    }
+
+    #[test]
+    fn tab_still_opens_the_set_picker_from_the_plain_list() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, press(KeyCode::Tab));
+        assert!(a.set_picker_open);
+    }
+
+    #[test]
+    fn c_clears_the_selection_and_shift_a_takes_the_whole_set() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        a.filter = "ba".into();
+
+        on_input(&mut a, press(KeyCode::Char('A')));
+        assert_eq!(a.selected.len(), 3, "the whole set, not just what shows");
+
+        on_input(&mut a, press(KeyCode::Char('c')));
+        assert!(a.selected.is_empty());
     }
 
     #[test]

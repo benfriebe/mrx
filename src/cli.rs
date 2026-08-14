@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Rejects `-j 0`: it becomes `Semaphore::new(0)` downstream, which never
 /// grants a permit, so every probe, run, and poll waits forever with no
@@ -57,6 +58,43 @@ pub struct Cli {
     /// Never use the TUI, even on a terminal
     #[arg(long, global = true)]
     pub plain: bool,
+
+    /// How long `ui` keeps a run's result on its row: `6m`, `90s`, or `off`
+    /// to keep it until the next run (default: 6m)
+    #[arg(long, global = true, value_parser = parse_duration)]
+    pub result_ttl: Option<Duration>,
+}
+
+/// A short duration for `--result-ttl`: a bare number of seconds, `90s`,
+/// `6m`, `1h`, or `off`/`0`.
+///
+/// `off` parses to [`Duration::ZERO`] rather than to `None`: clap reads a
+/// `None` here as "the flag was not passed", which is the one thing it must
+/// not be confused with, since that falls back to the default instead of
+/// turning expiry off. `main.rs` maps the zero back to "never expire".
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("off") {
+        return Ok(Duration::ZERO);
+    }
+    let (digits, scale) = match s.strip_suffix(['s', 'S']) {
+        Some(rest) => (rest, 1),
+        None => match s.strip_suffix(['m', 'M']) {
+            Some(rest) => (rest, 60),
+            None => match s.strip_suffix(['h', 'H']) {
+                Some(rest) => (rest, 3600),
+                None => (s, 1),
+            },
+        },
+    };
+    let n: u64 = digits
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{s}` is not a duration like 90s, 6m, 1h, or off"))?;
+    let secs = n
+        .checked_mul(scale)
+        .ok_or_else(|| format!("`{s}` is longer than any session will last"))?;
+    Ok(Duration::from_secs(secs))
 }
 
 #[derive(Subcommand, Clone)]
@@ -149,5 +187,31 @@ mod tests {
     fn jobs_defaults_to_none_when_dash_j_is_absent() {
         let cli = Cli::try_parse_from(["mrx", "status"]).unwrap();
         assert_eq!(cli.jobs, None);
+    }
+
+    #[test]
+    fn result_ttl_accepts_seconds_minutes_and_hours() {
+        assert_eq!(parse_duration("90"), Ok(Duration::from_secs(90)));
+        assert_eq!(parse_duration("90s"), Ok(Duration::from_secs(90)));
+        assert_eq!(parse_duration("6m"), Ok(Duration::from_secs(360)));
+        assert_eq!(parse_duration("1h"), Ok(Duration::from_secs(3600)));
+    }
+
+    /// `off` and an absent flag mean opposite things: never expire, versus
+    /// fall back to the default. Collapsing them into one `None` would make
+    /// `--result-ttl off` silently do nothing.
+    #[test]
+    fn result_ttl_off_is_not_the_same_as_an_absent_flag() {
+        let off = Cli::try_parse_from(["mrx", "--result-ttl", "off", "ui"]).unwrap();
+        assert_eq!(off.result_ttl, Some(Duration::ZERO));
+
+        let absent = Cli::try_parse_from(["mrx", "ui"]).unwrap();
+        assert_eq!(absent.result_ttl, None);
+    }
+
+    #[test]
+    fn result_ttl_rejects_something_that_is_not_a_duration() {
+        assert!(parse_duration("soon").is_err());
+        assert!(parse_duration("").is_err());
     }
 }
