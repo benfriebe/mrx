@@ -38,7 +38,8 @@ pub struct Cli {
     #[arg(short = 'f', long, global = true)]
     pub force: bool,
 
-    /// Quit once every repo has finished, instead of waiting for `q`
+    /// Quit once every repo has finished, instead of waiting for `q`. Ignored
+    /// by `ui`, which has no single run to wait on.
     #[arg(long, global = true)]
     pub exit_on_done: bool,
 
@@ -79,6 +80,9 @@ pub enum Command {
     Ls,
     /// List named repo sets
     Sets,
+    /// Open the resident app: browse a set, select repos, and run actions
+    /// without leaving the screen
+    Ui,
     /// Any subcommand defined in .mrconfig (per-repo or [DEFAULT])
     #[command(external_subcommand)]
     Custom(Vec<String>),
@@ -97,6 +101,7 @@ impl Command {
             Command::Register => "register",
             Command::List | Command::Ls => "list",
             Command::Sets => "sets",
+            Command::Ui => "ui",
             Command::Custom(args) => args.first().map(String::as_str).unwrap_or(""),
         }
     }

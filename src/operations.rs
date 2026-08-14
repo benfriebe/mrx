@@ -258,7 +258,7 @@ pub fn plan(command: &Command, repo: &Repo, defaults: &BTreeMap<String, String>)
             sequence(steps)
         }
 
-        Command::List | Command::Ls | Command::Sets | Command::Register => {
+        Command::List | Command::Ls | Command::Sets | Command::Register | Command::Ui => {
             unreachable!("command doesn't use operations")
         }
     }

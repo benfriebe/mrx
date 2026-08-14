@@ -88,9 +88,39 @@ fn max_jobs(cli: &Cli) -> usize {
     cli.jobs.unwrap_or_else(|| num_cpus::get().min(8))
 }
 
+/// Label shown in the resident app's header: the named set if `-s` or
+/// `$MRX_SET` gave one, otherwise `(unnamed)` for the bare config file, the
+/// same label `print_sets` uses for it.
+fn ui_set_label(cli: &Cli) -> String {
+    named_set(cli).unwrap_or_else(|| "(unnamed)".to_string())
+}
+
+/// `ui` needs an interactive terminal and contradicts `--plain`. Both are
+/// invocation errors independent of whether a config exists, so they are
+/// checked before anything that depends on the config being there.
+fn reject_bad_ui_invocation(cli: &Cli) {
+    if !matches!(cli.command, Command::Ui) {
+        return;
+    }
+    if cli.plain {
+        eprintln!("error: `ui` and `--plain` contradict each other");
+        eprintln!("`--plain` disables the interactive view that `ui` opens");
+        std::process::exit(2);
+    }
+    if !stdout().is_terminal() {
+        eprintln!("error: `ui` needs an interactive terminal");
+        eprintln!(
+            "stdout is not a tty; use a non-interactive subcommand instead, e.g. `mrx status` or `mrx list`"
+        );
+        std::process::exit(2);
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    reject_bad_ui_invocation(&cli);
 
     let config_path = resolve_config_path(&cli);
 
@@ -133,6 +163,14 @@ async fn main() {
             let marker = if exists { "✓" } else { "-" };
             println!("{} {:24} {}", marker, repo.name, repo.path.display());
         }
+        return;
+    }
+
+    // Ui command: open the resident app and block until the user quits.
+    if matches!(cli.command, Command::Ui) {
+        let jobs = max_jobs(&cli);
+        let label = ui_set_label(&cli);
+        ui::app::run(repos, label, jobs).await.expect("ui error");
         return;
     }
 

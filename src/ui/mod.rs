@@ -1,7 +1,8 @@
-//! Terminal front ends. `run` is the existing one-shot progress view; a
-//! resident app is expected to join it here later, sharing the setup below
-//! and the row renderer in `widgets`.
+//! Terminal front ends. `run` is the one-shot progress view; `app` is the
+//! resident app. Both share the terminal setup below and the row renderer in
+//! `widgets`.
 
+pub mod app;
 pub mod event;
 pub mod render;
 pub mod run;

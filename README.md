@@ -37,6 +37,7 @@ mrx <command> [options]
 | `mrx register` | Register current repo in `~/.mrconfig` |
 | `mrx list` / `ls` | List configured repos (no TUI) |
 | `mrx sets` | List named repo sets (no TUI) |
+| `mrx ui` | Open the resident app: browse, select, and filter repos (see [The resident app](#the-resident-app)) |
 | `mrx <action>` | Run an action defined in the config (see [Custom actions](#custom-actions)) |
 
 ### Options
@@ -84,6 +85,37 @@ The TUI shows a compact one-line-per-repo view with live spinners for in-progres
 ```
 
 Press **Enter** on a repo to expand its full output in a bordered panel. Arrow keys scroll within the panel. **Esc** collapses it. Press **r** once the run has finished to re-run the same command across all repos without leaving the screen. **q** quits and prints a summary.
+
+## The resident app
+
+`mrx ui` is a different shape from the TUI above: it stays open across runs instead of
+exiting after one. This is the first stage of it, a browsable, filterable repo table;
+running actions from inside it lands in a later stage.
+
+```
+  mrx · work                                              6 repos · 2 selected
+ ──────────────────────────────────────────────────────────────────────────────
+  ▸ ●  bill-api               /Users/me/dev/bill-api
+    ●  crew-db-schema         /Users/me/dev/crew-db-schema
+       mr-yum                 /Users/me/dev/mr-yum
+       menu-api               /Users/me/dev/menu-api
+ ──────────────────────────────────────────────────────────────────────────────
+  j/k move  g/G top/bottom  space select  a all  A none  i invert  / filter  q quit
+```
+
+`j`/`k` (or the arrow keys) move the cursor, `g`/`G` jump to the first or last row.
+`space` toggles the cursor row's selection and moves on, `a` selects every row the
+filter currently shows, `A` clears the selection, and `i` inverts it. An empty
+selection means "the row under the cursor", which is why the header always shows at
+least 1 selected: it's telling you what an action would target right now.
+
+`/` starts an incremental filter on repo name; keep typing and the table narrows live.
+`Esc` drops the filter, `Enter` keeps it. Filtering narrows what's on screen but never
+touches the selection, so selecting some repos, then filtering, then selecting again
+adds to what was already picked.
+
+Needs a real terminal: `mrx ui` with stdout piped, or combined with `--plain`, exits 2
+with a pointer at `mrx status` or another non-interactive subcommand instead.
 
 ## Config
 
