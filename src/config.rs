@@ -42,12 +42,34 @@ pub fn expand_tilde(s: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(s))
 }
 
+/// Read a config file into repos plus the `[DEFAULT]` fallbacks, exiting the
+/// process on an unreadable or unparseable file.
+///
+/// A thin wrapper over [`try_load`] for the one-shot CLI paths, where there is
+/// no terminal state to protect and exiting with a message is the right
+/// behaviour. The resident app calls `try_load` directly instead (finding B1):
+/// calling this from inside raw mode bypasses teardown and the panic hook,
+/// leaving the user's terminal wrecked.
+pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
+    match try_load(config_path, dir_override) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Read a config file into repos plus the `[DEFAULT]` fallbacks.
 ///
 /// The base directory that section paths hang off is resolved here because it can
 /// come from the config itself: `dir_override` (`-d`) beats `[DEFAULT] base`, which
 /// beats the config file's own parent.
-pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
+///
+/// A missing config file is not an error here: an empty `Config` is returned,
+/// matching `load`'s longstanding behaviour of falling back to an empty repo
+/// list. Only an unreadable or unparseable file yields `Err`.
+pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Config, String> {
     let fallback_base = || {
         config_path
             .parent()
@@ -58,17 +80,16 @@ pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
     let content = match std::fs::read_to_string(config_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Config {
+            return Ok(Config {
                 repos: Vec::new(),
                 defaults: BTreeMap::new(),
                 base: dir_override
                     .map(Path::to_path_buf)
                     .unwrap_or_else(fallback_base),
-            };
+            });
         }
         Err(e) => {
-            eprintln!("error: cannot read {}: {}", config_path.display(), e);
-            std::process::exit(1);
+            return Err(format!("cannot read {}: {}", config_path.display(), e));
         }
     };
 
@@ -82,8 +103,7 @@ pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
     // An empty list disables it; whole-line `;` and `#` comments still work.
     ini.set_inline_comment_symbols(Some(&[]));
     if let Err(e) = ini.read(content) {
-        eprintln!("error: cannot parse {}: {}", config_path.display(), e);
-        std::process::exit(1);
+        return Err(format!("cannot parse {}: {}", config_path.display(), e));
     }
 
     let mut sections: Vec<(String, BTreeMap<String, String>)> = Vec::new();
@@ -132,11 +152,11 @@ pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
     }
 
     repos.sort_by(|a, b| a.name.cmp(&b.name));
-    Config {
+    Ok(Config {
         repos,
         defaults,
         base,
-    }
+    })
 }
 
 fn extract_clone_url(checkout_cmd: &str) -> Option<String> {
@@ -344,5 +364,46 @@ mod tests {
         let cfg = write_config(dir.path(), "[a]\nupdate = echo one; echo two\n");
         let body = load(&cfg, None).repos[0].keys["update"].clone();
         assert_eq!(body, "echo one; echo two", "semicolon treated as a comment");
+    }
+
+    #[test]
+    fn try_load_reports_an_unparseable_config_instead_of_exiting() {
+        let dir = tempfile::tempdir().unwrap();
+        // An unclosed section bracket is invalid INI; `[foo\n` never closes.
+        let cfg = write_config(dir.path(), "[foo\nbar = baz\n");
+
+        let err = match try_load(&cfg, None) {
+            Err(e) => e,
+            Ok(_) => panic!("an unparseable config must be an Err"),
+        };
+        assert!(
+            err.contains(&cfg.display().to_string()),
+            "error should name the file: {err}"
+        );
+    }
+
+    #[test]
+    fn try_load_reports_an_unreadable_config_instead_of_exiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".mrconfig");
+        std::fs::create_dir(&cfg).unwrap(); // a directory can't be read as a file
+
+        let err = match try_load(&cfg, None) {
+            Err(e) => e,
+            Ok(_) => panic!("an unreadable config must be an Err"),
+        };
+        assert!(
+            err.contains(&cfg.display().to_string()),
+            "error should name the file: {err}"
+        );
+    }
+
+    #[test]
+    fn try_load_treats_a_missing_config_as_empty_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("nope.mrconfig");
+
+        let config = try_load(&cfg, None).expect("a missing config is not an error");
+        assert!(config.repos.is_empty());
     }
 }

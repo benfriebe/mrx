@@ -541,23 +541,42 @@ impl App {
     /// Confirm the highlighted set: load its config and switch to it, with
     /// a full re-probe (section 03, "switching reloads the config and
     /// restarts the probe").
+    ///
+    /// Uses [`config::try_load`] rather than `config::load` (finding B1):
+    /// this runs with raw mode, the alternate screen, and mouse capture all
+    /// active, so a `std::process::exit` here would skip teardown and the
+    /// panic hook and leave the terminal wrecked. An unreadable or
+    /// unparseable config keeps the set currently open and reports the
+    /// error instead.
     pub fn confirm_set_picker(&mut self) {
         let Some(entry) = self.set_entries.get(self.set_picker_cursor).cloned() else {
             self.close_set_picker();
             return;
         };
         self.close_set_picker();
-        let config::Config {
-            repos, defaults, ..
-        } = config::load(&entry.path, self.dir_override.as_deref());
-        self.set_label = entry.name;
-        self.reconcile_repos(repos, defaults, entry.path);
+        match config::try_load(&entry.path, self.dir_override.as_deref()) {
+            Ok(config::Config {
+                repos, defaults, ..
+            }) => {
+                self.set_label = entry.name;
+                self.reconcile_repos(repos, defaults, entry.path);
+            }
+            Err(e) => {
+                self.status_message = Some(format!("could not switch sets: {e}"));
+            }
+        }
     }
 
     /// `Ctrl-R`: re-read the active config from disk without changing which
     /// config is active. Blocked while a run is live, or while auto-update
     /// has merges in flight, for the same reason
     /// [`open_set_picker`](Self::open_set_picker) is.
+    ///
+    /// Uses [`config::try_load`] rather than `config::load` for the same
+    /// reason [`confirm_set_picker`](Self::confirm_set_picker) does
+    /// (finding B1): this runs with the terminal in raw mode, so exiting the
+    /// process here bypasses teardown. A bad edit mid-save keeps the current
+    /// config loaded and reports the error rather than killing the app.
     pub fn reload_config(&mut self) {
         if self.run_action.is_some() {
             self.status_message = Some("can't reload while a run is live".into());
@@ -567,11 +586,17 @@ impl App {
             self.status_message = Some("can't reload while auto-update is running".into());
             return;
         }
-        let config::Config {
-            repos, defaults, ..
-        } = config::load(&self.config_path, self.dir_override.as_deref());
-        let config_path = self.config_path.clone();
-        self.reconcile_repos(repos, defaults, config_path);
+        match config::try_load(&self.config_path, self.dir_override.as_deref()) {
+            Ok(config::Config {
+                repos, defaults, ..
+            }) => {
+                let config_path = self.config_path.clone();
+                self.reconcile_repos(repos, defaults, config_path);
+            }
+            Err(e) => {
+                self.status_message = Some(format!("could not reload config: {e}"));
+            }
+        }
     }
 
     /// Replace the repo list after a config reload or set switch, carrying
@@ -2032,6 +2057,78 @@ mod tests {
 
         assert_eq!(a.repos.len(), 1, "the reload must not have happened");
         assert!(a.status_message.is_some());
+    }
+
+    /// Finding B1: `reload_config` used to call `config::load`, which calls
+    /// `std::process::exit(1)` on a bad file. `Ctrl-R` runs with raw mode,
+    /// the alternate screen, and mouse capture all active, so that exit
+    /// bypassed teardown and the panic hook and left the terminal wrecked.
+    /// It must instead keep the config already loaded and report the error.
+    #[test]
+    fn reload_config_keeps_the_current_config_when_the_edit_does_not_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".mrconfig");
+        write_config(&cfg, "[foo]\n[bar]\n");
+        let config::Config {
+            repos, defaults, ..
+        } = config::load(&cfg, None);
+        let mut a = App::new(repos, "work".into(), 4, defaults, cfg.clone(), false, None);
+
+        // An unclosed section bracket: invalid INI, fails to parse.
+        write_config(&cfg, "[baz\n");
+        a.reload_config();
+
+        assert_eq!(
+            a.repos.len(),
+            2,
+            "the previous config must still be loaded, not process::exit(1)"
+        );
+        let names: Vec<&str> = a.repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["bar", "foo"]);
+        assert!(
+            a.status_message
+                .as_deref()
+                .is_some_and(|m| m.contains("reload")),
+            "got {:?}",
+            a.status_message
+        );
+    }
+
+    /// Same as above but through the set-picker path (finding B1).
+    #[test]
+    fn confirm_set_picker_keeps_the_current_config_when_the_target_does_not_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good.mrconfig");
+        write_config(&good, "[foo]\n");
+        let bad = dir.path().join("bad.mrconfig");
+        write_config(&bad, "[baz\n");
+
+        let config::Config {
+            repos, defaults, ..
+        } = config::load(&good, None);
+        let mut a = App::new(repos, "work".into(), 4, defaults, good.clone(), false, None);
+
+        a.set_entries = vec![SetEntry {
+            name: "bad".into(),
+            path: bad,
+        }];
+        a.set_picker_cursor = 0;
+        a.set_picker_open = true;
+        a.confirm_set_picker();
+
+        assert!(!a.set_picker_open);
+        assert_eq!(
+            a.config_path, good,
+            "must not have switched away from the config that parses"
+        );
+        assert_eq!(a.repos.len(), 1);
+        assert!(
+            a.status_message
+                .as_deref()
+                .is_some_and(|m| m.contains("switch")),
+            "got {:?}",
+            a.status_message
+        );
     }
 
     #[test]

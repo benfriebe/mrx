@@ -286,6 +286,83 @@ fn dollar_editor_suspends_and_restores_the_terminal() {
     );
 }
 
+/// Finding B2: an early `Err` return (no panic) between entering the
+/// terminal's raw/alt-screen/mouse-capture state and the app's own teardown
+/// used to skip cleanup entirely, since only the panic hook restored the
+/// terminal. `TerminalGuard`'s `Drop` must do it on its own, independent of
+/// that hook. Distinct from `a_panic_restores_the_terminal_over_a_real_pty`,
+/// which covers the panic path.
+#[test]
+fn an_early_return_restores_the_terminal_over_a_real_pty_without_panicking() {
+    require_script();
+    let build = Command::new("cargo")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "build",
+            "--example",
+            "early_return_while_running",
+            "--quiet",
+        ])
+        .status()
+        .expect("failed to build the early-return fixture");
+    assert!(build.success(), "the early-return fixture must build");
+
+    let example_bin = Path::new(env!("CARGO_BIN_EXE_mrx"))
+        .parent()
+        .expect("target/debug")
+        .join("examples")
+        .join("early_return_while_running");
+    assert!(
+        example_bin.is_file(),
+        "expected the early-return fixture at {}",
+        example_bin.display()
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let before = dir.path().join("before.txt");
+    let after = dir.path().join("after.txt");
+    let command_line = sh_quote(&example_bin.display().to_string());
+    let driver = write_driver_script(dir.path(), &command_line, &before, &after);
+
+    // The fixture returns `Err` on its own; there is nothing to send.
+    let session = run_in_pty(&driver, &[], &[], Duration::from_secs(10));
+
+    assert!(
+        !session.timed_out,
+        "a process that returns Err from main must still exit promptly"
+    );
+    let out = String::from_utf8_lossy(&session.output);
+    assert!(
+        out.contains("MRX_PTY_EXIT:1"),
+        "an Err from main exits 1, got: {out}"
+    );
+    assert!(
+        !out.contains("panicked at"),
+        "this fixture must not panic, or it isn't testing the guard's Drop on its own: {out}"
+    );
+
+    let before_txt = std::fs::read_to_string(&before).unwrap_or_default();
+    let after_txt = std::fs::read_to_string(&after).unwrap_or_default();
+    assert_eq!(
+        normalize_stty(&before_txt),
+        normalize_stty(&after_txt),
+        "stty -a must match before the fixture ran and after it returned Err"
+    );
+
+    let last_enable = last_index(&session.output, MOUSE_ENABLE);
+    let last_disable = last_index(&session.output, MOUSE_DISABLE);
+    assert!(
+        last_enable.is_some() && last_disable.is_some() && last_enable < last_disable,
+        "mouse capture must end disabled: enable at {last_enable:?}, disable at {last_disable:?}"
+    );
+
+    assert!(
+        count_occurrences(&session.output, ALT_SCREEN_ENTER) >= 1
+            && count_occurrences(&session.output, ALT_SCREEN_LEAVE) >= 1,
+        "the alternate screen must be left again on the way out, got: {out}"
+    );
+}
+
 #[test]
 fn a_panic_restores_the_terminal_over_a_real_pty() {
     require_script();

@@ -45,3 +45,29 @@ pub fn teardown_terminal() -> io::Result<()> {
     execute!(stdout(), LeaveAlternateScreen)?;
     Ok(())
 }
+
+/// RAII guard over the terminal state the resident app enters: raw mode,
+/// the alternate screen, and mouse capture. Without it, any `?` between
+/// entering that state and the app's own teardown at the end of `run`
+/// (including a library caller's own `ui::app::run(...).await?`) skips
+/// cleanup and leaves the terminal wrecked (finding B2). `Drop` attempts
+/// every restoration step regardless of whether an earlier one failed, so
+/// one bad step can't skip the others; the installed panic hook remains
+/// the belt to this guard's braces for an actual panic.
+///
+/// Disabling mouse capture or leaving the alternate screen when they were
+/// never entered is harmless, so this deliberately doesn't track whether
+/// each step actually ran before attempting to undo it.
+pub struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        // Three independent `let _ =`, not one `execute!` with several
+        // commands: a macro call stops at its first failing write, which is
+        // exactly the "one failing step skips the others" this guard exists
+        // to rule out.
+        let _ = execute!(stdout(), DisableMouseCapture);
+        let _ = execute!(stdout(), LeaveAlternateScreen);
+        let _ = terminal::disable_raw_mode();
+    }
+}
