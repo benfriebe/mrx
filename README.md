@@ -163,17 +163,18 @@ The split is one frame divided, not two windows: the panes rule off their header
 the same row, a rule runs between them, and one key line sits under both. `tab` hands
 the keys from one pane to the other, marked by the `▌` in the margin and the brighter
 title, so `j`/`k` either walk the repo list with the output following or scroll the
-output with the cursor staying put. The line under the detail title says how the run
-ended and, when the output is longer than the pane, which slice of it you're looking
-at.
+output with the cursor staying put. `Enter` on a row whose output is already on screen
+hands them to the output too, since the row is no longer the question. The line under
+the detail title says how the run ended and, when the output is longer than the pane,
+which slice of it you're looking at.
 
 A run's result stays on its row for six minutes and then goes back to `·`, so a table
 left open all afternoon isn't still reporting this morning. `--result-ttl` changes it:
 `--result-ttl 30m`, `--result-ttl 90s`, or `--result-ttl off` to keep every result
 until the next run replaces it.
 
-`o` opens the cursor row's repo in `$EDITOR` (`vi` if it's unset), from either the
-plain list or the detail view. The app suspends properly to do it: raw mode, the
+`o` opens the cursor row's repo in `$EDITOR` (`vi` if it's unset), or its transcript
+when the detail view is open. The app suspends properly to do it: raw mode, the
 alternate screen, and mouse capture all come off first, so the editor gets a normal
 terminal, and all three come back once it exits.
 

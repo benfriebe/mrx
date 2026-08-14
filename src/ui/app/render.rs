@@ -151,7 +151,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
         list_height(app, area.height)
     };
     let cursor_pos = visible.iter().position(|&i| i == app.cursor).unwrap_or(0);
-    let start = scroll_offset(cursor_pos, visible.len(), lh);
+    let start = scroll_offset(app.list_scroll, cursor_pos, visible.len(), lh);
     let end = visible.len().min(start + lh);
 
     if sidebar {
@@ -790,17 +790,22 @@ fn column_widths(app: &App, avail: usize) -> (usize, usize, usize, usize) {
     (name, branch, state, result)
 }
 
-/// First visible-list index to draw, so the cursor stays on screen once it
-/// scrolls past the bottom of `list_height` rows.
-pub(crate) fn scroll_offset(cursor_pos: usize, visible_len: usize, list_height: usize) -> usize {
+/// First visible-list index to draw: `prev` where it still shows the cursor,
+/// otherwise the nearest offset that does. Moving the window only as far as
+/// the cursor demands is what lets the cursor travel within the window
+/// instead of dragging the whole list along with it.
+pub(crate) fn scroll_offset(
+    prev: usize,
+    cursor_pos: usize,
+    visible_len: usize,
+    list_height: usize,
+) -> usize {
     if list_height == 0 || visible_len == 0 {
         return 0;
     }
-    if cursor_pos < list_height {
-        0
-    } else {
-        cursor_pos - list_height + 1
-    }
+    prev.min(cursor_pos)
+        .max((cursor_pos + 1).saturating_sub(list_height))
+        .min(visible_len.saturating_sub(list_height))
 }
 
 fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
@@ -966,19 +971,35 @@ mod tests {
 
     #[test]
     fn scroll_offset_stays_zero_while_the_cursor_fits_on_screen() {
-        assert_eq!(scroll_offset(0, 10, 5), 0);
-        assert_eq!(scroll_offset(4, 10, 5), 0);
+        assert_eq!(scroll_offset(0, 0, 10, 5), 0);
+        assert_eq!(scroll_offset(0, 4, 10, 5), 0);
     }
 
     #[test]
     fn scroll_offset_follows_the_cursor_past_the_bottom() {
-        assert_eq!(scroll_offset(5, 10, 5), 1);
-        assert_eq!(scroll_offset(9, 10, 5), 5);
+        assert_eq!(scroll_offset(0, 5, 10, 5), 1);
+        assert_eq!(scroll_offset(1, 9, 10, 5), 5);
+    }
+
+    #[test]
+    fn scroll_offset_holds_still_while_the_cursor_moves_inside_the_window() {
+        // The window that row 9 forced open, with the cursor walking back up
+        // through it: rows 5..=9 keep the same five rows on screen.
+        assert_eq!(scroll_offset(5, 8, 10, 5), 5);
+        assert_eq!(scroll_offset(5, 5, 10, 5), 5);
+        // Only stepping off the top edge moves it, and only by the one row.
+        assert_eq!(scroll_offset(5, 4, 10, 5), 4);
+    }
+
+    #[test]
+    fn scroll_offset_pulls_a_window_left_past_the_end_back_into_range() {
+        // A filter that shrinks the list under a scrolled window.
+        assert_eq!(scroll_offset(20, 2, 6, 5), 1);
     }
 
     #[test]
     fn scroll_offset_handles_an_empty_list() {
-        assert_eq!(scroll_offset(0, 0, 5), 0);
+        assert_eq!(scroll_offset(0, 0, 0, 5), 0);
     }
 
     #[test]

@@ -35,6 +35,12 @@ pub struct App {
     pub jobs: usize,
     /// Global index into `repos`, always pointing at a visible row.
     pub cursor: usize,
+    /// First visible-list position drawn at the top of the table. Kept as
+    /// state rather than derived from the cursor so the window only moves
+    /// when the cursor would otherwise leave it: a window pinned to the
+    /// cursor scrolls on every keypress, which reads as the cursor being
+    /// stuck to an edge.
+    pub list_scroll: usize,
     pub selected: BTreeSet<usize>,
     pub filter: String,
     /// Whether `/` is currently capturing keystrokes into `filter`.
@@ -366,6 +372,7 @@ impl App {
             set_label,
             jobs,
             cursor: 0,
+            list_scroll: 0,
             selected: BTreeSet::new(),
             filter: String::new(),
             filtering: false,
@@ -1333,6 +1340,12 @@ impl App {
         self.focus = self.focus.other();
     }
 
+    /// Enter on a row whose output is already on screen: the row is not the
+    /// question any more, so the keys go to the pane holding the answer.
+    pub fn focus_output(&mut self) {
+        self.focus = Pane::Output;
+    }
+
     /// Half a screen page for `Ctrl-D`/`Ctrl-U`, floored at one line so a
     /// very short terminal still scrolls. Approximate: it reads the last
     /// known frame height rather than the exact viewport, which is close
@@ -1541,11 +1554,26 @@ impl App {
     fn clamp_cursor_to_visible(&mut self) {
         let visible = self.visible_indices();
         if visible.contains(&self.cursor) {
+            self.follow_cursor();
             return;
         }
         if let Some(&first) = visible.first() {
             self.cursor = first;
         }
+        self.follow_cursor();
+    }
+
+    /// Pull [`list_scroll`](Self::list_scroll) the shortest distance that
+    /// puts the cursor back on screen, leaving it alone while the cursor is
+    /// already within the window. Render clamps the same way, so a path that
+    /// misses this call still draws a visible cursor; it just loses the
+    /// window's memory of where the user had scrolled to.
+    fn follow_cursor(&mut self) {
+        let visible = self.visible_indices();
+        let pos = visible.iter().position(|&i| i == self.cursor).unwrap_or(0);
+        let height = super::render::list_height(self, self.terminal_height);
+        self.list_scroll =
+            super::render::scroll_offset(self.list_scroll, pos, visible.len(), height);
     }
 
     /// Move the cursor by `delta` positions among visible rows, clamped to
@@ -1558,6 +1586,7 @@ impl App {
         let pos = visible.iter().position(|&i| i == self.cursor).unwrap_or(0);
         let next = (pos as isize + delta).clamp(0, visible.len() as isize - 1) as usize;
         self.cursor = visible[next];
+        self.follow_cursor();
     }
 
     /// Move the cursor `dir` half-pages, the same jump `Ctrl-D`/`Ctrl-U`
@@ -1570,12 +1599,14 @@ impl App {
         if let Some(&first) = self.visible_indices().first() {
             self.cursor = first;
         }
+        self.follow_cursor();
     }
 
     pub fn move_to_last(&mut self) {
         if let Some(&last) = self.visible_indices().last() {
             self.cursor = last;
         }
+        self.follow_cursor();
     }
 
     /// Toggle the cursor row's selection, then advance the cursor so
@@ -1703,6 +1734,55 @@ mod tests {
             false,
             None,
         )
+    }
+
+    /// A list long enough to scroll in a short terminal, with the window
+    /// height the app would draw it at.
+    fn scrolling_app(rows: usize, terminal_height: u16) -> (App, usize) {
+        let names: Vec<String> = (0..rows).map(|i| format!("repo-{i:02}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut a = app(&refs);
+        a.terminal_height = terminal_height;
+        let height = super::super::render::list_height(&a, a.terminal_height);
+        assert!(height >= 2 && rows > height, "list must actually scroll");
+        (a, height)
+    }
+
+    #[test]
+    fn the_cursor_walks_back_up_through_the_window_before_it_scrolls() {
+        let (mut a, height) = scrolling_app(20, 12);
+        a.move_to_last();
+        let bottom = a.repos.len() - height;
+        assert_eq!(a.list_scroll, bottom);
+
+        for _ in 1..height {
+            a.move_cursor(-1);
+        }
+        assert_eq!(
+            a.list_scroll, bottom,
+            "the window holds still while the cursor crosses it"
+        );
+
+        a.move_cursor(-1);
+        assert_eq!(
+            a.list_scroll,
+            bottom - 1,
+            "only a cursor stepping off the top edge moves the window"
+        );
+    }
+
+    #[test]
+    fn a_filter_that_shortens_the_list_pulls_the_window_back_into_range() {
+        let (mut a, _) = scrolling_app(20, 12);
+        a.move_to_last();
+        assert!(a.list_scroll > 0);
+
+        a.start_filter();
+        for c in "repo-0".chars() {
+            a.filter_push(c); // ten rows, all of them above the window
+        }
+        assert_eq!(a.list_scroll, 0);
+        assert!(a.visible_indices().contains(&a.cursor));
     }
 
     #[test]
@@ -2663,7 +2743,7 @@ mod tests {
         let visible = a.visible_indices();
         let list_height = 3;
         let cursor_pos = visible.iter().position(|&i| i == a.cursor).unwrap();
-        let scroll = super::super::render::scroll_offset(cursor_pos, visible.len(), list_height);
+        let scroll = super::super::render::scroll_offset(0, cursor_pos, visible.len(), list_height);
         assert!(
             scroll > 0,
             "the cursor must actually be scrolled for this test to mean anything"

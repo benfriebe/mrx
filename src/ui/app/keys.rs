@@ -244,6 +244,7 @@ fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
             Pane::Output => app.detail_scroll_by(-1),
         },
         KeyCode::Tab => app.toggle_focus(),
+        KeyCode::Enter => app.focus_output(),
         KeyCode::Esc => app.close_detail(),
         KeyCode::Char('y') => app.copy_visible_step(),
         KeyCode::Char('m') => app.toggle_mouse_capture(),
@@ -311,7 +312,7 @@ fn resolve_row(app: &App, row: u16) -> Option<usize> {
     }
     let visible = app.visible_indices();
     let cursor_pos = visible.iter().position(|&i| i == app.cursor).unwrap_or(0);
-    let scroll = render::scroll_offset(cursor_pos, visible.len(), list_h);
+    let scroll = render::scroll_offset(app.list_scroll, cursor_pos, visible.len(), list_h);
     app.repo_at_row(body_row, scroll)
 }
 
@@ -541,6 +542,18 @@ mod tests {
         let mut a = app(&["foo"]);
         on_input(&mut a, press(KeyCode::Enter));
         assert!(a.detail_open);
+    }
+
+    #[test]
+    fn a_second_enter_hands_the_keys_to_the_output_pane() {
+        let mut a = app(&["foo", "bar"]);
+        on_input(&mut a, press(KeyCode::Enter));
+        assert_eq!(a.focus, Pane::List, "opening a row keeps the keys on it");
+
+        on_input(&mut a, press(KeyCode::Enter));
+        assert_eq!(a.focus, Pane::Output);
+        on_input(&mut a, press(KeyCode::Char('j')));
+        assert_eq!(a.cursor, 0, "j now scrolls the output, not the list");
     }
 
     #[test]

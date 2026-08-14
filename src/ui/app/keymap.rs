@@ -73,6 +73,7 @@ pub const DETAIL_KEYS: &[Binding] = &[
     Binding::new("y", "copy"),
     Binding::new("esc", "back"),
     Binding::new("q", "quit"),
+    Binding::overlay_only("enter", "focus output"),
     Binding::overlay_only("o", "open the log"),
     Binding::overlay_only("!", "shell in repo"),
     Binding::overlay_only("^r", "reload config"),
