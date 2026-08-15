@@ -5,7 +5,7 @@
 //! `git merge --ff-only` layered on top, run only where [`can_fast_forward`]
 //! says it is safe, and only ever reported when it is not.
 
-use super::probe::{self, Probed, RepoState};
+use super::probe::{self, generation_tagged, Probed, RepoState};
 use crate::config::Repo;
 use std::path::Path;
 use std::process::Stdio;
@@ -116,15 +116,7 @@ pub fn spawn_poll_generation(
     generation: u64,
     tx: mpsc::UnboundedSender<Probed>,
 ) {
-    let (inner_tx, mut inner_rx) = mpsc::unbounded_channel();
-    spawn_poll(repos, which, max_jobs, inner_tx);
-    tokio::spawn(async move {
-        while let Some(state) = inner_rx.recv().await {
-            if tx.send(Probed { generation, state }).is_err() {
-                break;
-            }
-        }
-    });
+    spawn_poll(repos, which, max_jobs, generation_tagged(generation, tx));
 }
 
 /// One repo's outcome from an auto-update pass, tagged with the cycle it

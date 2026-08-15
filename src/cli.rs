@@ -77,16 +77,13 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
     if s.eq_ignore_ascii_case("off") {
         return Ok(Duration::ZERO);
     }
-    let (digits, scale) = match s.strip_suffix(['s', 'S']) {
-        Some(rest) => (rest, 1),
-        None => match s.strip_suffix(['m', 'M']) {
-            Some(rest) => (rest, 60),
-            None => match s.strip_suffix(['h', 'H']) {
-                Some(rest) => (rest, 3600),
-                None => (s, 1),
-            },
-        },
-    };
+    let (digits, scale) = [('s', 1), ('m', 60), ('h', 3600)]
+        .into_iter()
+        .find_map(|(suffix, scale)| {
+            s.strip_suffix([suffix, suffix.to_ascii_uppercase()])
+                .map(|rest| (rest, scale))
+        })
+        .unwrap_or((s, 1));
     let n: u64 = digits
         .trim()
         .parse()

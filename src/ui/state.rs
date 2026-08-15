@@ -120,13 +120,8 @@ impl AppState {
     }
 
     pub fn toggle_expand(&mut self) {
-        if self.expanded == Some(self.selected) {
-            self.expanded = None;
-            self.scroll_offset = 0;
-        } else {
-            self.expanded = Some(self.selected);
-            self.scroll_offset = 0;
-        }
+        self.expanded = (self.expanded != Some(self.selected)).then_some(self.selected);
+        self.scroll_offset = 0;
     }
 
     pub fn collapse(&mut self) {

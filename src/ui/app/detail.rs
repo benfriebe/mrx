@@ -119,14 +119,19 @@ pub fn transcript(steps: &[StepResult]) -> String {
     text
 }
 
+/// A string safe to appear in a temp filename: non-alphanumeric characters
+/// (including a repo's `/` or `.`) become `-` so the result is always a
+/// single path segment.
+fn filename_safe(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
 /// Write [`transcript`] to a temp file and hand back its path. Named after
 /// the repo so a couple of them open at once are still tellable apart.
 pub fn write_transcript(steps: &[StepResult], repo: &str) -> std::io::Result<PathBuf> {
-    let safe: String = repo
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let path = std::env::temp_dir().join(format!("mrx-{safe}.log"));
+    let path = std::env::temp_dir().join(format!("mrx-{}.log", filename_safe(repo)));
     std::fs::write(&path, transcript(steps))?;
     Ok(path)
 }
@@ -135,13 +140,15 @@ pub fn write_transcript(steps: &[StepResult], repo: &str) -> std::io::Result<Pat
 /// currently showing, so `y` follows whatever the scroll position last
 /// brought into view without a separate key to pick a step.
 pub fn step_at_line(lines: &[DetailLine], scroll: usize) -> usize {
-    let mut current = 0;
-    for line in lines.iter().take(scroll + 1) {
-        if let DetailLine::StepHeader { step, .. } = line {
-            current = *step;
-        }
-    }
-    current
+    lines
+        .iter()
+        .take(scroll + 1)
+        .filter_map(|line| match line {
+            DetailLine::StepHeader { step, .. } => Some(*step),
+            _ => None,
+        })
+        .next_back()
+        .unwrap_or(0)
 }
 
 /// Clamp a scroll offset so it never scrolls past the point where the last
@@ -185,11 +192,9 @@ fn try_clipboard(bin: &str, args: &[&str], text: &str) -> Option<String> {
 }
 
 fn save_to_file(text: &str, repo: &str, step_label: &str) -> String {
-    let safe_step: String = step_label
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let path = std::env::temp_dir().join(format!("mrx-{repo}-{safe_step}.txt"));
+    let safe_repo = filename_safe(repo);
+    let safe_step = filename_safe(step_label);
+    let path = std::env::temp_dir().join(format!("mrx-{safe_repo}-{safe_step}.txt"));
     match std::fs::write(&path, text) {
         Ok(()) => format!("no clipboard available, wrote output to {}", path.display()),
         Err(e) => format!("could not copy or save output: {e}"),

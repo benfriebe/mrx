@@ -268,18 +268,16 @@ pub struct Probed {
     pub state: RepoState,
 }
 
-/// Like [`spawn_probe`], but tags every result with `generation` so mashing
-/// `r` or switching sets twice quickly can't leave one probe's results
-/// painted on top of a newer one's.
-pub fn spawn_probe_generation(
-    repos: &[Repo],
-    which: Vec<usize>,
-    max_jobs: usize,
+/// A sender that tags every result with `generation` before forwarding it
+/// on `tx`; the forwarding task ends when either side closes. Shared by
+/// [`spawn_probe_generation`] and `poll`'s equivalent, so mashing `r` or
+/// switching sets twice quickly can't leave one cycle's results painted on
+/// top of a newer one's.
+pub(super) fn generation_tagged(
     generation: u64,
     tx: mpsc::UnboundedSender<Probed>,
-) {
+) -> mpsc::UnboundedSender<RepoState> {
     let (inner_tx, mut inner_rx) = mpsc::unbounded_channel();
-    spawn_probe(repos, which, max_jobs, inner_tx);
     tokio::spawn(async move {
         while let Some(state) = inner_rx.recv().await {
             if tx.send(Probed { generation, state }).is_err() {
@@ -287,6 +285,18 @@ pub fn spawn_probe_generation(
             }
         }
     });
+    inner_tx
+}
+
+/// Like [`spawn_probe`], but tags every result with `generation`.
+pub fn spawn_probe_generation(
+    repos: &[Repo],
+    which: Vec<usize>,
+    max_jobs: usize,
+    generation: u64,
+    tx: mpsc::UnboundedSender<Probed>,
+) {
+    spawn_probe(repos, which, max_jobs, generation_tagged(generation, tx));
 }
 
 #[cfg(test)]

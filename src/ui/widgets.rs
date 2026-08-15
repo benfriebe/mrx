@@ -53,7 +53,6 @@ fn running_text(command: &str) -> String {
         "push" => "pushing...".into(),
         "fetch" => "fetching...".into(),
         "checkout" => "cloning...".into(),
-        "run" => "running...".into(),
         _ => "running...".into(),
     }
 }

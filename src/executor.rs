@@ -55,12 +55,9 @@ pub struct StepResult {
     pub code: i32,
 }
 
-/// A live run: the flag `spawn_run` checks to skip queued work, the id every
-/// event it emits is tagged with, and how many targets it covers.
+/// A live run: the flag `spawn_run` checks to skip queued work.
 pub struct RunHandle {
     cancel: Arc<AtomicBool>,
-    pub run_id: u64,
-    pub total: usize,
 }
 
 impl RunHandle {
@@ -137,7 +134,6 @@ pub fn spawn_run(
     let semaphore = Arc::new(Semaphore::new(max_jobs));
     let config_path = Arc::new(config_path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let total = targets.len();
 
     for (index, op) in targets {
         let Some(repo) = repos.get(index) else {
@@ -231,11 +227,7 @@ pub fn spawn_run(
         });
     }
 
-    RunHandle {
-        cancel,
-        run_id,
-        total,
-    }
+    RunHandle { cancel }
 }
 
 /// The one-shot CLI path keeps its old shape: make a channel, run
