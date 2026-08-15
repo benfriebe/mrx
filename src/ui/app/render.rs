@@ -76,6 +76,13 @@ pub(crate) fn list_height(app: &App, area_height: u16) -> usize {
     (area_height as usize).saturating_sub(chrome_rows(app))
 }
 
+/// First visible-list position on screen: the same computation the table
+/// is drawn with, so click resolution and cursor following can't drift.
+pub(crate) fn list_start(app: &App, visible: &[usize], height: usize) -> usize {
+    let cursor_pos = visible.iter().position(|&i| i == app.cursor).unwrap_or(0);
+    scroll_offset(app.list_scroll, cursor_pos, visible.len(), height)
+}
+
 /// Transcript rows a detail pane shows: the pane minus its chrome, minus
 /// its own footer when it draws one (a split pane shares the frame's,
 /// which occupies the same rows, so both layouts land on the same count).
@@ -158,8 +165,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
     } else {
         list_height(app, area.height)
     };
-    let cursor_pos = visible.iter().position(|&i| i == app.cursor).unwrap_or(0);
-    let start = scroll_offset(app.list_scroll, cursor_pos, visible.len(), lh);
+    let start = list_start(app, &visible, lh);
     let end = visible.len().min(start + lh);
 
     if sidebar {

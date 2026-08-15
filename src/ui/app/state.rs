@@ -1751,10 +1751,8 @@ impl App {
     /// window's memory of where the user had scrolled to.
     fn follow_cursor(&mut self) {
         let visible = self.visible_indices();
-        let pos = visible.iter().position(|&i| i == self.cursor).unwrap_or(0);
         let height = super::render::list_height(self, self.terminal_height);
-        self.list_scroll =
-            super::render::scroll_offset(self.list_scroll, pos, visible.len(), height);
+        self.list_scroll = super::render::list_start(self, &visible, height);
     }
 
     /// Move the cursor by `delta` positions among visible rows, clamped to

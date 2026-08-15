@@ -350,8 +350,7 @@ fn resolve_row(app: &App, row: u16) -> Option<usize> {
         return None;
     }
     let visible = app.visible_indices();
-    let cursor_pos = visible.iter().position(|&i| i == app.cursor).unwrap_or(0);
-    let scroll = render::scroll_offset(app.list_scroll, cursor_pos, visible.len(), list_h);
+    let scroll = render::list_start(app, &visible, list_h);
     app.repo_at_row(body_row, scroll)
 }
 
