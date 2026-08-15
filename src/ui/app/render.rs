@@ -326,10 +326,14 @@ fn render_detail_line(line: &detail::DetailLine) -> Line<'static> {
             ))
         }
         detail::DetailLine::Stdout(s) => Line::from(Span::raw(format!("  {s}"))),
-        detail::DetailLine::Stderr(s) => Line::from(Span::styled(
-            format!("  {s}"),
-            Style::default().fg(Color::Red),
-        )),
+        detail::DetailLine::Stderr(s) => {
+            let color = match detail::severity(s) {
+                detail::Severity::Plain => Color::DarkGray,
+                detail::Severity::Warn => Color::Yellow,
+                detail::Severity::Error => Color::Red,
+            };
+            Line::from(Span::styled(format!("  {s}"), Style::default().fg(color)))
+        }
         detail::DetailLine::Blank => Line::default(),
     }
 }
@@ -970,6 +974,25 @@ mod tests {
             clone_url: None,
             keys: Default::default(),
         }
+    }
+
+    fn stderr_color(text: &str) -> Option<Color> {
+        render_detail_line(&detail::DetailLine::Stderr(text.into())).spans[0]
+            .style
+            .fg
+    }
+
+    #[test]
+    fn only_stderr_lines_that_claim_trouble_are_drawn_as_trouble() {
+        assert_eq!(
+            stderr_color("From ssh://example.com/x"),
+            Some(Color::DarkGray)
+        );
+        assert_eq!(
+            stderr_color("npm warn install-scripts 4 packages"),
+            Some(Color::Yellow)
+        );
+        assert_eq!(stderr_color("npm error code ELIFECYCLE"), Some(Color::Red));
     }
 
     fn app(repos: Vec<Repo>) -> App {

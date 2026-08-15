@@ -211,6 +211,40 @@ fn save_to_file(text: &str, repo: &str, step_label: &str) -> String {
     }
 }
 
+/// How loudly a stderr line should be drawn. stderr is the "not the data"
+/// channel, not an error channel: git's fetch progress and npm's warnings
+/// both arrive there, so painting the whole stream red says every run
+/// failed. Tools that mean something urgent say so in the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Plain,
+    Warn,
+    Error,
+}
+
+/// Severity markers as tools actually emit them, matched against the first
+/// few words only: `npm warn ...`, `fatal: ...`, `[error] ...`. Looking
+/// further in would catch a filename or a phrase like "0 errors".
+const LEAD_WORDS: usize = 3;
+
+/// Classify a stderr line by the marker it leads with, if any.
+pub fn severity(line: &str) -> Severity {
+    line.split_whitespace()
+        .take(LEAD_WORDS)
+        .find_map(|word| {
+            match word
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "warn" | "warning" => Some(Severity::Warn),
+                "err" | "error" | "fatal" | "panicked" => Some(Severity::Error),
+                _ => None,
+            }
+        })
+        .unwrap_or(Severity::Plain)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +257,56 @@ mod tests {
             stdout: stdout.into(),
             stderr: stderr.into(),
             code,
+        }
+    }
+
+    #[test]
+    fn git_progress_on_stderr_is_not_an_error() {
+        for line in [
+            "Already on 'main'",
+            "From ssh://github.com/mr-yum/bill-db-schema",
+            " * branch            main       -> FETCH_HEAD",
+            "Switched to branch 'main'",
+        ] {
+            assert_eq!(severity(line), Severity::Plain, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_warning_reads_as_a_warning_whoever_spells_it() {
+        for line in [
+            "npm warn install-scripts 4 packages have install scripts",
+            "npm WARN deprecated request@2.88.2",
+            "warning: unused variable `x`",
+            "[warn] something is off",
+        ] {
+            assert_eq!(severity(line), Severity::Warn, "{line}");
+        }
+    }
+
+    #[test]
+    fn an_error_reads_as_an_error_whoever_spells_it() {
+        for line in [
+            "npm error code ELIFECYCLE",
+            "npm ERR! code ELIFECYCLE",
+            "fatal: not a git repository",
+            "error: could not compile `mrx`",
+            "thread 'main' panicked at src/main.rs:1:1",
+        ] {
+            assert_eq!(severity(line), Severity::Error, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_marker_word_further_in_does_not_colour_the_line() {
+        // Only the lead words are inspected, so prose and paths that happen
+        // to contain a marker stay plain.
+        for line in [
+            "Compiling the error-handling crate",
+            "wrote report to /tmp/build/error.log",
+            "run `npm audit` for details",
+        ] {
+            assert_eq!(severity(line), Severity::Plain, "{line}");
         }
     }
 
