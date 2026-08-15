@@ -55,7 +55,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_set_picker(frame, app, area);
     }
     if let Some(pending) = &app.pending_run {
-        draw_confirm(frame, pending, area);
+        draw_confirm(frame, app, pending, area);
     }
     if app.quit_pending {
         draw_quit_confirm(frame, area);
@@ -907,11 +907,8 @@ fn draw_quit_confirm(frame: &mut Frame, area: Rect) {
 
 /// The dirty-selection confirmation from section 11: shown before a run
 /// touches any repo the last probe found dirty, unless `--force` skipped it.
-fn draw_confirm(frame: &mut Frame, pending: &PendingRun, area: Rect) {
-    let popup = centered_rect(50, 20, area);
-    frame.render_widget(Clear, popup);
-
-    let text = vec![
+fn draw_confirm(frame: &mut Frame, app: &App, pending: &PendingRun, area: Rect) {
+    let mut text = vec![
         Line::from(format!(
             "run '{}' on {} repo{}, {}?",
             pending.action,
@@ -925,6 +922,22 @@ fn draw_confirm(frame: &mut Frame, pending: &PendingRun, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )),
     ];
+    // Named, not "the cursor row": the prompt covers the whole screen, and
+    // the row it would narrow to is behind it.
+    if let Some(cursor) = pending.cursor_only {
+        text.push(Line::from(Span::styled(
+            format!("c  just {}", app.repos[cursor].name),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let width = text.iter().map(Line::width).max().unwrap_or(0) + 4;
+    let popup = centred(
+        area,
+        u16::try_from(width).unwrap_or(u16::MAX),
+        u16::try_from(text.len() + 2).unwrap_or(u16::MAX),
+    );
+    frame.render_widget(Clear, popup);
     let block = Block::default().borders(Borders::ALL).title(" confirm ");
     frame.render_widget(Paragraph::new(text).block(block), popup);
 }

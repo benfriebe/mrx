@@ -135,8 +135,10 @@ pull". `:` opens the action palette, a filtered list of every runnable action fo
 (built-in and custom alike), each shown with where it's defined and how many repos
 actually have it: `deploy  per-repo, 3 of 42`. If the selection includes a repo the
 last probe found dirty, running anything asks for confirmation first, showing how
-many; pass `-f`/`--force` to skip that. `r` re-probes the selection (or everything,
-with nothing selected).
+many; pass `-f`/`--force` to skip that. When the run is over everything only because
+nothing was selected, the prompt offers `c` as a third answer, narrowing it to the
+cursor row by name. `r` re-probes the selection (or everything, with nothing
+selected).
 
 `Enter` opens the detail view for the cursor row: the table collapses to a sidebar
 (full-width below about 100 columns). Output arrives **as it is produced**, so a long

@@ -252,6 +252,11 @@ pub struct PendingRun {
     pub targets: Vec<usize>,
     pub dirty_count: usize,
     pub unknown_count: usize,
+    /// The cursor row, when the targets are every visible repo only because
+    /// nothing was selected. The prompt offers it as a third answer: an
+    /// empty selection meaning "all" is easy to walk into, and narrowing to
+    /// one repo from the prompt beats cancelling to go and select it.
+    pub cursor_only: Option<usize>,
 }
 
 /// A run that's been decided on (no confirmation needed, or confirmed) and
@@ -913,11 +918,15 @@ impl App {
         let dirty = self.dirty_count(&targets);
         let unknown = self.unprobed_count(&targets);
         if (dirty > 0 || unknown > 0) && !self.force {
+            let cursor_only =
+                (self.selected.is_empty() && targets.len() > 1 && targets.contains(&self.cursor))
+                    .then_some(self.cursor);
             self.pending_run = Some(PendingRun {
                 action: action_name.to_string(),
                 targets,
                 dirty_count: dirty,
                 unknown_count: unknown,
+                cursor_only,
             });
         } else {
             self.run_requested = Some(RunRequest {
@@ -943,6 +952,26 @@ impl App {
         self.run_requested = Some(RunRequest {
             action: p.action,
             targets: p.targets,
+        });
+    }
+
+    /// Confirm a pending run, narrowed to the cursor row. A no-op unless the
+    /// prompt offered the choice: the answer must mean what the prompt said
+    /// it would, and a keystroke that silently rewrote a deliberate
+    /// selection down to one repo would not.
+    pub fn confirm_pending_run_at_cursor(&mut self) {
+        let Some(cursor) = self.pending_run.as_ref().and_then(|p| p.cursor_only) else {
+            return;
+        };
+        let Some(p) = self.pending_run.take() else {
+            return;
+        };
+        if self.refuse_if_mutation_blocked("start a run") {
+            return;
+        }
+        self.run_requested = Some(RunRequest {
+            action: p.action,
+            targets: vec![cursor],
         });
     }
 
@@ -2528,6 +2557,50 @@ mod tests {
         a.confirm_pending_run();
         assert!(a.pending_run.is_none());
         assert_eq!(a.run_requested.as_ref().unwrap().action, "update");
+    }
+
+    /// A run over everything is one keystroke away with nothing selected,
+    /// so the prompt that catches it also offers the narrower answer.
+    #[test]
+    fn confirming_at_the_cursor_narrows_an_all_repos_run_to_one() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        for i in 0..3 {
+            let mut dirty = probed(i, "main");
+            dirty.changed = 1;
+            a.on_probe(0, dirty);
+        }
+        a.cursor = 1;
+
+        a.request_run("update");
+        let pending = a.pending_run.as_ref().unwrap();
+        assert_eq!(pending.targets.len(), 3, "an empty selection means all");
+        assert_eq!(pending.cursor_only, Some(1));
+
+        a.confirm_pending_run_at_cursor();
+        assert!(a.pending_run.is_none());
+        assert_eq!(a.run_requested.as_ref().unwrap().targets, vec![1]);
+    }
+
+    #[test]
+    fn the_cursor_answer_is_not_offered_against_a_selection_the_user_made() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        for i in 0..3 {
+            let mut dirty = probed(i, "main");
+            dirty.changed = 1;
+            a.on_probe(0, dirty);
+        }
+        a.selected = BTreeSet::from([0, 2]);
+        a.cursor = 1;
+
+        a.request_run("update");
+        assert_eq!(a.pending_run.as_ref().unwrap().cursor_only, None);
+
+        a.confirm_pending_run_at_cursor();
+        assert!(
+            a.run_requested.is_none(),
+            "an answer the prompt never offered must not rewrite the selection"
+        );
+        assert!(a.pending_run.is_some(), "and must not dismiss the prompt");
     }
 
     #[test]

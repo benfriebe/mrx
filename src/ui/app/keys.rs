@@ -201,6 +201,7 @@ fn on_palette_key(app: &mut App, key: KeyEvent) {
 fn on_confirm_key(app: &mut App, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Char('y') | KeyCode::Enter => app.confirm_pending_run(),
+        KeyCode::Char('c') => app.confirm_pending_run_at_cursor(),
         KeyCode::Char('n') | KeyCode::Esc => app.cancel_pending_run(),
         _ => {}
     }
@@ -613,6 +614,32 @@ mod tests {
         on_input(&mut a, press(KeyCode::Char('y')));
         assert!(a.pending_run.is_none());
         assert!(a.run_requested.is_some());
+    }
+
+    #[test]
+    fn c_confirms_a_pending_run_against_the_cursor_row_alone() {
+        let mut a = app(&["foo", "bar"]);
+        for i in 0..2 {
+            let mut dirty = crate::ui::app::probe::RepoState {
+                index: i,
+                branch: Some("main".into()),
+                upstream: None,
+                ahead: 0,
+                behind: 0,
+                changed: 1,
+                present: true,
+                timed_out: false,
+                fetched: false,
+                fetch_head: None,
+            };
+            dirty.changed = 1;
+            a.on_probe(0, dirty);
+        }
+        a.cursor = 1;
+        a.request_run("update");
+
+        on_input(&mut a, press(KeyCode::Char('c')));
+        assert_eq!(a.run_requested.as_ref().unwrap().targets, vec![1]);
     }
 
     #[test]
