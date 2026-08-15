@@ -90,38 +90,66 @@ fn summarize_pull(stdout: &str, stderr: &str) -> String {
     }
 }
 
+/// What the buckets in a status summary count. `Untracked` also covers a
+/// staged add, which is the same thing one `git add` later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Change {
+    Modified,
+    Untracked,
+    Deleted,
+}
+
 fn summarize_status(stdout: &str) -> String {
-    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
-    if lines.is_empty() {
+    // `--branch` prepends `## main...origin/main`, which is not a file: left
+    // in the count it reports every clean repo as "1 changed".
+    let files: Vec<&str> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with("##"))
+        .collect();
+    if files.is_empty() {
         return "clean".into();
     }
-    let modified = lines
-        .iter()
-        .filter(|l| l.starts_with(" M") || l.starts_with("M "))
-        .count();
-    let added = lines
-        .iter()
-        .filter(|l| l.starts_with("A ") || l.starts_with("??"))
-        .count();
-    let deleted = lines
-        .iter()
-        .filter(|l| l.starts_with(" D") || l.starts_with("D "))
-        .count();
-    let mut parts = Vec::new();
-    if modified > 0 {
-        parts.push(format!("{} modified", modified));
-    }
-    if added > 0 {
-        parts.push(format!("{} untracked", added));
-    }
-    if deleted > 0 {
-        parts.push(format!("{} deleted", deleted));
-    }
+    let parts: Vec<String> = [
+        (Change::Modified, "modified"),
+        (Change::Untracked, "untracked"),
+        (Change::Deleted, "deleted"),
+    ]
+    .into_iter()
+    .filter_map(|(kind, label)| {
+        match files
+            .iter()
+            .filter(|l| change_kind(l) == Some(kind))
+            .count()
+        {
+            0 => None,
+            n => Some(format!("{n} {label}")),
+        }
+    })
+    .collect();
     if parts.is_empty() {
-        format!("{} changed", lines.len())
+        format!("{} changed", files.len())
     } else {
         parts.join(", ")
     }
+}
+
+/// Which bucket a short-format line falls in, read from both status columns
+/// (staged, then unstaged) rather than one fixed prefix, so a file that was
+/// staged and then edited again (`MM`) counts as modified instead of falling
+/// through to the untyped "changed" total. A line counts once, under the
+/// first column that says anything.
+fn change_kind(line: &str) -> Option<Change> {
+    let mut columns = line.chars();
+    let (staged, unstaged) = (columns.next()?, columns.next()?);
+    if (staged, unstaged) == ('?', '?') {
+        return Some(Change::Untracked);
+    }
+    [staged, unstaged].into_iter().find_map(|c| match c {
+        'M' | 'R' | 'C' => Some(Change::Modified),
+        'A' => Some(Change::Untracked),
+        'D' => Some(Change::Deleted),
+        _ => None,
+    })
 }
 
 fn summarize_diff(stdout: &str) -> String {
@@ -306,6 +334,30 @@ mod tests {
         assert_eq!(
             summarize(Shape::Status, stdout, "", 0),
             "1 modified, 1 untracked"
+        );
+    }
+
+    #[test]
+    fn the_branch_header_is_not_counted_as_a_changed_file() {
+        assert_eq!(
+            summarize(Shape::Status, "## main...origin/main\n", "", 0),
+            "clean"
+        );
+        assert_eq!(
+            summarize(Shape::Status, "## main...origin/main\n M file.txt\n", "", 0),
+            "1 modified"
+        );
+    }
+
+    #[test]
+    fn a_file_both_staged_and_edited_counts_as_modified() {
+        assert_eq!(
+            summarize(Shape::Status, "MM file.txt\n", "", 0),
+            "1 modified"
+        );
+        assert_eq!(
+            summarize(Shape::Status, "AM new.txt\n", "", 0),
+            "1 untracked"
         );
     }
 
