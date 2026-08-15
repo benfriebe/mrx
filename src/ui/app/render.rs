@@ -100,7 +100,10 @@ fn draw_split(frame: &mut Frame, app: &App, area: Rect) {
     let [panes, footer] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(FOOTER_ROWS)]).areas(area);
     let [list, rule, output] = Layout::horizontal([
-        Constraint::Length(detail::sidebar_width(area.width)),
+        Constraint::Length(detail::sidebar_width(
+            area.width,
+            sidebar_natural_width(app),
+        )),
         Constraint::Length(1),
         Constraint::Min(0),
     ])
@@ -375,12 +378,18 @@ fn styled_output_line(text: &str, fallback_fg: Option<Color>) -> Line<'static> {
     Line::from(spans)
 }
 
-fn header_line(app: &App, width: usize, split: bool) -> Line<'static> {
-    let title = format!(
+/// The list pane's title, already carrying the margin its focus marker
+/// occupies (two columns wide either way).
+fn header_title(app: &App, split: bool) -> String {
+    format!(
         "{}mrx · {}",
         focus_marker(app, Pane::List, split),
         app.set_label
-    );
+    )
+}
+
+fn header_line(app: &App, width: usize, split: bool) -> Line<'static> {
+    let title = header_title(app, split);
     styled_two_column_line(
         &title,
         &app.header_right_text(),
@@ -558,16 +567,43 @@ fn sidebar_column_widths(app: &App, avail: usize) -> (usize, usize) {
     if avail == 0 {
         return (0, 0);
     }
-    let name_natural = app
-        .repos
+    let name = natural_name_width(app).clamp(1, (avail * 2 / 3).max(1));
+    let state = avail.saturating_sub(name + COL_GAP);
+    (name, state)
+}
+
+/// How wide the sidebar wants to be: its prefix and two columns at the
+/// widths their text actually needs, but never so narrow that the header
+/// has to drop the repo counts, which are the first thing
+/// [`styled_two_column_line`] gives up. [`detail::sidebar_width`] caps it.
+pub(crate) fn sidebar_natural_width(app: &App) -> u16 {
+    let columns = PREFIX_W + natural_name_width(app) + COL_GAP + natural_state_width(app);
+    let header = display_width(&header_title(app, true))
+        + display_width(&app.header_right_text())
+        + LEAD_IN.len();
+    u16::try_from(columns.max(header)).unwrap_or(u16::MAX)
+}
+
+fn natural_name_width(app: &App) -> usize {
+    app.repos
         .iter()
         .map(|r| display_width(&r.name))
         .max()
         .unwrap_or(0)
-        .max(display_width(REPO_LABEL));
-    let name = name_natural.clamp(1, (avail * 2 / 3).max(1));
-    let state = avail.saturating_sub(name + COL_GAP);
-    (name, state)
+        .max(display_width(REPO_LABEL))
+}
+
+/// The widest state text any row could be showing, from the same source
+/// [`sidebar_repo_line`] draws from. A repo still being probed shows a
+/// one-column spinner, which never sets the width.
+fn natural_state_width(app: &App) -> usize {
+    app.probes
+        .iter()
+        .flatten()
+        .map(|state| display_width(&super::probe::dirty_text_brief(state)))
+        .max()
+        .unwrap_or(0)
+        .max(display_width(STATE_LABEL))
 }
 
 /// The detail sidebar's row: name and one working-tree-state column, since
@@ -1263,8 +1299,31 @@ mod tests {
     }
 
     #[test]
-    fn the_detail_split_gives_the_sidebar_about_a_third_of_the_frame() {
-        assert_eq!(detail::sidebar_width(120), 40);
+    fn the_sidebar_asks_for_its_columns_not_a_fixed_share_of_the_frame() {
+        let a = app(vec![repo("bill-api"), repo("crew")]);
+        let columns = PREFIX_W + display_width("bill-api") + COL_GAP + display_width(STATE_LABEL);
+        assert!(
+            sidebar_natural_width(&a) as usize >= columns,
+            "the columns have to fit"
+        );
+        assert!(
+            detail::sidebar_width(200, sidebar_natural_width(&a)) < 200 / 3,
+            "a short list should leave the output more than the mockup's two thirds"
+        );
+    }
+
+    /// The counts are the half `styled_two_column_line` drops first, so the
+    /// sidebar has to ask for room for them even when the columns are narrow.
+    #[test]
+    fn the_sidebar_stays_wide_enough_for_its_own_header() {
+        let mut a = app(vec![repo("ab")]);
+        a.set_label = "a-rather-long-set-name".into();
+        let header = flatten(&header_line(
+            &a,
+            detail::sidebar_width(200, sidebar_natural_width(&a)) as usize,
+            true,
+        ));
+        assert!(header.contains("1 repo"), "got {header:?}");
     }
 
     #[test]
@@ -1335,7 +1394,7 @@ mod tests {
         let mut a = app(vec![repo("bill-api")]);
         a.detail_open = true;
         let rows = frame_rows(&a, 140, 20);
-        let col = detail::sidebar_width(140) as usize;
+        let col = detail::sidebar_width(140, sidebar_natural_width(&a)) as usize;
         assert_eq!(
             rows[LIST_HEADER_ROWS - 1].chars().nth(col),
             Some('┼'),
@@ -1350,7 +1409,7 @@ mod tests {
         let mut a = app(vec![repo("bill-api")]);
         a.detail_open = true;
         let rows = frame_rows(&a, 140, 20);
-        let col = detail::sidebar_width(140) as usize;
+        let col = detail::sidebar_width(140, sidebar_natural_width(&a)) as usize;
         assert_eq!(rows[rows.len() - 2].chars().nth(col), Some('┴'));
     }
 
@@ -1498,7 +1557,7 @@ mod tests {
     fn split_panes(app: &App, width: u16, height: u16) -> (Vec<String>, Vec<String>) {
         let mut rows = frame_rows(app, width, height);
         rows.truncate(rows.len() - FOOTER_ROWS as usize);
-        let col = detail::sidebar_width(width) as usize;
+        let col = detail::sidebar_width(width, sidebar_natural_width(app)) as usize;
         let cut = |line: &String, range: std::ops::Range<usize>| {
             line.chars()
                 .skip(range.start)

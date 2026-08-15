@@ -31,19 +31,23 @@ pub fn layout_for_width(width: u16) -> DetailLayout {
     }
 }
 
-/// Sidebar width in a split layout: about a third of the frame, matching the
-/// mockup's proportions.
-pub fn sidebar_width(width: u16) -> u16 {
-    width / 3
+/// Sidebar width in a split layout: only as wide as the list's own content
+/// needs (`content`, from `render::sidebar_natural_width`), so the columns
+/// aren't followed by a field of empty cells the output pane could have
+/// used. Capped at the third of the frame the mockup gives it, so a long
+/// repo name can't crowd out the output that is the reason the split is
+/// open.
+pub fn sidebar_width(width: u16, content: u16) -> u16 {
+    content.min(width / 3)
 }
 
 /// Whether a pointer at `column` is over the output pane in whichever
 /// layout `width` selects; click, drag, and scroll all resolve through
 /// this so they can't disagree with what draw_detail painted.
-pub fn pointer_over_output(width: u16, column: u16) -> bool {
+pub fn pointer_over_output(width: u16, content: u16, column: u16) -> bool {
     match layout_for_width(width) {
         DetailLayout::FullScreen => true,
-        DetailLayout::Split => column >= sidebar_width(width),
+        DetailLayout::Split => column >= sidebar_width(width, content),
     }
 }
 
@@ -371,8 +375,13 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_width_is_about_a_third_of_the_frame() {
-        assert_eq!(sidebar_width(120), 40);
+    fn the_sidebar_takes_what_its_content_needs() {
+        assert_eq!(sidebar_width(120, 35), 35);
+    }
+
+    #[test]
+    fn a_sidebar_wanting_more_than_a_third_of_the_frame_is_capped_there() {
+        assert_eq!(sidebar_width(120, 90), 40);
     }
 
     #[test]

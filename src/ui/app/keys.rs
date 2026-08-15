@@ -287,7 +287,11 @@ fn output_line_at(app: &App, column: u16, row: u16) -> Option<usize> {
     if !app.detail_open {
         return None;
     }
-    if !super::detail::pointer_over_output(app.terminal_width, column) {
+    if !super::detail::pointer_over_output(
+        app.terminal_width,
+        render::sidebar_natural_width(app),
+        column,
+    ) {
         return None;
     }
     let content_row = (row as usize).checked_sub(render::LIST_HEADER_ROWS)?;
@@ -319,7 +323,11 @@ fn on_click(app: &mut App, column: u16, row: u16) {
             app.begin_output_selection(line);
             return;
         }
-        let in_sidebar = !super::detail::pointer_over_output(app.terminal_width, column);
+        let in_sidebar = !super::detail::pointer_over_output(
+            app.terminal_width,
+            render::sidebar_natural_width(app),
+            column,
+        );
         if in_sidebar {
             if let Some(repo) = resolve_row(app, row) {
                 app.cursor = repo;
@@ -358,7 +366,11 @@ fn resolve_row(app: &App, row: u16) -> Option<usize> {
 /// cursor) or, once the detail view is open, the output under it.
 fn on_scroll(app: &mut App, column: u16, dir: isize) {
     if app.detail_open {
-        let over_detail = super::detail::pointer_over_output(app.terminal_width, column);
+        let over_detail = super::detail::pointer_over_output(
+            app.terminal_width,
+            render::sidebar_natural_width(app),
+            column,
+        );
         if over_detail {
             app.detail_scroll_by(dir * WHEEL_STEP);
             return;
@@ -767,7 +779,10 @@ mod tests {
             exit_code: 0,
         });
         a.open_detail();
-        let column = crate::ui::app::detail::sidebar_width(a.terminal_width) + 2;
+        let column = crate::ui::app::detail::sidebar_width(
+            a.terminal_width,
+            render::sidebar_natural_width(&a),
+        ) + 2;
         (a, column)
     }
 
