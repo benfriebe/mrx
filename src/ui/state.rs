@@ -10,6 +10,9 @@ pub enum RepoStatus {
     Running,
     Done {
         summary: String,
+        /// Plain text: ANSI stripped when this is built (see `ui::run::apply_event`),
+        /// since this view's width and truncation math has no notion of an escape
+        /// sequence being zero-width.
         stdout: String,
         stderr: String,
         exit_code: i32,

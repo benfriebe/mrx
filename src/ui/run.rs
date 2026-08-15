@@ -170,8 +170,17 @@ fn apply_event(state: &mut AppState, event: &TaskEvent) {
             exit_code,
         } => {
             let summary = summarize::summarize_steps(steps, *exit_code);
-            let stdout: String = steps.iter().map(|s| s.stdout.as_str()).collect();
-            let stderr: String = steps.iter().map(|s| s.stderr.as_str()).collect();
+            // Stripped here, once: this view has no ANSI-aware renderer, and
+            // `RepoStatus::Done`'s stdout/stderr are relied on as plain text by
+            // every width and truncation call downstream (see its doc comment).
+            let stdout: String = steps
+                .iter()
+                .map(|s| crate::ansi::strip(&s.stdout))
+                .collect();
+            let stderr: String = steps
+                .iter()
+                .map(|s| crate::ansi::strip(&s.stderr))
+                .collect();
             state.statuses[*index] = RepoStatus::Done {
                 summary,
                 stdout,

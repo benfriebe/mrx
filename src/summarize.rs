@@ -16,7 +16,19 @@ pub enum Shape {
     Generic,
 }
 
+/// Summarise one step's output into a short, shape-aware description.
+///
+/// `stdout`/`stderr` may carry ANSI escapes (forced on so the resident app can
+/// show colour), so this strips them once, up front: every prefix and substring
+/// match below, and every char-counted truncation, assumes plain text, and each
+/// of the shape-specific parsers below relies on that rather than stripping
+/// again itself.
 pub fn summarize(shape: Shape, stdout: &str, stderr: &str, exit_code: i32) -> String {
+    let stdout = crate::ansi::strip(stdout);
+    let stderr = crate::ansi::strip(stderr);
+    let stdout = stdout.as_str();
+    let stderr = stderr.as_str();
+
     if exit_code != 0 {
         let msg = error_line(stderr)
             .or_else(|| error_line(stdout))
@@ -284,6 +296,32 @@ mod tests {
         );
         assert_eq!(with_step(None, "done".into()), "done");
         assert_eq!(with_step(Some(""), "done".into()), "done");
+    }
+
+    #[test]
+    fn coloured_status_output_still_parses_the_porcelain_markers() {
+        // Same shape as a plain-text status, with SGR codes wrapped around the
+        // markers the way a forced-colour `git status --short` emits them.
+        let stdout = "\u{1b}[31m M\u{1b}[0m file.txt\n\u{1b}[32m??\u{1b}[0m new.txt\n";
+        assert_eq!(
+            summarize(Shape::Status, stdout, "", 0),
+            "1 modified, 1 untracked"
+        );
+    }
+
+    #[test]
+    fn coloured_pull_output_still_matches_the_up_to_date_phrase() {
+        let stdout = "\u{1b}[32mAlready up to date.\u{1b}[0m\n";
+        assert_eq!(summarize(Shape::Pull, stdout, "", 0), "already up to date");
+    }
+
+    #[test]
+    fn coloured_failure_output_still_matches_the_error_phrase() {
+        let stderr = "\u{1b}[31mnpm error code ENOENT\u{1b}[0m\n";
+        assert_eq!(
+            summarize(Shape::Pull, "", stderr, 254),
+            "npm error code ENOENT"
+        );
     }
 
     #[test]

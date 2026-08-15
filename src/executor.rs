@@ -258,6 +258,24 @@ pub fn execute_all(
     rx
 }
 
+/// The `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` slot our forced `color.ui` entry
+/// should claim, computed from whatever `GIT_CONFIG_COUNT` the child will
+/// already see: it has to land past the user's own slots, or their entries at
+/// index 0 would be silently overwritten. Anything that doesn't parse as a
+/// count (missing, empty, non-numeric) is treated as no prior config.
+fn next_git_config_slot(existing_count: Option<&str>) -> usize {
+    existing_count.and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
+/// The last value for `key` in a config-derived environment list, which is the
+/// one the child ends up with since later entries overwrite earlier ones.
+fn env_value<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    env.iter()
+        .rev()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
 async fn run_step(op: Operation, ctx: &StepContext, sink: Option<&StepSink>) -> StepOutput {
     let mut command = match &op {
         Operation::Git { args, work_dir } => {
@@ -311,9 +329,32 @@ async fn run_step(op: Operation, ctx: &StepContext, sink: Option<&StepSink>) -> 
         }
     };
 
+    // A pipe makes most tools turn colour off, but the resident app now shows
+    // full transcripts, so it's worth forcing it back on: CLICOLOR_FORCE and
+    // FORCE_COLOR cover most modern CLIs, and git needs its own config-through-
+    // environment protocol since `-c color.ui=always` would have to be threaded
+    // through every args branch above instead of set once here.
+    //
+    // git resolves later-indexed GIT_CONFIG_* slots over earlier ones for the
+    // same key, so appending after the user's slots also means our forced
+    // `always` wins if they set color.ui themselves: the ANSI rendering this
+    // exists for depends on git actually emitting colour.
+    // A config-supplied count is what the child actually ends up seeing, so it
+    // shadows the ambient one rather than the other way round.
+    let from_config = match &op {
+        Operation::Shell { env, .. } => env_value(env, "GIT_CONFIG_COUNT").map(str::to_string),
+        _ => None,
+    };
+    let inherited = from_config.or_else(|| std::env::var("GIT_CONFIG_COUNT").ok());
+    let slot = next_git_config_slot(inherited.as_deref());
     command
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_PAGER", "cat")
+        .env("CLICOLOR_FORCE", "1")
+        .env("FORCE_COLOR", "1")
+        .env("GIT_CONFIG_COUNT", (slot + 1).to_string())
+        .env(format!("GIT_CONFIG_KEY_{slot}"), "color.ui")
+        .env(format!("GIT_CONFIG_VALUE_{slot}"), "always")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -687,5 +728,112 @@ mod tests {
         for (_, reason) in &skipped {
             assert_eq!(reason, "cancelled");
         }
+    }
+
+    #[test]
+    fn next_git_config_slot_defaults_to_zero_with_no_prior_count() {
+        assert_eq!(next_git_config_slot(None), 0);
+    }
+
+    #[test]
+    fn next_git_config_slot_appends_after_an_existing_count() {
+        assert_eq!(next_git_config_slot(Some("2")), 2);
+    }
+
+    #[test]
+    fn next_git_config_slot_treats_a_malformed_count_as_absent() {
+        assert_eq!(next_git_config_slot(Some("not-a-number")), 0);
+        assert_eq!(next_git_config_slot(Some("")), 0);
+    }
+
+    #[test]
+    fn a_count_set_in_the_config_is_the_one_that_counts() {
+        // The child never sees mrx's own environment for this key once the
+        // config sets it, so the config's value is what our slot must clear.
+        let env = vec![
+            ("GIT_CONFIG_COUNT".to_string(), "2".to_string()),
+            ("GIT_CONFIG_KEY_0".to_string(), "user.name".to_string()),
+        ];
+        assert_eq!(env_value(&env, "GIT_CONFIG_COUNT"), Some("2"));
+        assert_eq!(next_git_config_slot(env_value(&env, "GIT_CONFIG_COUNT")), 2);
+        assert_eq!(env_value(&env, "GIT_CONFIG_KEY_9"), None);
+    }
+
+    #[test]
+    fn a_repeated_config_key_resolves_to_its_last_value() {
+        let env = vec![
+            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+            ("GIT_CONFIG_COUNT".to_string(), "3".to_string()),
+        ];
+        assert_eq!(env_value(&env, "GIT_CONFIG_COUNT"), Some("3"));
+    }
+
+    /// `GIT_CONFIG_COUNT` and friends are process-global; tests that set them to
+    /// simulate a user's ambient environment must serialise against each other.
+    /// `None` removes a key for the duration instead of setting it, so a test
+    /// can also guarantee a clean slate regardless of the outer environment.
+    async fn with_env<T>(
+        vars: &[(&str, Option<&str>)],
+        f: impl std::future::Future<Output = T>,
+    ) -> T {
+        static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _guard = LOCK.lock().await;
+
+        let previous: Vec<(String, Option<String>)> = vars
+            .iter()
+            .map(|(k, _)| ((*k).to_string(), std::env::var(k).ok()))
+            .collect();
+        for (k, v) in vars {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+
+        let result = f.await;
+
+        for (k, prev) in previous {
+            match prev {
+                Some(v) => std::env::set_var(&k, v),
+                None => std::env::remove_var(&k),
+            }
+        }
+        result
+    }
+
+    #[tokio::test]
+    async fn a_user_supplied_git_config_count_survives_alongside_the_forced_color_slot() {
+        let out = with_env(
+            &[
+                ("GIT_CONFIG_COUNT", Some("2")),
+                ("GIT_CONFIG_KEY_0", Some("user.name")),
+                ("GIT_CONFIG_VALUE_0", Some("Ambient User")),
+                ("GIT_CONFIG_KEY_1", Some("core.editor")),
+                ("GIT_CONFIG_VALUE_1", Some("true")),
+            ],
+            run_body(
+                "echo \"$GIT_CONFIG_COUNT $GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0 $GIT_CONFIG_KEY_1=$GIT_CONFIG_VALUE_1 $GIT_CONFIG_KEY_2=$GIT_CONFIG_VALUE_2\"",
+            ),
+        )
+        .await;
+        assert_eq!(
+            out.stdout.trim(),
+            "3 user.name=Ambient User core.editor=true color.ui=always",
+            "the user's two slots must survive untouched and the forced colour entry must land at the next free slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_no_user_git_config_env_the_default_single_slot_is_unchanged() {
+        let out = with_env(
+            &[
+                ("GIT_CONFIG_COUNT", None),
+                ("GIT_CONFIG_KEY_0", None),
+                ("GIT_CONFIG_VALUE_0", None),
+            ],
+            run_body("echo \"$GIT_CONFIG_COUNT $GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0\""),
+        )
+        .await;
+        assert_eq!(out.stdout.trim(), "1 color.ui=always");
     }
 }

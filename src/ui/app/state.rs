@@ -7,6 +7,7 @@ use super::detail;
 use super::poll::{self, AutoUpdateOutcome, AutoUpdateResult};
 use super::probe::{self, RepoState};
 use super::session::Session;
+use crate::ansi;
 use crate::config::{self, Repo};
 use crate::executor::{StepResult, TaskEvent};
 use crate::sets;
@@ -1567,7 +1568,13 @@ impl App {
         let Some(step) = steps.get(idx) else {
             return;
         };
-        let text = format!("{}\n{}", step.stdout, step.stderr);
+        // Reads the raw StepResult directly rather than through DetailLine,
+        // so it strips ANSI escapes itself instead of inheriting DetailLine::text's.
+        let text = format!(
+            "{}\n{}",
+            ansi::strip(&step.stdout),
+            ansi::strip(&step.stderr)
+        );
         let repo_name = self
             .repos
             .get(self.cursor)

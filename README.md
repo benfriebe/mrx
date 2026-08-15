@@ -152,6 +152,14 @@ kept per repo; `y` copies the visible step's output and `o` opens the whole tran
 in `$EDITOR`, both falling back to a temp file when there's no clipboard binary on
 `PATH`. `Esc` goes back to the full-width list.
 
+Tools keep their own colours here. mrx runs each step through a pipe, which normally
+makes a tool turn colour off, so it sets `CLICOLOR_FORCE`, `FORCE_COLOR` and git's
+`color.ui` to force it back on and renders the escape sequences it gets back. A line
+with no colour of its own still reads by severity: warnings yellow, errors red, and
+everything else on `stderr` grey, because `stderr` carries progress and notices as
+often as it carries failures. Copies, saved transcripts and the non-resident output are
+all stripped back to plain text.
+
 ```
 ▌ mrx · work                     │  guest-gateway · update
 

@@ -2,6 +2,7 @@
 //! and closed with Esc. Steps come from `StepResult` as separately labelled
 //! sections rather than one concatenated scrollback (section 02).
 
+use crate::ansi;
 use crate::executor::StepResult;
 use std::io::Write;
 use std::path::PathBuf;
@@ -64,12 +65,14 @@ pub enum DetailLine {
 
 impl DetailLine {
     /// The line as text worth putting on a clipboard: what's on screen
-    /// without the tick, cross or ellipsis a step header is drawn with,
-    /// since those are status, not output.
+    /// without the tick, cross or ellipsis a step header is drawn with
+    /// (those are status, not output), and without the ANSI escapes a
+    /// captured line carries, since whatever receives this is rarely a
+    /// terminal.
     pub fn text(&self) -> String {
         match self {
             DetailLine::StepHeader { label, .. } => format!("$ {label}"),
-            DetailLine::Stdout(s) | DetailLine::Stderr(s) => s.clone(),
+            DetailLine::Stdout(s) | DetailLine::Stderr(s) => ansi::strip(s),
             DetailLine::Blank => String::new(),
         }
     }
@@ -101,21 +104,22 @@ fn lines(steps: &[StepResult], last_is_running: bool) -> Vec<DetailLine> {
             code: (!running).then_some(step.code),
         });
         out.extend(
-            step.stdout
-                .lines()
-                .map(|l| DetailLine::Stdout(l.to_string())),
+            ansi::split_lines(&step.stdout)
+                .into_iter()
+                .map(DetailLine::Stdout),
         );
         out.extend(
-            step.stderr
-                .lines()
-                .map(|l| DetailLine::Stderr(l.to_string())),
+            ansi::split_lines(&step.stderr)
+                .into_iter()
+                .map(DetailLine::Stderr),
         );
     }
     out
 }
 
 /// The whole run as plain text, step headings included, for handing to
-/// something that is not this app: an editor, a pager, a paste.
+/// something that is not this app: an editor, a pager, a paste. Escapes are
+/// stripped, as for [`DetailLine::text`].
 pub fn transcript(steps: &[StepResult]) -> String {
     let mut text = String::new();
     for (i, step) in steps.iter().enumerate() {
@@ -123,8 +127,8 @@ pub fn transcript(steps: &[StepResult]) -> String {
             text.push('\n');
         }
         text.push_str(&format!("$ {}  (exit {})\n", step.label, step.code));
-        text.push_str(&step.stdout);
-        text.push_str(&step.stderr);
+        text.push_str(&ansi::strip(&step.stdout));
+        text.push_str(&ansi::strip(&step.stderr));
     }
     text
 }
@@ -369,5 +373,11 @@ mod tests {
     #[test]
     fn sidebar_width_is_about_a_third_of_the_frame() {
         assert_eq!(sidebar_width(120), 40);
+    }
+
+    #[test]
+    fn detail_line_text_strips_ansi_escapes() {
+        let line = DetailLine::Stdout("\u{1b}[32mgreen\u{1b}[0m text".into());
+        assert_eq!(line.text(), "green text");
     }
 }

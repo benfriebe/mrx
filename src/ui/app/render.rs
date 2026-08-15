@@ -11,6 +11,7 @@ use super::actions::Source;
 use super::detail::{self, DetailLayout};
 use super::keymap;
 use super::state::{App, Pane, PendingRun, RunStatus};
+use crate::ansi;
 use crate::ui::widgets::{display_width, frame as spinner_frame, truncate};
 
 const COL_GAP: usize = 2;
@@ -325,17 +326,53 @@ fn render_detail_line(line: &detail::DetailLine) -> Line<'static> {
                 Style::default().fg(color).bold(),
             ))
         }
-        detail::DetailLine::Stdout(s) => Line::from(Span::raw(format!("  {s}"))),
+        detail::DetailLine::Stdout(s) => styled_output_line(s, None),
         detail::DetailLine::Stderr(s) => {
-            let color = match detail::severity(s) {
+            // severity() reads the lead words to classify the line; a raw
+            // leading escape would hide them from it, so it gets the
+            // stripped text rather than the one carrying ANSI bytes.
+            let fallback = match detail::severity(&ansi::strip(s)) {
                 detail::Severity::Plain => Color::DarkGray,
                 detail::Severity::Warn => Color::Yellow,
                 detail::Severity::Error => Color::Red,
             };
-            Line::from(Span::styled(format!("  {s}"), Style::default().fg(color)))
+            styled_output_line(s, Some(fallback))
         }
         detail::DetailLine::Blank => Line::default(),
     }
+}
+
+/// A Stdout/Stderr line as one span per [`ansi::Run`]: a run that carries
+/// its own SGR colour keeps it (the tool knew what it meant), and
+/// `fallback_fg` fills in for a run that set none. Modifiers such as bold
+/// always survive, since only `fg` is patched here. The two-space indent
+/// merges into the first span rather than standing alone, so a line with no
+/// escapes still renders as exactly one span, coloured like the old code.
+fn styled_output_line(text: &str, fallback_fg: Option<Color>) -> Line<'static> {
+    let mut runs = ansi::parse(text);
+    if runs.is_empty() {
+        runs.push(ansi::Run {
+            text: String::new(),
+            style: Style::default(),
+        });
+    }
+    let spans = runs
+        .into_iter()
+        .enumerate()
+        .map(|(i, run)| {
+            let mut style = run.style;
+            if style.fg.is_none() {
+                style.fg = fallback_fg;
+            }
+            let text = if i == 0 {
+                format!("  {}", run.text)
+            } else {
+                run.text
+            };
+            Span::styled(text, style)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
 }
 
 fn header_line(app: &App, width: usize, split: bool) -> Line<'static> {
@@ -993,6 +1030,40 @@ mod tests {
             Some(Color::Yellow)
         );
         assert_eq!(stderr_color("npm error code ELIFECYCLE"), Some(Color::Red));
+    }
+
+    #[test]
+    fn a_line_with_ansi_escapes_renders_as_multiple_spans_with_their_own_colours() {
+        // The first run carries its own colour (kept); the second sets none,
+        // so it falls back to the stderr severity colour (Warn, from "npm
+        // warn" in the stripped text).
+        let line = detail::DetailLine::Stderr("\u{1b}[34mnote: \u{1b}[0mnpm warn trailing".into());
+        let rendered = render_detail_line(&line);
+        assert_eq!(rendered.spans.len(), 2, "got {:?}", rendered.spans);
+        assert_eq!(rendered.spans[0].content, "  note: ");
+        assert_eq!(rendered.spans[0].style.fg, Some(Color::Blue));
+        assert_eq!(rendered.spans[1].content, "npm warn trailing");
+        assert_eq!(rendered.spans[1].style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn a_stderr_lines_own_colour_wins_over_its_severity_colour() {
+        // Severity alone would call this an error (red), but the line sets
+        // its own colour, and the tool that emitted it knew what it meant.
+        assert_eq!(
+            stderr_color("\u{1b}[34mnpm error code ELIFECYCLE"),
+            Some(Color::Blue)
+        );
+    }
+
+    #[test]
+    fn severity_is_still_detected_when_the_line_starts_with_an_escape_sequence() {
+        // A leading escape with no colour of its own (just bold) must not
+        // hide the lead words from severity's classification.
+        assert_eq!(
+            stderr_color("\u{1b}[1mnpm warn something"),
+            Some(Color::Yellow)
+        );
     }
 
     fn app(repos: Vec<Repo>) -> App {

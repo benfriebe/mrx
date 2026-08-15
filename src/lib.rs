@@ -2,6 +2,7 @@
 //! executor, and the terminal front ends. `main.rs` is a thin CLI dispatch
 //! over this crate.
 
+pub mod ansi;
 pub mod cli;
 pub mod config;
 pub mod executor;
