@@ -76,6 +76,14 @@ pub(crate) fn list_height(app: &App, area_height: u16) -> usize {
     (area_height as usize).saturating_sub(chrome_rows(app))
 }
 
+/// Transcript rows a detail pane shows: the pane minus its chrome, minus
+/// its own footer when it draws one (a split pane shares the frame's,
+/// which occupies the same rows, so both layouts land on the same count).
+pub(crate) fn detail_content_height(pane_height: u16, split: bool) -> usize {
+    let footer = if split { 0 } else { FOOTER_ROWS as usize };
+    (pane_height as usize).saturating_sub(LIST_HEADER_ROWS + footer)
+}
+
 /// The split: the list narrowed to a sidebar, a rule down the middle, and
 /// one footer under both. Two panes that merely abut read as two windows,
 /// so the chrome is drawn as one frame divided rather than as two frames
@@ -201,8 +209,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
 /// last part instead.
 fn draw_detail(frame: &mut Frame, app: &App, area: Rect, split: bool) {
     let width = area.width as usize;
-    let footer_rows = if split { 0 } else { FOOTER_ROWS as usize };
-    let content_height = (area.height as usize).saturating_sub(LIST_HEADER_ROWS + footer_rows);
+    let content_height = detail_content_height(area.height, split);
 
     let mut body: Vec<Line> = Vec::new();
     let mut position = None;

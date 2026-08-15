@@ -36,6 +36,16 @@ pub fn sidebar_width(width: u16) -> u16 {
     width / 3
 }
 
+/// Whether a pointer at `column` is over the output pane in whichever
+/// layout `width` selects; click, drag, and scroll all resolve through
+/// this so they can't disagree with what draw_detail painted.
+pub fn pointer_over_output(width: u16, column: u16) -> bool {
+    match layout_for_width(width) {
+        DetailLayout::FullScreen => true,
+        DetailLayout::Split => column >= sidebar_width(width),
+    }
+}
+
 /// One line of a flattened, step-labelled run transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DetailLine {

@@ -287,18 +287,14 @@ fn output_line_at(app: &App, column: u16, row: u16) -> Option<usize> {
     if !app.detail_open {
         return None;
     }
-    let over_output = match super::detail::layout_for_width(app.terminal_width) {
-        super::detail::DetailLayout::FullScreen => true,
-        super::detail::DetailLayout::Split => {
-            column >= super::detail::sidebar_width(app.terminal_width)
-        }
-    };
-    if !over_output {
+    if !super::detail::pointer_over_output(app.terminal_width, column) {
         return None;
     }
     let content_row = (row as usize).checked_sub(render::LIST_HEADER_ROWS)?;
-    let content_height = (app.terminal_height as usize)
-        .saturating_sub(render::LIST_HEADER_ROWS + render::FOOTER_ROWS as usize);
+    // Same count draw_detail lands on for either layout: see
+    // detail_content_height's doc for why passing `false` here still
+    // matches a split pane.
+    let content_height = render::detail_content_height(app.terminal_height, false);
     if content_row >= content_height {
         return None;
     }
@@ -323,10 +319,7 @@ fn on_click(app: &mut App, column: u16, row: u16) {
             app.begin_output_selection(line);
             return;
         }
-        let in_sidebar = matches!(
-            super::detail::layout_for_width(app.terminal_width),
-            super::detail::DetailLayout::Split
-        ) && column < super::detail::sidebar_width(app.terminal_width);
+        let in_sidebar = !super::detail::pointer_over_output(app.terminal_width, column);
         if in_sidebar {
             if let Some(repo) = resolve_row(app, row) {
                 app.cursor = repo;
@@ -366,12 +359,7 @@ fn resolve_row(app: &App, row: u16) -> Option<usize> {
 /// cursor) or, once the detail view is open, the output under it.
 fn on_scroll(app: &mut App, column: u16, dir: isize) {
     if app.detail_open {
-        let over_detail = match super::detail::layout_for_width(app.terminal_width) {
-            super::detail::DetailLayout::FullScreen => true,
-            super::detail::DetailLayout::Split => {
-                column >= super::detail::sidebar_width(app.terminal_width)
-            }
-        };
+        let over_detail = super::detail::pointer_over_output(app.terminal_width, column);
         if over_detail {
             app.detail_scroll_by(dir * WHEEL_STEP);
             return;

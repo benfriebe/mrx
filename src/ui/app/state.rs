@@ -459,6 +459,22 @@ impl App {
         }
     }
 
+    /// Indices of repos whose name satisfies `has_name`, used to carry a
+    /// name-keyed selection across a repo list that has just been replaced.
+    fn indices_matching(&self, has_name: impl Fn(&str) -> bool) -> BTreeSet<usize> {
+        self.repos
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| has_name(&r.name))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The current index of the repo named `name`, if it's still present.
+    fn index_of_name(&self, name: &str) -> Option<usize> {
+        self.repos.iter().position(|r| r.name == name)
+    }
+
     /// Apply a persisted session on top of a freshly built app (section 09).
     /// Filter and selection are matched by repo name so a config edit
     /// doesn't misdirect them onto the wrong row, and any name the current
@@ -469,18 +485,14 @@ impl App {
     pub fn restore_session(&mut self, session: &Session) {
         self.filter = session.filter.clone();
 
-        self.selected = self
-            .repos
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| session.selected.contains(&r.name))
-            .map(|(i, _)| i)
-            .collect();
+        self.selected = self.indices_matching(|n| session.selected.iter().any(|s| s == n));
 
-        if let Some(name) = &session.cursor {
-            if let Some(pos) = self.repos.iter().position(|r| &r.name == name) {
-                self.cursor = pos;
-            }
+        if let Some(pos) = session
+            .cursor
+            .as_deref()
+            .and_then(|n| self.index_of_name(n))
+        {
+            self.cursor = pos;
         }
         self.clamp_cursor_to_visible();
 
@@ -639,16 +651,15 @@ impl App {
     /// and those already `Running`/`Step` (already past their permit, will
     /// run to completion regardless of the cancel flag).
     fn cancel_counts(&self) -> (usize, usize) {
-        let mut queued = 0;
-        let mut finishing = 0;
-        for &i in &self.run_targets {
-            match self.run_results.get(i).and_then(|r| r.as_ref()) {
-                None => queued += 1,
-                Some(RunStatus::Running) | Some(RunStatus::Step { .. }) => finishing += 1,
-                _ => {}
-            }
-        }
-        (queued, finishing)
+        self.run_targets
+            .iter()
+            .fold((0, 0), |(queued, finishing), &i| {
+                match self.run_results.get(i).and_then(|r| r.as_ref()) {
+                    None => (queued + 1, finishing),
+                    Some(RunStatus::Running | RunStatus::Step { .. }) => (queued, finishing + 1),
+                    _ => (queued, finishing),
+                }
+            })
     }
 
     /// Set by [`request_cancel`](Self::request_cancel); consumed by the run
@@ -860,16 +871,10 @@ impl App {
         self.run_results = vec![None; n];
         self.detail_scroll.clear();
 
-        self.selected = self
-            .repos
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| selected_names.contains(&r.name))
-            .map(|(i, _)| i)
-            .collect();
+        self.selected = self.indices_matching(|n| selected_names.contains(n));
 
         self.cursor = cursor_name
-            .and_then(|name| self.repos.iter().position(|r| r.name == name))
+            .and_then(|name| self.index_of_name(&name))
             .unwrap_or(0);
         self.clamp_cursor_to_visible();
 
@@ -1162,8 +1167,8 @@ impl App {
             .enumerate()
             .filter_map(|(i, p)| {
                 p.as_ref()
-                    .filter(|s| poll::can_fast_forward(s) && s.fetched)
-                    .map(|_| i)
+                    .is_some_and(|s| poll::can_fast_forward(s) && s.fetched)
+                    .then_some(i)
             })
             .collect();
         if targets.is_empty() {
@@ -1423,10 +1428,8 @@ impl App {
     /// finished one: the row is being written to right now, and the previous
     /// answer is no longer the one being asked about.
     pub fn transcript_lines(&self) -> Option<Vec<detail::DetailLine>> {
-        if let Some(live) = self.live.get(&self.cursor) {
-            if !live.steps.is_empty() {
-                return Some(detail::live_lines(&live.steps));
-            }
+        if let Some(live) = self.live.get(&self.cursor).filter(|l| !l.steps.is_empty()) {
+            return Some(detail::live_lines(&live.steps));
         }
         match self.run_results.get(self.cursor)? {
             Some(RunStatus::Finished { steps, .. }) => Some(detail::detail_lines(steps)),
