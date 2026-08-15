@@ -133,8 +133,11 @@ built-in `status` reports the branch and its ahead/behind alongside the working 
 so one run answers both "what have I changed here" and "is there anything to push or
 pull". `:` opens the action palette, a filtered list of every runnable action for the set
 (built-in and custom alike), each shown with where it's defined and how many repos
-actually have it: `deploy  per-repo, 3 of 42`. If the selection includes a repo the
-last probe found dirty, running anything asks for confirmation first, showing how
+actually have it: `deploy  per-repo, 3 of 42`. The palette also carries the selection
+commands (`select-all`, `select-visible`, `deselect-all`, the same three `A`, `a` and
+`c` bind), each showing how many repos it would leave selected. If the selection
+includes a repo the last probe found dirty, running anything asks for confirmation
+first, showing how
 many; pass `-f`/`--force` to skip that. When the run is over everything only because
 nothing was selected, the prompt offers `c` as a third answer, narrowing it to the
 cursor row by name. `r` re-probes the selection (or everything, with nothing
@@ -181,9 +184,12 @@ alternate screen, and mouse capture all come off first, so the editor gets a nor
 terminal, and all three come back once it exits.
 
 Clicking a row moves the cursor to it; clicking the row already under the cursor
-opens its detail view. The wheel scrolls whichever region is under the pointer. `m`
-toggles mouse capture off and on, since capture disables the terminal's own text
-selection; holding Option/Shift while dragging still selects natively without it.
+opens its detail view. The wheel scrolls whichever region is under the pointer.
+Dragging down the output pane selects the lines it covers and copies them when the
+button comes up, which is what mouse capture otherwise takes away: while it's on, the
+terminal hands drags to mrx rather than selecting text with them. A click with no drag
+clears the selection again. Elsewhere, holding Option/Shift while dragging still
+selects natively, and `m` toggles capture off and on entirely.
 
 `tab` opens a picker over every set `mrx sets` would list, plus the active config
 labelled `(unnamed)` if it isn't one of them; confirming reloads that config and

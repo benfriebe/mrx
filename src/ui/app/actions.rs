@@ -15,6 +15,11 @@ pub enum Source {
     Default,
     /// A key defined on one or more repo sections but not `[DEFAULT]`.
     PerRepo,
+    /// Not a runnable action at all: a palette entry that changes the
+    /// selection the next run will use. Listed alongside the rest so `:` is
+    /// a complete answer to "what can I do from here", not just "what can I
+    /// run", and never handed to the executor.
+    Selection,
 }
 
 /// One runnable action: its name, where it comes from, and how many repos in

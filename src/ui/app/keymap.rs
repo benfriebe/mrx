@@ -90,11 +90,11 @@ const CANCEL: Binding = Binding::new("esc", "cancel");
 /// keymap cannot show.
 pub const NOTES: &[&str] = &[
     "  an empty selection acts on every repo on screen",
-    "  no ↓ count means nothing has fetched this repo since",
-    "     mrx started, so its distance behind is unknown. u,",
-    "     f and F all settle it, as does a pull elsewhere.",
-    "  with mouse capture on, hold your terminal's modifier",
-    "     (option, or shift) to select text as usual",
+    "  no ↓ count means nothing has fetched this repo yet;",
+    "     u, f, F or a pull elsewhere all settle the distance.",
+    "  drag the output pane to select lines and copy them on",
+    "     release. Mouse capture takes the terminal's own",
+    "     selection away; hold option/shift, or m, for it back.",
 ];
 
 /// What the footer should offer right now. There is one footer under the

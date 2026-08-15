@@ -34,7 +34,7 @@ const RESULT_LABEL: &str = "RESULT";
 pub(crate) const LIST_HEADER_ROWS: usize = 4;
 /// The rule and key line under the body, drawn once per frame: by the pane
 /// itself when it owns the whole width, by the split when it doesn't.
-const FOOTER_ROWS: u16 = 2;
+pub(crate) const FOOTER_ROWS: u16 = 2;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -207,18 +207,18 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, split: bool) {
     let mut body: Vec<Line> = Vec::new();
     let mut position = None;
 
-    match transcript_lines(app) {
+    match app.transcript_lines() {
         Some(lines) => {
-            // A run still arriving follows its own tail, until a scroll
-            // says otherwise: the interesting end of a live log is the one
-            // being written, and reading it should not need a keystroke per
-            // screenful. Any scroll leaves an entry behind and pins it.
-            let scroll = match app.detail_scroll.get(&app.cursor) {
-                Some(&scroll) => detail::clamp_scroll(scroll, lines.len(), content_height),
-                None => lines.len().saturating_sub(content_height),
-            };
-            for line in lines.iter().skip(scroll).take(content_height) {
-                body.push(render_detail_line(line));
+            let scroll = app.detail_view_scroll(lines.len(), content_height);
+            let selected = app.output_selection_range();
+            for (i, line) in lines.iter().enumerate().skip(scroll).take(content_height) {
+                let rendered = render_detail_line(line);
+                body.push(match &selected {
+                    Some(range) if range.contains(&i) => {
+                        rendered.style(Style::default().add_modifier(Modifier::REVERSED))
+                    }
+                    _ => rendered,
+                });
             }
             position = scroll_position(scroll, lines.len(), content_height);
         }
@@ -266,22 +266,6 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, split: bool) {
     }
 
     frame.render_widget(Paragraph::new(lines), area);
-}
-
-/// The cursor row's output, finished or still arriving, or `None` when
-/// there is nothing to lay out yet. A live run is preferred over a stale
-/// finished one: the row is being written to right now, and the previous
-/// answer is no longer the one being asked about.
-fn transcript_lines(app: &App) -> Option<Vec<detail::DetailLine>> {
-    if let Some(live) = app.live.get(&app.cursor) {
-        if !live.steps.is_empty() {
-            return Some(detail::live_lines(&live.steps));
-        }
-    }
-    match app.run_results.get(app.cursor)? {
-        Some(RunStatus::Finished { steps, .. }) => Some(detail::detail_lines(steps)),
-        _ => None,
-    }
 }
 
 /// How the cursor row's last run ended, for the line under the detail
@@ -836,12 +820,17 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, a)| {
-            let source = match a.source {
-                Source::Builtin => "builtin",
-                Source::Default => "every repo",
-                Source::PerRepo => "per-repo",
+            // A selection command's count is what it leaves selected, not
+            // how many repos define it, so it is worded rather than shaped
+            // to match.
+            let text = match a.source {
+                Source::Selection => {
+                    format!("{}  leaves {} of {} selected", a.name, a.repos, repo_count)
+                }
+                Source::Builtin => format!("{}  builtin, {} of {}", a.name, a.repos, repo_count),
+                Source::Default => format!("{}  every repo, {} of {}", a.name, a.repos, repo_count),
+                Source::PerRepo => format!("{}  per-repo, {} of {}", a.name, a.repos, repo_count),
             };
-            let text = format!("{}  {}, {} of {}", a.name, source, a.repos, repo_count);
             let style = if i == app.palette_cursor {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
             } else {

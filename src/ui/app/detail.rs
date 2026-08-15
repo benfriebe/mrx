@@ -52,6 +52,19 @@ pub enum DetailLine {
     Blank,
 }
 
+impl DetailLine {
+    /// The line as text worth putting on a clipboard: what's on screen
+    /// without the tick, cross or ellipsis a step header is drawn with,
+    /// since those are status, not output.
+    pub fn text(&self) -> String {
+        match self {
+            DetailLine::StepHeader { label, .. } => format!("$ {label}"),
+            DetailLine::Stdout(s) | DetailLine::Stderr(s) => s.clone(),
+            DetailLine::Blank => String::new(),
+        }
+    }
+}
+
 /// Flatten a finished run's steps into a scrollable transcript, one
 /// labelled section per step, in order.
 pub fn detail_lines(steps: &[StepResult]) -> Vec<DetailLine> {

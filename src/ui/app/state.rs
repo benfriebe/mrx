@@ -2,7 +2,7 @@
 //! Every decision worth testing lives here as a method that returns data;
 //! `render.rs` only turns that data into widgets.
 
-use super::actions::{self, Action};
+use super::actions::{self, Action, Source};
 use super::detail;
 use super::poll::{self, AutoUpdateOutcome, AutoUpdateResult};
 use super::probe::{self, RepoState};
@@ -12,6 +12,7 @@ use crate::executor::{StepResult, TaskEvent};
 use crate::sets;
 use crate::summarize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -25,6 +26,12 @@ const NEVER_RUN: &str = "·";
 /// back; short enough that a table left open all afternoon isn't still
 /// reporting this morning.
 pub const DEFAULT_RESULT_TTL: Duration = Duration::from_secs(6 * 60);
+
+/// The palette's selection commands, named as verbs so typing `sel` at `:`
+/// finds them. They mirror `A`, `a` and `c` in the list.
+const SELECT_ALL: &str = "select-all";
+const SELECT_VISIBLE: &str = "select-visible";
+const DESELECT_ALL: &str = "deselect-all";
 
 pub struct App {
     pub repos: Vec<Repo>,
@@ -190,6 +197,8 @@ pub struct App {
     /// view closed, and reset every time it opens, so `tab` never leaves
     /// focus somewhere the next open would inherit.
     pub focus: Pane,
+    /// The output pane's own text selection, dragged with the mouse.
+    pub output_selection: Option<OutputSelection>,
 
     /// `o` and `!`: what to run in the foreground once the app has stepped
     /// out of the way. The run loop owns actually suspending the terminal,
@@ -264,6 +273,15 @@ pub struct PendingRun {
 pub struct RunRequest {
     pub action: String,
     pub targets: Vec<usize>,
+}
+
+/// A drag-selection in the output pane, as indices into the transcript it
+/// was taken on. `head` may be above `anchor`: a drag upward selects the
+/// same range a drag downward would.
+pub struct OutputSelection {
+    pub repo: usize,
+    pub anchor: usize,
+    pub head: usize,
 }
 
 /// Which pane of the detail split has the keys.
@@ -426,6 +444,7 @@ impl App {
             help_open: false,
             foreground: None,
             focus: Pane::List,
+            output_selection: None,
             poll_enabled: false,
             poll_interval: poll::DEFAULT_POLL_INTERVAL,
             auto_update: false,
@@ -1294,16 +1313,47 @@ impl App {
     }
 
     /// Actions matching the palette's filter, in the same order `discover`
-    /// returned them.
-    pub fn palette_visible(&self) -> Vec<&Action> {
+    /// returned them, then the selection commands.
+    pub fn palette_visible(&self) -> Vec<Action> {
+        let all = self
+            .actions
+            .iter()
+            .cloned()
+            .chain(self.selection_commands());
         if self.palette_filter.is_empty() {
-            return self.actions.iter().collect();
+            return all.collect();
         }
         let needle = self.palette_filter.to_lowercase();
-        self.actions
-            .iter()
-            .filter(|a| a.name.to_lowercase().contains(&needle))
+        all.filter(|a| a.name.to_lowercase().contains(&needle))
             .collect()
+    }
+
+    /// The palette's selection entries, carrying the count each would leave
+    /// selected so the list says what it is about to do. Built on demand
+    /// rather than stored: the counts move with the filter and the
+    /// selection, and a stale count in a menu is worse than no count.
+    fn selection_commands(&self) -> Vec<Action> {
+        let command = |name: &str, repos: usize| Action {
+            name: name.to_string(),
+            source: Source::Selection,
+            repos,
+        };
+        vec![
+            command(SELECT_ALL, self.repos.len()),
+            command(SELECT_VISIBLE, self.visible_indices().len()),
+            command(DESELECT_ALL, 0),
+        ]
+    }
+
+    /// Apply a [`Source::Selection`] palette entry. The palette is the only
+    /// caller: these are the same three the list binds to `A`, `a` and `c`.
+    fn run_selection_command(&mut self, name: &str) {
+        match name {
+            SELECT_ALL => self.select_all_in_set(),
+            SELECT_VISIBLE => self.select_all_visible(),
+            DESELECT_ALL => self.clear_selection(),
+            other => debug_assert!(false, "palette offered an unknown command: {other}"),
+        }
     }
 
     fn clamp_palette_cursor(&mut self) {
@@ -1332,16 +1382,19 @@ impl App {
         self.palette_cursor = next;
     }
 
-    /// Close the palette and request a run of whatever it's currently
-    /// pointing at, if anything matches the filter.
+    /// Close the palette and carry out whatever it's currently pointing at,
+    /// if anything matches the filter: a run for an action, a new selection
+    /// for one of the selection commands.
     pub fn palette_confirm(&mut self) {
-        let chosen = self
-            .palette_visible()
-            .get(self.palette_cursor)
-            .map(|a| a.name.clone());
+        let chosen = self.palette_visible().get(self.palette_cursor).cloned();
         self.close_palette();
-        if let Some(action) = chosen {
-            self.request_run(&action);
+        let Some(action) = chosen else {
+            return;
+        };
+        if action.source == Source::Selection {
+            self.run_selection_command(&action.name);
+        } else {
+            self.request_run(&action.name);
         }
     }
 
@@ -1362,6 +1415,102 @@ impl App {
     /// Back to the full-width list.
     pub fn close_detail(&mut self) {
         self.detail_open = false;
+        self.output_selection = None;
+    }
+
+    /// The cursor row's output, finished or still arriving, or `None` when
+    /// there is nothing to lay out yet. A live run is preferred over a stale
+    /// finished one: the row is being written to right now, and the previous
+    /// answer is no longer the one being asked about.
+    pub fn transcript_lines(&self) -> Option<Vec<detail::DetailLine>> {
+        if let Some(live) = self.live.get(&self.cursor) {
+            if !live.steps.is_empty() {
+                return Some(detail::live_lines(&live.steps));
+            }
+        }
+        match self.run_results.get(self.cursor)? {
+            Some(RunStatus::Finished { steps, .. }) => Some(detail::detail_lines(steps)),
+            _ => None,
+        }
+    }
+
+    /// The transcript line drawn on the output pane's first content row. A
+    /// run still arriving follows its own tail, until a scroll says
+    /// otherwise: the interesting end of a live log is the one being
+    /// written, and reading it should not need a keystroke per screenful.
+    /// Any scroll leaves an entry behind and pins it.
+    pub fn detail_view_scroll(&self, total_lines: usize, content_height: usize) -> usize {
+        match self.detail_scroll.get(&self.cursor) {
+            Some(&scroll) => detail::clamp_scroll(scroll, total_lines, content_height),
+            None => total_lines.saturating_sub(content_height),
+        }
+    }
+
+    /// Start a drag-selection in the output pane at transcript line `line`.
+    pub fn begin_output_selection(&mut self, line: usize) {
+        self.output_selection = Some(OutputSelection {
+            repo: self.cursor,
+            anchor: line,
+            head: line,
+        });
+    }
+
+    /// Extend a drag-selection to `line`, which may be above the anchor.
+    pub fn extend_output_selection(&mut self, line: usize) {
+        if let Some(selection) = self.output_selection.as_mut() {
+            selection.head = line;
+        }
+    }
+
+    /// The lines a drag left selected, or `None` when the drag belongs to a
+    /// repo the cursor has since moved off: the indices only mean anything
+    /// against the transcript they were taken on.
+    pub fn output_selection_range(&self) -> Option<RangeInclusive<usize>> {
+        let selection = self.output_selection.as_ref()?;
+        (selection.repo == self.cursor)
+            .then(|| selection.anchor.min(selection.head)..=selection.anchor.max(selection.head))
+    }
+
+    /// Copy what the drag selected, on the button coming back up. Mouse
+    /// capture is what makes this necessary: while it's on the terminal
+    /// hands drags to mrx instead of selecting text with them, so the app
+    /// owes the user a selection of its own.
+    ///
+    /// A press that never moved is a click, and a click clears the last
+    /// selection rather than making a one-line one out of nothing.
+    pub fn finish_output_selection(&mut self) {
+        let Some(selection) = self.output_selection.as_ref() else {
+            return;
+        };
+        if selection.anchor == selection.head {
+            self.output_selection = None;
+            return;
+        }
+        let Some(range) = self.output_selection_range() else {
+            return;
+        };
+        let Some(lines) = self.transcript_lines() else {
+            return;
+        };
+        let text = lines
+            .get(range)
+            .map(|lines| {
+                lines
+                    .iter()
+                    .map(detail::DetailLine::text)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        if text.is_empty() {
+            return;
+        }
+        let repo_name = self
+            .repos
+            .get(self.cursor)
+            .map(|r| r.name.as_str())
+            .unwrap_or("repo");
+        self.status_message = Some(detail::copy_or_save(&text, repo_name, "selection"));
     }
 
     /// `tab` in the detail view: hand the keys to the other pane.
@@ -2680,13 +2829,63 @@ mod tests {
         let all = a.palette_visible().len();
         let mut a = a;
         a.palette_filter = "upda".into();
-        let filtered: Vec<&str> = a
-            .palette_visible()
-            .iter()
-            .map(|x| x.name.as_str())
-            .collect();
+        let visible = a.palette_visible();
+        let filtered: Vec<&str> = visible.iter().map(|x| x.name.as_str()).collect();
         assert_eq!(filtered, vec!["update"]);
         assert!(filtered.len() < all);
+    }
+
+    #[test]
+    fn the_palette_selection_commands_change_the_selection_without_running() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        a.filter = "ba".into();
+
+        a.open_palette();
+        a.palette_filter = SELECT_VISIBLE.into();
+        a.palette_confirm();
+        assert_eq!(a.selected, BTreeSet::from([1, 2]));
+        assert!(
+            a.run_requested.is_none(),
+            "a selection command runs nothing"
+        );
+
+        a.open_palette();
+        a.palette_filter = SELECT_ALL.into();
+        a.palette_confirm();
+        assert_eq!(
+            a.selected,
+            BTreeSet::from([0, 1, 2]),
+            "the filter is no bound on select-all"
+        );
+
+        a.open_palette();
+        a.palette_filter = DESELECT_ALL.into();
+        a.palette_confirm();
+        assert!(a.selected.is_empty());
+        assert!(a.run_requested.is_none());
+    }
+
+    /// `select-visible` and `select-all` differ only under a filter, so the
+    /// palette says how many each would leave selected.
+    #[test]
+    fn the_palette_counts_what_each_selection_command_would_select() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        a.filter = "ba".into();
+        a.palette_filter = "select".into();
+
+        let counts: Vec<(String, usize)> = a
+            .palette_visible()
+            .iter()
+            .map(|c| (c.name.clone(), c.repos))
+            .collect();
+        assert_eq!(
+            counts,
+            vec![
+                (SELECT_ALL.into(), 3),
+                (SELECT_VISIBLE.into(), 2),
+                (DESELECT_ALL.into(), 0),
+            ]
+        );
     }
 
     #[test]
