@@ -1,19 +1,33 @@
-# mrx — Multi Repo eXtreme
+# mrx
 
-Parallel multi-repo git operations with a compact TUI. A faster replacement for [myrepos](https://myrepos.branchable.com/) (`mr`).
+mrx runs git operations across every repo in a set, in parallel, with a compact TUI. A faster replacement for [myrepos](https://myrepos.branchable.com/) (`mr`).
 
-mrx reads your `~/.mrconfig`, runs git commands across all repos in parallel, and shows live progress with per-repo status summaries. Expand any repo to see its full output.
+It reads your `~/.mrconfig`, fans one command out across every repo at once, and reports live per-repo progress instead of a wall of scrollback. Two views cover the two ways you use it: a one-shot run view that reports a single command and then exits, and `mrx ui`, a table that stays open across runs.
+
+> Rust, built on [ratatui](https://ratatui.rs/) and crossterm. The config format is `mr`'s, so an existing `~/.mrconfig` works untouched.
+
+## Highlights
+
+- **Parallel by default.** Every repo in the set runs at once, bounded by `-j` (default: `min(cpus, 8)`).
+- **Two views.** A one-shot run view for `mrx status` and friends, and [ui mode](#ui-mode) for a table that stays open across runs.
+- **Drop-in `.mrconfig`.** The same INI format and section-path convention as `mr`, so an existing setup needs no migration.
+- **Custom actions.** Any key in the config becomes a subcommand, resolved per repo and falling back to `[DEFAULT]`.
+- **Named repo sets.** Unrelated repo lists share one binary through `-s work`, `-s oss`, or `$MRX_SET`.
+- **Live repo state.** ui mode fills in each repo's branch, working tree and ahead/behind counts from a background probe as the table paints.
+- **Honest non-interactive mode.** Off a terminal mrx prints one line per repo, and exits 0 only if every repo succeeded.
 
 ## Prerequisites
 
-- **Rust** 1.87+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
-- **Git** installed and on PATH
-- **`~/.mrconfig`** — an INI-style config file listing your repos (same format as [myrepos](https://myrepos.branchable.com/))
-- SSH keys or HTTPS credentials configured for your git remotes
+- **Rust** and cargo, to build from source (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`). The crate declares no minimum version, so current stable is the safe answer.
+- **Git** installed and on `PATH`.
+- **`~/.mrconfig`**, an INI-style file listing your repos (same format as [myrepos](https://myrepos.branchable.com/)). See [Config](#config).
+- SSH keys or HTTPS credentials configured for your git remotes.
 
 ## Install
 
-```
+```bash
+git clone git@github.com:paulchiu/mrx.git
+cd mrx
 cargo install --path . --locked
 ```
 
@@ -37,7 +51,7 @@ mrx <command> [options]
 | `mrx register` | Register current repo in `~/.mrconfig` |
 | `mrx list` / `ls` | List configured repos (no TUI) |
 | `mrx sets` | List named repo sets (no TUI) |
-| `mrx ui` | Open the resident app: browse, select, and filter repos (see [The resident app](#the-resident-app)) |
+| `mrx ui` | Open [ui mode](#ui-mode): browse, select, and filter repos, and run actions against them |
 | `mrx <action>` | Run an action defined in the config (see [Custom actions](#custom-actions)) |
 
 ### Options
@@ -46,16 +60,14 @@ mrx <command> [options]
 |------|-------------|
 | `-j <N>` | Max parallel jobs (default: min(cpus, 8)) |
 | `-c <file>` | Config file. Overrides `-s` |
-| `-s <name>` | Named repo set (see [Repo sets](#repo-sets)). Also `$MRX_SET` |
+| `-s <name>` | Named repo set (see [Repo sets](#repo-sets)) |
 | `-d <dir>` | Working directory (default: `[DEFAULT] base`, else config file's parent) |
-| `--exit-on-done` | Quit the TUI once every repo has finished, instead of waiting for `q` |
+| `-f` | ui mode only: skip the confirmation before running on a dirty or unprobed selection |
+| `--exit-on-done` | Quit the TUI once every repo has finished, instead of waiting for `q`. Ignored by `ui`, which has no single run to wait on |
 | `--plain` | Never use the TUI, even on a terminal |
-| `--result-ttl <d>` | How long `ui` keeps a run's result on its row: `6m` (default), `90s`, `off` |
-| `-v` | Verbose output |
-| `-n` | No recurse |
-| `-f` | Force |
+| `--result-ttl <d>` | How long ui mode keeps a run's result on its row: `6m` (default), `90s`, `off` |
 
-### Examples
+## Examples
 
 ```
 mrx status              # quick overview of all repos
@@ -67,9 +79,9 @@ mrx update --exit-on-done   # unattended: quit when the last repo lands
 mrx status | tee log    # not a terminal, so one line per repo instead of a TUI
 ```
 
-## TUI
+## The run view
 
-The TUI shows a compact one-line-per-repo view with live spinners for in-progress operations:
+One command, one line per repo, with live spinners for whatever is still going. It exits when you do.
 
 ```
   mrx status                                          28/32 done
@@ -85,14 +97,15 @@ The TUI shows a compact one-line-per-repo view with live spinners for in-progres
   [↑↓/jk] navigate  [enter] expand  [r] re-run  [q] quit
 ```
 
-Press **Enter** on a repo to expand its full output in a bordered panel. Arrow keys scroll within the panel. **Esc** collapses it. Press **r** once the run has finished to re-run the same command across all repos without leaving the screen. **q** quits and prints a summary.
+- `↑`/`↓` or `j`/`k` move between repos; `g`/`G` and `Home`/`End` jump to the first or last.
+- `Enter` expands the cursor row's full output in a bordered panel.
+- With a panel open, `↑`/`↓` or `j`/`k` scroll it and `Esc` or `Enter` collapses it again.
+- `r` re-runs the same command across every repo, once the previous run has finished.
+- `q` or `Ctrl-C` quits and prints a summary.
 
-## The resident app
+## ui mode
 
-`mrx ui` is a different shape from the TUI above: it stays open across runs instead of
-exiting after one. Branch and working-tree state fill in from a background probe as
-soon as the table paints, and any action from `.mrconfig` can run against the
-selection without leaving the screen.
+`mrx ui` is a different shape from the run view: it stays open across runs instead of exiting after one, so a set stays on screen and actions run against a selection you keep. Branch and working-tree state fill in from a background probe as soon as the table paints, and any action from `.mrconfig` can run without leaving the screen.
 
 ```
   mrx · work                                  update 1/2 · 1 failed
@@ -106,60 +119,17 @@ selection without leaving the screen.
   j/k move  space select  / filter  enter output  u update  …  ? help
 ```
 
-The footer shows as many keys as the terminal is wide enough for, whole ones only,
-with `…` standing in for the rest. `? help` is budgeted first and drawn last, so it
-survives every width. **`?` opens the full keymap**, listing the keys the footer left
-out along with the detail view's.
+The footer shows as many keys as the terminal is wide enough for, whole ones only, with `…` standing in for the rest. `? help` is budgeted first and drawn last, so it survives every width, and `?` opens the full keymap.
 
-`j`/`k` (or the arrow keys) move the cursor, `Ctrl-D`/`Ctrl-U` move half a page, and
-`g`/`G` jump to the first or last row.
-`space` toggles the cursor row's selection and moves on, `a` selects every row the
-filter currently shows, `A` selects the whole set regardless of the filter, `c` clears
-the selection, and `i` inverts it. **An empty selection means every repo on screen**,
-so `u` with nothing selected updates the lot; the header only counts a selection you
-actually made, and says nothing when there isn't one.
-
-`/` starts an incremental filter on repo name; keep typing and the table narrows live.
-`Esc` drops the filter, `Enter` keeps it, and `/` again starts over from the full list
-(which is how you drop a filter you've kept). Filtering narrows what's on screen but never
-touches the selection, so selecting some repos, then filtering, then selecting again
-adds to what was already picked.
-
-`!` drops to `$SHELL` in the cursor row's repo for whatever no action covers, the same
-suspend-and-restore the editor gets. It's a key rather than an action because an action
-runs unattended across a selection, and a shell is the opposite of both.
-
-`u` runs `update` on the selection; `s`, `f`, `d` run `status`, `fetch`, `diff`. The
-built-in `status` reports the branch and its ahead/behind alongside the working tree,
-so one run answers both "what have I changed here" and "is there anything to push or
-pull". `:` opens the action palette, a filtered list of every runnable action for the set
-(built-in and custom alike), each shown with where it's defined and how many repos
-actually have it: `deploy  per-repo, 3 of 42`. The palette also carries the selection
-commands (`select-all`, `select-visible`, `deselect-all`, the same three `A`, `a` and
-`c` bind), each showing how many repos it would leave selected. If the selection
-includes a repo the last probe found dirty, running anything asks for confirmation
-first, showing how
-many; pass `-f`/`--force` to skip that. When the run is over everything only because
-nothing was selected, the prompt offers `c` as a third answer, narrowing it to the
-cursor row by name. `r` re-probes the selection (or everything, with nothing
-selected).
-
-`Enter` opens the detail view for the cursor row: the table collapses to a sidebar
-(full-width below about 100 columns). Output arrives **as it is produced**, so a long
-update can be read while it runs rather than waited out; a step still going is marked
-`…` instead of a tick, and the view follows the tail until you scroll. Each step is its
-own labelled section rather than one scrollback. `Ctrl-D`/`Ctrl-U` scroll half a page,
-kept per repo; `y` copies the visible step's output and `o` opens the whole transcript
-in `$EDITOR`, both falling back to a temp file when there's no clipboard binary on
-`PATH`. `Esc` goes back to the full-width list.
-
-Tools keep their own colours here. mrx runs each step through a pipe, which normally
-makes a tool turn colour off, so it sets `CLICOLOR_FORCE`, `FORCE_COLOR` and git's
-`color.ui` to force it back on and renders the escape sequences it gets back. A line
-with no colour of its own still reads by severity: warnings yellow, errors red, and
-everything else on `stderr` grey, because `stderr` carries progress and notices as
-often as it carries failures. Copies, saved transcripts and the non-resident output are
-all stripped back to plain text.
+- **Move.** `j`/`k` or the arrow keys walk the table, `Ctrl-D`/`Ctrl-U` move half a page, `g`/`G` jump to the first or last row.
+- **Select.** `space` toggles the cursor row and moves on, `a` takes every row the filter shows, `A` the whole set regardless, `c` clears, `i` inverts. **An empty selection means every repo on screen**, so `u` with nothing selected updates the lot; the header only ever counts a selection you actually made.
+- **Filter.** `/` starts an incremental filter on repo name and the table narrows as you type. `Esc` drops it, `Enter` keeps it, `/` again starts over from the full list. Filtering never touches the selection, so selecting, filtering, then selecting again adds to what was already picked.
+- **Run.** `u` runs `update` on the selection; `s`, `f` and `d` run `status`, `fetch` and `diff`. The built-in `status` reports the branch and its ahead/behind alongside the working tree, so one run answers both "what have I changed here" and "is there anything to push or pull".
+- **Any action.** `:` opens the action palette, a filtered list of every runnable action for the set, each shown with where it is defined and how many repos actually have it: `deploy  per-repo, 3 of 42`. It also carries the selection commands, each showing how many repos it would leave selected.
+- **Confirm.** Running on a selection the last probe found dirty, or has not probed yet, asks first and says how many. `-f`/`--force` skips the prompt.
+- **Read output.** `Enter` opens the detail view for the cursor row, streaming each step's output as it is produced rather than at the end, so a long update can be read while it runs. `y` copies the visible step, `o` opens the whole transcript in `$EDITOR`.
+- **Re-probe.** `r` re-reads the selection's state (or everything, with nothing selected).
+- **Escape hatch.** `!` drops to `$SHELL` (`sh` if unset) in the cursor row's repo, for whatever no action covers. It is a key rather than an action because an action runs unattended across a selection, and a shell is the opposite of both.
 
 ```
 ▌ mrx · work                     │  guest-gateway · update
@@ -173,77 +143,15 @@ all stripped back to plain text.
   tab focus  j/k move  ^d/^u scroll  y copy  esc back  q quit  ? help
 ```
 
-The split is one frame divided, not two windows: the panes rule off their headers on
-the same row, a rule runs between them, and one key line sits under both. `tab` hands
-the keys from one pane to the other, marked by the `▌` in the margin and the brighter
-title, so `j`/`k` either walk the repo list with the output following or scroll the
-output with the cursor staying put. `Enter` on a row whose output is already on screen
-hands them to the output too, since the row is no longer the question. The line under
-the detail title says how the run ended and, when the output is longer than the pane,
-which slice of it you're looking at.
+The split is one frame divided, not two windows: the panes rule off their headers on the same row, a rule runs between them, and one key line sits under both. `tab` hands the keys from one pane to the other, marked by the `▌` in the margin and the brighter title, so `j`/`k` either walk the repo list with the output following or scroll the output with the cursor staying put.
 
-A run's result stays on its row for six minutes and then goes back to `·`, so a table
-left open all afternoon isn't still reporting this morning. `--result-ttl` changes it:
-`--result-ttl 30m`, `--result-ttl 90s`, or `--result-ttl off` to keep every result
-until the next run replaces it.
+The ahead/behind counts only ever reflect the last fetch, so a repo that is ↓3 behind shows no ↓ at all until something updates the remote-tracking ref. An absent count is "nobody has asked", which is not the same claim as ↓0 and so is never drawn as one. Anything that fetches counts, not just mrx: the probe reads `FETCH_HEAD`'s timestamp, so pulling a repo in another terminal settles its count on the next probe.
 
-`o` opens the cursor row's repo in `$EDITOR` (`vi` if it's unset), or its transcript
-when the detail view is open. The app suspends properly to do it: raw mode, the
-alternate screen, and mouse capture all come off first, so the editor gets a normal
-terminal, and all three come back once it exits.
+`Esc` cancels a live run, but only as far as it honestly can. Everything still queued behind the job limit is skipped; a repo already past its slot keeps running to completion, because `Command::output` has no kill. The status line says exactly that: `cancelled, 2 queued skipped, 1 still finishing`.
 
-Clicking a row moves the cursor to it; clicking the row already under the cursor
-opens its detail view. The wheel scrolls whichever region is under the pointer.
-Dragging down the output pane selects the lines it covers and copies them when the
-button comes up, which is what mouse capture otherwise takes away: while it's on, the
-terminal hands drags to mrx rather than selecting text with them. A click with no drag
-clears the selection again. Elsewhere, holding Option/Shift while dragging still
-selects natively, and `m` toggles capture off and on entirely.
+`F` toggles a freshness poll and `Ctrl-A` layers a narrow auto-update on top of it. Both are off by default, and both show in the header the moment either is on (`poll 5m`, `poll 5m · auto`), since a mode that touches working trees on a timer has no business being invisible.
 
-`tab` opens a picker over every set `mrx sets` would list, plus the active config
-labelled `(unnamed)` if it isn't one of them; confirming reloads that config and
-restarts the probe from scratch. `Ctrl-R` re-reads the active config without changing
-which one is active, keeping the cursor and selection by repo NAME (an edit that adds
-a repo above the one you're on doesn't silently redirect the selection onto its
-neighbour, and a name the edit removed just drops out). Both are blocked while a run
-is live, since re-numbering the repo list out from under an in-flight run's indices
-would attribute its results to the wrong row.
-
-`Esc` cancels a live run: everything still queued behind the job limit is skipped,
-but a repo already past its slot keeps running to completion (`Command::output`
-has no kill), and the status line says exactly that: `cancelled, 2 queued skipped, 1
-still finishing`. `q`/`Ctrl-C` quit immediately with nothing running; with a run
-live they ask first, since losing sight of an in-flight action isn't something to
-do by reflex.
-
-The ahead/behind counts only ever reflect the last fetch, so a repo that's ↓3 behind
-shows no ↓ at all until something updates the remote-tracking ref: an absent count is
-"nobody has asked", which is not the same claim as ↓0 and so is never drawn as one.
-Anything that fetches counts, not just mrx: the probe reads `FETCH_HEAD`'s timestamp,
-so running `update` on a repo, or pulling it in another terminal, settles its count on
-the next probe. `F` toggles a
-freshness poll, `git fetch --quiet` across the set on an interval (5 minutes by
-default), suspended rather than queued while a run is live; `Ctrl-A` layers a
-narrow, opt-in auto-update on top, fast-forwarding whatever a poll finds behind
-on a repo that's clean, not ahead, and tracking an upstream, and simply leaving
-everything else alone. Both are off by default and both show in the header the
-moment either is on (`poll 5m`, `poll 5m · auto`), since a mode that touches
-working trees on a timer has no business being invisible. `Ctrl-A` refuses to
-turn on while the poll itself is off, since it has nothing to act on without one.
-
-The set, filter, selection, cursor, both poll settings, and which repos have
-been seen to fetch (so a `↓` count survives a restart) are written to
-`$XDG_STATE_HOME/mrx/ui.json` (`~/.local/state/mrx/ui.json` by default) as they
-change and restored the next time `mrx ui` opens, so reopening puts you back
-where you left off; a restored filter shows in the header with its match count
-(`4 of 42 repos · filter`) rather than only in the status bar, so it doesn't
-look like the config broke. `-s` on the command line always wins over whichever
-set was stored, and a name the file remembers that the set no longer has (a
-repo, or the set itself) is dropped silently rather than treated as an error.
-Deleting the file is a supported way to reset back to defaults.
-
-Needs a real terminal: `mrx ui` with stdout piped, or combined with `--plain`, exits 2
-with a pointer at `mrx status` or another non-interactive subcommand instead.
+See [docs/ui-keys.md](docs/ui-keys.md) for every binding, by input mode. See [docs/ui-mode.md](docs/ui-mode.md) for colour handling, result lifetime, set switching, cancellation, freshness polling, and the persisted session.
 
 ## Config
 
@@ -257,10 +165,9 @@ checkout = git clone 'https://github.com/my-account/a-repo' 'a-repo'
 checkout = git clone 'git@github.com:my-account/another-repo.git' 'cli'
 ```
 
-Section names are relative paths from the base directory. Both HTTPS and SSH clone URLs are supported.
-
-Whole-line `#` and `;` comments are supported. They are *not* stripped mid-line, so a
-command body can contain either character.
+- Section names are relative paths from the base directory, and keep their case. Keys are lowercased, so `Branch` and `branch` are one key. Both HTTPS and SSH clone URLs are parsed for the built-in clone.
+- Whole-line `#` and `;` comments are supported. They are *not* stripped mid-line, so a command body can contain either character.
+- Repos are listed in name order, not config order.
 
 ### Recognised keys
 
@@ -268,7 +175,7 @@ command body can contain either character.
 |-----|-------|---------|
 | `checkout` | section | Clone command. The URL is parsed out of it for the built-in clone |
 | `base` | `[DEFAULT]` | Directory section paths resolve against. Supports `~`. Default: the config file's parent |
-| `skip` | section | `true` leaves the section in the file but out of every operation |
+| `skip` | section | `true`, `yes` or `1` leaves the section in the file but out of every operation. `false`, `no` and `0` are the default; anything else also reads as the default |
 | `<action>` | both | Shell body replacing a built-in (`update`, `status`, `diff`, `push`, `fetch`, `checkout`), or defining a new one |
 | `post_<action>` | both | Shell body appended after a successful `<action>` |
 
@@ -292,12 +199,10 @@ checkout = git clone 'git@github.com:me/site.git' 'site'
 install = npm ci
 ```
 
-`mrx install` then runs `npm ci` in `site` and `yarn install --frozen-lockfile`
-everywhere else. Resolution is section first, then `[DEFAULT]`, then the built-in.
-An action defined nowhere exits 2 rather than silently skipping every repo.
-
-Trailing arguments become positional parameters, so `mrx install --offline` reaches
-the body as `$1`.
+- `mrx install` runs `npm ci` in `site` and `yarn install --frozen-lockfile` everywhere else.
+- Resolution is section first, then `[DEFAULT]`, then the built-in.
+- An action defined nowhere exits 2 rather than silently skipping every repo.
+- Trailing arguments become positional parameters, so `mrx install --offline` reaches the body as `$1`.
 
 ### Environment
 
@@ -308,7 +213,8 @@ MR_REPO      /Users/me/dev/api     # absolute path, also the cwd
 MR_REPONAME  api                   # section basename
 MR_CONFIG    /Users/me/.config/mrx/work.mrconfig
 MR_ACTION    update                # which action is running
-MR_<KEY>     ...                   # every config key visible to this repo
+MR_<KEY>     ...                   # every config key visible to this repo,
+                                   # except the reserved `base` and `skip`
 ```
 
 That last line is what makes per-repo exceptions work without mrx knowing anything
@@ -330,10 +236,13 @@ the shell word it sits in.
 
 ### What counts as a step
 
-mrx builds an action out of up to three steps, and stops at the first that exits
-non-zero: the clone (if the repo isn't on disk yet), the `<action>` body, then the
-`post_<action>` body. A failure names the step it came from, so a row reads
-`post_update: npm error Missing script: "build"` rather than leaving you to guess.
+mrx builds an action out of up to three steps and stops at the first that exits non-zero:
+
+- The clone, if the repo isn't on disk yet.
+- The `<action>` body.
+- The `post_<action>` body.
+
+A failure names the step it came from, so a row reads `post_update: npm error Missing script: "build"` rather than leaving you to guess.
 
 Everything *inside* one body is a single `sh -e -c` invocation, so a body that lists
 several commands stops at the first one that fails:
@@ -367,8 +276,11 @@ A set is a config file with a name, so unrelated repo lists can share one binary
 ~/.config/mrx/oss.mrconfig      ->  mrx -s oss status
 ```
 
-`~/.mrconfig-<name>` works too. `$MRX_SET` sets one without a flag, and `-c`
-overrides both. `mrx sets` lists what's on disk.
+- A named set is looked for at `$XDG_CONFIG_HOME/mrx/<name>.mrconfig` (falling back to `~/.config/mrx/`) first, then `~/.mrconfig-<name>`. A name in both is used and listed once, at the first of those.
+- `$MRX_SET` names a set without a flag, `-s` overrides it, and `-c` overrides both.
+- `mrx sets` lists what is on disk.
+- With neither `-s` nor `$MRX_SET`, mrx looks for a `default` set and falls back to `~/.mrconfig`, so an existing setup keeps working untouched.
+- A set named explicitly but not found is an error listing the paths tried, not a silent fallback.
 
 Because a set lives in `~/.config/mrx/`, its sections would otherwise resolve
 against that directory, which is why `[DEFAULT] base` exists:
@@ -378,19 +290,16 @@ against that directory, which is why `[DEFAULT] base` exists:
 base = ~/dev
 ```
 
-With no `-s` and no `$MRX_SET`, mrx looks for a `default` set and falls back to
-`~/.mrconfig`, so an existing setup keeps working untouched. A set named explicitly
-but not found is an error listing the paths tried, not a silent fallback.
-
 ## Unattended runs
 
-The TUI waits for `q` by design: that's when you expand the repo that failed and
-read its output. Two ways out:
+The TUI waits for `q` by design: that's when you expand the repo that failed and read its output. Two ways out:
 
-- `--exit-on-done` quits once every repo has landed. Opt-in, so a bare `mrx status`
-  is unchanged.
-- When stdout isn't a terminal, the TUI is skipped entirely for one line per repo,
-  with failures printing their captured output indented beneath. `--plain` forces
-  that on a terminal too.
+- `--exit-on-done` quits once every repo has landed. Opt-in, so a bare `mrx status` is unchanged.
+- When stdout isn't a terminal, the TUI is skipped entirely for one line per repo, with failures printing their captured output indented beneath. `--plain` forces that on a terminal too.
 
 Either way the exit code is 0 only if every repo succeeded.
+
+## Docs
+
+- [docs/ui-keys.md](docs/ui-keys.md): every ui mode binding, by input mode, plus the mouse and the behaviour notes the `?` overlay carries.
+- [docs/ui-mode.md](docs/ui-mode.md): how ui mode behaves beyond its keymap, in the order you hit it.
