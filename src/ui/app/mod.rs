@@ -359,6 +359,23 @@ fn spawn_action_run(
     )
 }
 
+/// How long after the poll is switched on its first cycle fires. Short
+/// enough to read as immediate, long enough that mashing `F` on and off
+/// collapses to one cycle instead of a fetch per press.
+const POLL_RESET_GRACE: Duration = Duration::from_millis(250);
+
+/// How long the poll ticker's next tick should be pushed out to, given
+/// `poll_enabled` on the previous loop iteration and its value now, or
+/// `None` to leave the running ticker alone.
+///
+/// Only the off-to-on transition re-phases the ticker: on every other
+/// iteration the running one is left to its own interval, so the startup
+/// delay [`run`] builds it with survives and a poll that stays on keeps
+/// firing on schedule.
+fn poll_ticker_restart_delay(was_enabled: bool, is_enabled: bool) -> Option<Duration> {
+    (!was_enabled && is_enabled).then_some(POLL_RESET_GRACE)
+}
+
 /// Everything [`run`] needs to open the resident app, bundled to satisfy
 /// clippy's argument-count limit (the same shape `widgets::RepoRow` used
 /// for this in phase 0).
@@ -440,6 +457,10 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
         tokio::time::Instant::now() + app.poll_interval,
         app.poll_interval,
     );
+    // `poll_enabled` as of the end of the previous iteration, so the loop
+    // can spot `F` turning the poll on without `toggle_poll` having to
+    // record anything for it.
+    let mut poll_was_enabled = app.poll_enabled;
     let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
     let (run_tx, mut run_rx) = mpsc::unbounded_channel::<RunEvent>();
     let (auto_tx, mut auto_rx) = mpsc::unbounded_channel::<poll::AutoUpdateResult>();
@@ -555,6 +576,14 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
                 }
             }
         }
+        // Turning the poll on asks for a cycle now, not at whatever tick
+        // boundary the ticker was already heading for.
+        if let Some(delay) = poll_ticker_restart_delay(poll_was_enabled, app.poll_enabled) {
+            poll_ticker =
+                tokio::time::interval_at(tokio::time::Instant::now() + delay, app.poll_interval);
+        }
+        poll_was_enabled = app.poll_enabled;
+
         let completed = terminal.draw(|frame| render::draw(frame, &app))?;
         app.terminal_width = completed.area.width;
         app.terminal_height = completed.area.height;
@@ -576,6 +605,68 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stands in for `app.poll_interval` in the ticker tests. The real
+    /// default is 300s; these wait on wall-clock ticks, so they use an
+    /// interval that is still an order of magnitude clear of the grace.
+    ///
+    /// The two ticker tests below rebuild the ticker themselves, so they
+    /// pin [`poll_ticker_restart_delay`] and tokio's `interval_at`, not the
+    /// call site in [`run`]: deleting that call leaves them green. Only
+    /// driving the app covers it.
+    const TEST_INTERVAL: Duration = Duration::from_secs(4);
+
+    #[test]
+    fn only_switching_the_poll_on_restarts_its_ticker() {
+        assert_eq!(
+            poll_ticker_restart_delay(false, true),
+            Some(POLL_RESET_GRACE)
+        );
+        assert_eq!(poll_ticker_restart_delay(true, true), None);
+        assert_eq!(poll_ticker_restart_delay(true, false), None);
+        assert_eq!(poll_ticker_restart_delay(false, false), None);
+    }
+
+    #[tokio::test]
+    async fn switching_the_poll_on_pulls_its_next_cycle_off_the_interval_boundary() {
+        let mut ticker =
+            tokio::time::interval_at(tokio::time::Instant::now() + TEST_INTERVAL, TEST_INTERVAL);
+        // The poll starts off, so the ticker is running but every tick is
+        // declined; `F` arrives partway through the current interval.
+        let pressed = std::time::Instant::now();
+        if let Some(delay) = poll_ticker_restart_delay(false, true) {
+            ticker = tokio::time::interval_at(tokio::time::Instant::now() + delay, TEST_INTERVAL);
+        }
+
+        ticker.tick().await;
+        let waited = pressed.elapsed();
+        assert!(
+            waited < TEST_INTERVAL / 2,
+            "first poll cycle after F waited {waited:?}, wanted well under {TEST_INTERVAL:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_poll_already_on_keeps_the_ticker_it_has() {
+        let mut ticker =
+            tokio::time::interval_at(tokio::time::Instant::now() + TEST_INTERVAL, TEST_INTERVAL);
+        // Iterations of the run loop with the poll on throughout: restarting
+        // on any of them would push the next cycle out indefinitely.
+        for _ in 0..20 {
+            if let Some(delay) = poll_ticker_restart_delay(true, true) {
+                ticker =
+                    tokio::time::interval_at(tokio::time::Instant::now() + delay, TEST_INTERVAL);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        assert!(
+            tokio::time::timeout(TEST_INTERVAL, ticker.tick())
+                .await
+                .is_ok(),
+            "the ticker never fired within its own interval"
+        );
+    }
 
     #[test]
     fn a_new_input_gate_starts_open_and_not_parked() {

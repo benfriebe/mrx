@@ -16,7 +16,9 @@ const WHEEL_STEP: isize = 3;
 
 /// Dispatch one input event. Returns true when the app should quit.
 pub fn on_input(app: &mut App, event: Event) -> bool {
-    app.status_message = None;
+    if clears_status_message(&event) {
+        app.status_message = None;
+    }
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => on_key(app, key),
         Event::Mouse(mouse) => on_mouse(app, mouse),
@@ -26,6 +28,24 @@ pub fn on_input(app: &mut App, event: Event) -> bool {
         }
         _ => false,
     }
+}
+
+/// The status line is transient: the user's next action replaces it with
+/// the footer. The tail of a mouse gesture is not that next action, and
+/// treating it as one is why the swallowed-drag hint was never on screen
+/// long enough to read. One press-drag-release sends a press, a motion per
+/// cell crossed, and a release, so the motion that sets the hint is always
+/// followed by more events from the same gesture. Mouse capture also asks
+/// for all motion (`?1003h`), so even a still gesture is followed by a
+/// `Moved` the moment the pointer twitches.
+fn clears_status_message(event: &Event) -> bool {
+    !matches!(
+        event,
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved | MouseEventKind::Drag(_) | MouseEventKind::Up(_),
+            ..
+        })
+    )
 }
 
 /// `Terminal::draw` re-queries the real terminal size and resizes its own
@@ -454,6 +474,32 @@ mod tests {
         assert_eq!(a.filter, "ba");
     }
 
+    /// Esc in the list is a deliberate no-op, so a committed filter has no
+    /// key of its own that drops it; `/` starts over instead of resuming the
+    /// search that is already narrowing the list.
+    #[test]
+    fn slash_starts_a_fresh_search_after_a_committed_filter() {
+        let mut a = app(&["alpha", "bravo"]);
+        on_input(&mut a, press(KeyCode::Char('/')));
+        on_input(&mut a, press(KeyCode::Char('a')));
+        on_input(&mut a, press(KeyCode::Char('l')));
+        on_input(&mut a, press(KeyCode::Enter));
+        assert_eq!(a.visible_indices(), vec![0]);
+
+        on_input(&mut a, press(KeyCode::Char('/')));
+        assert!(a.filtering);
+        assert!(a.filter.is_empty());
+        assert_eq!(a.visible_indices(), vec![0, 1]);
+    }
+
+    #[test]
+    fn slash_is_literal_text_while_filtering() {
+        let mut a = app(&["foo"]);
+        a.start_filter();
+        on_input(&mut a, press(KeyCode::Char('/')));
+        assert_eq!(a.filter, "/", "a repo name can contain a slash");
+    }
+
     #[test]
     fn esc_clears_the_filter() {
         let mut a = app(&["foo", "bar"]);
@@ -491,6 +537,7 @@ mod tests {
                 ahead: 0,
                 behind: 0,
                 changed: 0,
+                changes: Default::default(),
                 present: true,
                 timed_out: false,
                 fetched: false,
@@ -645,6 +692,7 @@ mod tests {
             ahead: 0,
             behind: 0,
             changed: 0,
+            changes: Default::default(),
             present: true,
             timed_out: false,
             fetched: false,
@@ -671,6 +719,7 @@ mod tests {
                 ahead: 0,
                 behind: 0,
                 changed: 1,
+                changes: Default::default(),
                 present: true,
                 timed_out: false,
                 fetched: false,
@@ -942,6 +991,51 @@ mod tests {
         );
     }
 
+    /// A drag is never one event. The terminal sends a press, one motion
+    /// per cell crossed, and a release, so the hint is only ever on screen
+    /// if it survives everything the gesture sends after the motion that
+    /// set it.
+    #[test]
+    fn the_drag_hint_survives_the_rest_of_the_gesture() {
+        let mut a = app(&["foo", "bar"]);
+        on_input(&mut a, mouse(MouseEventKind::Down(MouseButton::Left), 4, 6));
+        on_input(&mut a, mouse(MouseEventKind::Drag(MouseButton::Left), 5, 6));
+        on_input(&mut a, mouse(MouseEventKind::Drag(MouseButton::Left), 6, 6));
+        on_input(&mut a, mouse(MouseEventKind::Up(MouseButton::Left), 6, 6));
+        assert!(
+            a.status_message.is_some(),
+            "the release wiped the hint before it could be painted"
+        );
+    }
+
+    #[test]
+    fn pointer_motion_after_a_swallowed_drag_leaves_the_hint_up() {
+        let mut a = app(&["foo", "bar"]);
+        on_input(&mut a, mouse(MouseEventKind::Drag(MouseButton::Left), 5, 6));
+        assert!(a.status_message.is_some());
+
+        on_input(&mut a, mouse(MouseEventKind::Moved, 7, 8));
+        on_input(&mut a, mouse(MouseEventKind::Moved, 9, 8));
+        assert!(
+            a.status_message.is_some(),
+            "passive pointer motion is not a user action and must not clear the status line"
+        );
+    }
+
+    /// Clears the message by hand between the two drags, so the latch is
+    /// the only thing that can be keeping the second one quiet.
+    #[test]
+    fn a_second_swallowed_drag_does_not_set_the_hint_again() {
+        let mut a = app(&["foo", "bar"]);
+        on_input(&mut a, mouse(MouseEventKind::Drag(MouseButton::Left), 5, 6));
+        assert!(a.status_message.is_some());
+        assert!(a.drag_hint_shown);
+
+        a.status_message = None;
+        on_input(&mut a, mouse(MouseEventKind::Drag(MouseButton::Left), 6, 6));
+        assert!(a.status_message.is_none());
+    }
+
     #[test]
     fn o_requests_the_editor_from_the_list() {
         let mut a = app(&["foo"]);
@@ -1080,6 +1174,7 @@ mod tests {
             ahead: 0,
             behind: 0,
             changed: 0,
+            changes: Default::default(),
             present: true,
             timed_out: false,
             fetched: false,

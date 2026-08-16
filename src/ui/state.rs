@@ -254,6 +254,7 @@ mod tests {
             ahead: 0,
             behind: 0,
             changed: 0,
+            changes: Default::default(),
             present: true,
             timed_out: false,
             fetched: false,

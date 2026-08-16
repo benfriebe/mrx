@@ -240,6 +240,11 @@ pub struct App {
     auto_update_total: usize,
     auto_update_done: usize,
     auto_update_ok: usize,
+    /// Repos this cycle found behind but never targeted, because
+    /// [`poll::can_fast_forward`] rejected them (dirty, diverged, no
+    /// upstream). They are the common case of "left alone" and the merge
+    /// counters never see them, so the summary adds them in separately.
+    auto_update_skipped: usize,
     /// Repos an auto-update pass actually fast-forwarded, so the run loop
     /// can re-probe just those once the pass finishes and pick up their new
     /// ahead/behind and branch state.
@@ -456,6 +461,7 @@ impl App {
             auto_update_total: 0,
             auto_update_done: 0,
             auto_update_ok: 0,
+            auto_update_skipped: 0,
             auto_update_reprobe_targets: None,
         }
     }
@@ -488,6 +494,13 @@ impl App {
 
         self.selected = self.indices_matching(|n| session.selected.iter().any(|s| s == n));
 
+        // A restart is not evidence that a fetch the last one saw never
+        // happened, and [`fetch_head_moved`](Self::fetch_head_moved) cannot
+        // work it out again: the first probe of a process has nothing to
+        // compare its `FETCH_HEAD` against, so an untouched repo would read
+        // as never fetched and its behind count would go back to withheld.
+        self.fetched_repos = self.indices_matching(|n| session.fetched.iter().any(|f| f == n));
+
         if let Some(pos) = session
             .cursor
             .as_deref()
@@ -513,15 +526,28 @@ impl App {
         self.run_id
     }
 
-    /// Begin a named run over `targets`: bumps the run id and resets the
-    /// live counters the header reads, so the caller only has to plan and
-    /// spawn the operations themselves.
+    /// Begin a named run over `targets`: bumps the run id, resets the live
+    /// counters the header reads, and drops each target's previous result,
+    /// so the caller only has to plan and spawn the operations themselves.
+    ///
+    /// A target carrying the last run's result reads as already reported in,
+    /// which [`cancel_counts`](Self::cancel_counts) would then count as
+    /// neither queued nor finishing. Only the targets are cleared: a row this
+    /// run is not acting on keeps its outcome until
+    /// [`expire_results`](Self::expire_results) retires it, which is the one
+    /// thing that decides when a result has stopped saying anything.
     pub fn begin_named_run(&mut self, action: String, targets: Vec<usize>) -> u64 {
         let run_id = self.begin_run();
         self.run_action = Some(action);
         self.run_total = targets.len();
         self.run_completed = 0;
         self.run_failed = 0;
+        for &index in &targets {
+            if let Some(slot) = self.run_results.get_mut(index) {
+                *slot = None;
+            }
+            self.result_at.remove(&index);
+        }
         self.run_targets = targets;
         run_id
     }
@@ -1162,24 +1188,49 @@ impl App {
         // succeeded in this cycle; a repo whose fetch failed keeps whatever
         // stale ahead/behind it already had and must not be trusted for a
         // merge on the strength of it.
-        let targets: Vec<usize> = self
-            .probes
-            .iter()
-            .enumerate()
-            .filter_map(|(i, p)| {
-                p.as_ref()
-                    .is_some_and(|s| poll::can_fast_forward(s) && s.fetched)
-                    .then_some(i)
-            })
-            .collect();
+        //
+        // Everything this cycle found behind is either a target or a skip,
+        // split on `can_fast_forward` itself so the two can't drift apart.
+        // A skip never reaches the merge, so this is the only place it can
+        // be counted for the summary.
+        let mut targets: Vec<usize> = Vec::new();
+        let mut skipped = 0usize;
+        for (i, probe) in self.probes.iter().enumerate() {
+            let Some(s) = probe.as_ref() else { continue };
+            if !s.fetched || s.behind == 0 {
+                continue;
+            }
+            if poll::can_fast_forward(s) {
+                targets.push(i);
+            } else {
+                skipped += 1;
+            }
+        }
         if targets.is_empty() {
+            // Nothing merged still leaves something to say when repos were
+            // skipped; a cycle that found nothing behind stays quiet. No
+            // counters are set either way, so nothing looks in flight.
+            if skipped > 0 {
+                self.status_message = Some(Self::auto_update_summary(0, skipped));
+            }
             return;
         }
         self.auto_update_generation += 1;
         self.auto_update_total = targets.len();
         self.auto_update_done = 0;
         self.auto_update_ok = 0;
+        self.auto_update_skipped = skipped;
         self.auto_update_requested = Some(targets);
+    }
+
+    /// The one-line summary, shared by the two paths that can produce it:
+    /// a finished merge pass, and a cycle that never had a target to merge.
+    fn auto_update_summary(fast_forwarded: usize, left_alone: usize) -> String {
+        if left_alone == 0 {
+            format!("auto-update: fast-forwarded {fast_forwarded}")
+        } else {
+            format!("auto-update: fast-forwarded {fast_forwarded}, {left_alone} left alone")
+        }
     }
 
     /// The generation the current in-flight auto-update cycle was tagged
@@ -1201,8 +1252,9 @@ impl App {
     /// result from an old cycle must not corrupt a new one's counters).
     /// Once every targeted repo has reported in, leaves an honest one-line
     /// summary in the status bar: repos a fast-forward could not touch are
-    /// reported, not fixed (section 02), and are simply left out of the
-    /// count rather than named individually here.
+    /// reported, not fixed (section 02), counted rather than named. That
+    /// count spans both the repos that failed here and the ones
+    /// [`maybe_complete_poll`](Self::maybe_complete_poll) never targeted.
     pub fn on_auto_update_result(&mut self, result: AutoUpdateResult) {
         if result.generation != self.auto_update_generation {
             return;
@@ -1222,18 +1274,13 @@ impl App {
         // Guarded rather than a plain `-`: an overlapping cycle that still
         // slipped through the generation check would otherwise underflow
         // here, and a panic in this path takes the terminal down with it.
-        let left_alone = self.auto_update_total.saturating_sub(self.auto_update_ok);
-        self.status_message = Some(if left_alone == 0 {
-            format!("auto-update: fast-forwarded {}", self.auto_update_ok)
-        } else {
-            format!(
-                "auto-update: fast-forwarded {}, {left_alone} left alone",
-                self.auto_update_ok
-            )
-        });
+        let left_alone =
+            self.auto_update_total.saturating_sub(self.auto_update_ok) + self.auto_update_skipped;
+        self.status_message = Some(Self::auto_update_summary(self.auto_update_ok, left_alone));
         self.auto_update_total = 0;
         self.auto_update_done = 0;
         self.auto_update_ok = 0;
+        self.auto_update_skipped = 0;
     }
 
     /// Set once an auto-update pass finishes with at least one repo it
@@ -1539,9 +1586,29 @@ impl App {
     /// Move the cursor row's detail scroll by `delta` lines, floored at 0.
     /// The actual upper bound depends on the open step's length, which
     /// render.rs clamps to when it draws.
+    ///
+    /// The first scroll of a row measures from what is on screen, not from
+    /// line 0: an unscrolled transcript is showing its tail, and a key that
+    /// jumped to the top of a 4000-line log instead of a half page up from
+    /// there would be answering a question nobody asked.
     pub fn detail_scroll_by(&mut self, delta: isize) {
-        let entry = self.detail_scroll.entry(self.cursor).or_insert(0);
-        *entry = (*entry as isize + delta).max(0) as usize;
+        let from = match self.detail_scroll.get(&self.cursor) {
+            Some(&scroll) => scroll,
+            None => self.detail_scroll_on_screen(),
+        };
+        self.detail_scroll
+            .insert(self.cursor, (from as isize + delta).max(0) as usize);
+    }
+
+    /// Where [`detail_view_scroll`](Self::detail_view_scroll) has the cursor
+    /// row as of the last frame, so the stored offset and the drawn one
+    /// cannot start from different places. Resolved against the last known
+    /// terminal height rather than the exact viewport, the same
+    /// approximation [`half_page`](Self::half_page) makes.
+    fn detail_scroll_on_screen(&self) -> usize {
+        let total = self.transcript_lines().map_or(0, |lines| lines.len());
+        let height = super::render::detail_content_height(self.terminal_height, false);
+        self.detail_view_scroll(total, height)
     }
 
     pub fn detail_scroll_down(&mut self) {
@@ -1583,9 +1650,17 @@ impl App {
         self.status_message = Some(detail::copy_or_save(&text, repo_name, &step.label));
     }
 
+    /// `m`: hand the mouse to the terminal, or take it back. Says which
+    /// state it landed in: with capture off the only other evidence is that
+    /// clicking and scrolling quietly stop doing anything.
     pub fn toggle_mouse_capture(&mut self) {
         self.mouse_captured = !self.mouse_captured;
         self.mouse_capture_dirty = true;
+        self.status_message = Some(if self.mouse_captured {
+            "mouse capture on".into()
+        } else {
+            "mouse capture off, press m to take it back".into()
+        });
     }
 
     /// Set by `m`; consumed by the run loop, the only thing that can
@@ -1677,18 +1752,23 @@ impl App {
 
     /// Branch and working-tree text for a row, resolved once so `render.rs`
     /// only has to lay strings out. `spinner` is true while the row's probe
-    /// is still in flight and there's nothing to show yet.
+    /// is in flight, whether or not it already has a result to show: a
+    /// re-probe is as much a probe as the first one, and a row that reports
+    /// no spinner for it looks like nothing is happening. The last known
+    /// text is reported alongside it rather than blanked, leaving render.rs
+    /// to decide how much of the row the spinner takes over.
     pub fn probe_display(&self, idx: usize) -> ProbeDisplay {
+        let spinner = self.probing.contains(&idx);
         match self.probes.get(idx).and_then(|p| p.as_ref()) {
             Some(state) => ProbeDisplay {
                 branch: probe::branch_text(state),
                 state: probe::dirty_text(state, self.fetched_repos.contains(&idx)),
-                spinner: false,
+                spinner,
             },
             None => ProbeDisplay {
                 branch: String::new(),
                 state: String::new(),
-                spinner: self.probing.contains(&idx),
+                spinner,
             },
         }
     }
@@ -1861,8 +1941,13 @@ impl App {
         }
     }
 
+    /// `/`: start a new search, dropping whatever a previous one committed.
+    /// Esc in the list is a no-op by design, so `/` is the only way back to
+    /// the full list once Enter has kept a filter.
     pub fn start_filter(&mut self) {
         self.filtering = true;
+        self.filter.clear();
+        self.clamp_cursor_to_visible();
     }
 
     pub fn filter_push(&mut self, c: char) {
@@ -2201,6 +2286,19 @@ mod tests {
     }
 
     #[test]
+    fn start_filter_begins_a_fresh_search_rather_than_resuming_the_committed_one() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        a.filtering = true;
+        a.filter_push('b');
+        a.commit_filter();
+
+        a.start_filter();
+        assert!(a.filtering);
+        assert_eq!(a.filter, "");
+        assert_eq!(a.visible_indices().len(), 3);
+    }
+
+    #[test]
     fn typing_a_filter_clamps_the_cursor_onto_a_visible_row() {
         let mut a = app(&["foo", "bar", "baz"]);
         a.cursor = 0; // "foo"
@@ -2218,6 +2316,7 @@ mod tests {
             ahead: 0,
             behind: 0,
             changed: 0,
+            changes: Default::default(),
             present: true,
             timed_out: false,
             fetched: false,
@@ -2297,6 +2396,34 @@ mod tests {
         assert!(a.probe_display(0).state.contains("↓3"));
     }
 
+    /// A fetch mrx watched happen does not stop having happened when the
+    /// app is restarted, so the `↓` it settled has to come back with it:
+    /// otherwise a relaunch says nobody has asked when somebody has.
+    #[test]
+    fn a_fetch_seen_before_a_restart_still_settles_the_behind_count_after_it() {
+        let stamp = SystemTime::now();
+        let mut before = app(&["foo"]);
+        let generation = before.begin_probe(&[0]);
+        before.on_probe(
+            generation,
+            behind_by(0, 1, Some(stamp - Duration::from_secs(60))),
+        );
+        let generation = before.begin_probe(&[0]);
+        before.on_probe(generation, behind_by(0, 1, Some(stamp)));
+        assert!(before.probe_display(0).state.contains("↓1"));
+
+        let mut after = app(&["foo"]);
+        after.restore_session(&Session::snapshot(&before));
+        let generation = after.begin_probe(&[0]);
+        after.on_probe(generation, behind_by(0, 1, Some(stamp)));
+
+        assert!(
+            after.probe_display(0).state.contains("↓1"),
+            "an unchanged FETCH_HEAD after a restart is the same fetch, got {:?}",
+            after.probe_display(0).state
+        );
+    }
+
     #[test]
     fn an_unchanged_fetch_head_leaves_the_behind_count_unknown() {
         let mut a = app(&["foo"]);
@@ -2339,6 +2466,22 @@ mod tests {
         let mut a = app(&["foo"]);
         a.begin_probe(&[0]);
         assert!(a.probe_display(0).spinner);
+    }
+
+    #[test]
+    fn a_row_being_re_probed_shows_a_spinner_and_still_reports_what_it_knows() {
+        let mut a = app(&["foo"]);
+        let generation = a.begin_probe(&[0]);
+        a.on_probe(generation, probed(0, "main"));
+
+        a.begin_probe(&[0]);
+        let display = a.probe_display(0);
+        assert!(display.spinner, "a re-probe is still a probe in flight");
+        assert_eq!(display.branch, "main");
+        assert_eq!(
+            display.state, "clean",
+            "the last known state stays readable while the new one is fetched"
+        );
     }
 
     #[test]
@@ -2915,6 +3058,16 @@ mod tests {
         assert!(!a.mouse_captured);
         assert!(a.take_mouse_capture_dirty());
         assert!(!a.take_mouse_capture_dirty(), "only taken once");
+        assert_eq!(
+            a.status_message.as_deref(),
+            Some("mouse capture off, press m to take it back"),
+            "the only other sign capture is off is that the mouse stops working"
+        );
+
+        a.toggle_mouse_capture();
+        assert!(a.mouse_captured);
+        assert!(a.take_mouse_capture_dirty());
+        assert_eq!(a.status_message.as_deref(), Some("mouse capture on"));
     }
 
     #[test]
@@ -3003,6 +3156,47 @@ mod tests {
         let mut a = app(&["foo"]);
         a.detail_scroll_up();
         assert_eq!(a.detail_scroll[&0], 0);
+    }
+
+    /// A finished run whose output is far longer than any viewport, so the
+    /// tail the detail view opens at is nowhere near line 0.
+    fn ran_with_long_output(a: &mut App, lines: usize) {
+        let run_id = a.begin_named_run("update".into(), vec![0]);
+        a.on_task(
+            run_id,
+            TaskEvent::Finished {
+                index: 0,
+                steps: vec![StepResult {
+                    label: "update".into(),
+                    shape: summarize::Shape::Generic,
+                    stdout: (1..=lines).map(|i| format!("line {i}\n")).collect(),
+                    stderr: String::new(),
+                    code: 0,
+                }],
+                exit_code: 0,
+            },
+        );
+    }
+
+    #[test]
+    fn the_first_scroll_of_a_long_transcript_moves_from_the_tail_not_from_the_top() {
+        let mut a = app(&["foo"]);
+        a.terminal_height = 30;
+        ran_with_long_output(&mut a, 400);
+        a.detail_open = true;
+
+        let total = a.transcript_lines().unwrap().len();
+        let height = super::super::render::detail_content_height(a.terminal_height, false);
+        let tail = a.detail_view_scroll(total, height);
+        assert!(tail > a.half_page(), "the tail must be a long way down");
+
+        a.detail_scroll_up();
+
+        assert_eq!(
+            a.detail_view_scroll(total, height),
+            tail - a.half_page(),
+            "one half page up from the tail, not from line 0"
+        );
     }
 
     #[test]
@@ -3253,6 +3447,40 @@ mod tests {
         assert!(!a.take_cancel_requested(), "only taken once");
     }
 
+    /// The finished result of a run is what a still-queued target of the
+    /// next one carries until that one reaches it, so the count has to be
+    /// taken against this run's results rather than whatever is left over.
+    #[test]
+    fn cancelling_the_second_run_of_a_session_still_counts_its_queued_targets() {
+        let mut a = app(&["a", "b", "c"]);
+        let first = a.begin_named_run("update".into(), vec![0, 1, 2]);
+        for index in 0..3 {
+            a.on_task(
+                first,
+                TaskEvent::Finished {
+                    index,
+                    steps: vec![StepResult {
+                        label: "update".into(),
+                        shape: summarize::Shape::Generic,
+                        stdout: "Already up to date.\n".into(),
+                        stderr: String::new(),
+                        code: 0,
+                    }],
+                    exit_code: 0,
+                },
+            );
+        }
+
+        let second = a.begin_named_run("update".into(), vec![0, 1, 2]);
+        a.on_task(second, TaskEvent::Started { index: 0 });
+
+        a.request_cancel();
+        assert_eq!(
+            a.status_message.as_deref(),
+            Some("cancelled, 2 queued skipped, 1 still finishing")
+        );
+    }
+
     #[test]
     fn cancel_is_a_no_op_when_nothing_is_running() {
         let mut a = app(&["foo"]);
@@ -3359,6 +3587,7 @@ mod tests {
             ahead: 0,
             behind: 2,
             changed: 0,
+            changes: Default::default(),
             present: true,
             timed_out: false,
             fetched: true,
@@ -3403,6 +3632,7 @@ mod tests {
                     ahead: 0,
                     behind: 2,
                     changed: 0,
+                    changes: Default::default(),
                     present: true,
                     timed_out: false,
                     fetched: true,
@@ -3483,6 +3713,7 @@ mod tests {
                 ahead: 0,
                 behind: 2,
                 changed: 0,
+                changes: Default::default(),
                 present: true,
                 timed_out: false,
                 fetched: false,
@@ -3563,6 +3794,105 @@ mod tests {
             a.take_auto_update_reprobe_targets(),
             Some(vec![auto_targets[0]])
         );
+    }
+
+    /// The common shape of "left alone": a repo that came back behind and
+    /// dirty is never eligible in the first place, so it never reaches the
+    /// merge and never lands in the merge-time count. It still has to appear
+    /// in the summary, or a skipped repo reads exactly like one with nothing
+    /// to do.
+    #[test]
+    fn a_repo_skipped_at_eligibility_time_is_counted_as_left_alone() {
+        let mut a = app(&["clean-behind", "dirty-behind"]);
+        a.poll_enabled = true;
+        a.auto_update = true;
+        a.on_poll_due();
+        let targets = a.take_poll_requested().expect("poll started");
+        let generation = a.probe_generation;
+
+        for &i in &targets {
+            let mut s = probed(i, "main");
+            s.upstream = Some("origin/main".into());
+            s.behind = 2;
+            s.fetched = true;
+            s.changed = usize::from(i == 1); // the second repo is dirty
+            a.on_probe(generation, s);
+        }
+
+        let auto_targets = a
+            .take_auto_update_requested()
+            .expect("the clean repo is eligible");
+        assert_eq!(auto_targets, vec![0], "the dirty repo is never a target");
+        let cycle = a.auto_update_generation();
+
+        a.on_auto_update_result(AutoUpdateResult {
+            index: auto_targets[0],
+            generation: cycle,
+            outcome: AutoUpdateOutcome::FastForwarded,
+        });
+        assert_eq!(
+            a.status_message.as_deref(),
+            Some("auto-update: fast-forwarded 1, 1 left alone")
+        );
+    }
+
+    /// A cycle that could merge nothing at all still has something honest to
+    /// say, so the "no targets" path reports rather than going quiet, and
+    /// leaves no phantom in-flight cycle behind it.
+    #[test]
+    fn a_cycle_that_merges_nothing_still_reports_what_it_left_alone() {
+        let mut a = app(&["dirty-behind", "diverged"]);
+        a.poll_enabled = true;
+        a.auto_update = true;
+        a.on_poll_due();
+        let targets = a.take_poll_requested().expect("poll started");
+        let generation = a.probe_generation;
+
+        for &i in &targets {
+            let mut s = probed(i, "main");
+            s.upstream = Some("origin/main".into());
+            s.behind = 2;
+            s.fetched = true;
+            if i == 0 {
+                s.changed = 1;
+            } else {
+                s.ahead = 1;
+            }
+            a.on_probe(generation, s);
+        }
+
+        assert!(
+            a.take_auto_update_requested().is_none(),
+            "nothing was eligible to merge"
+        );
+        assert_eq!(
+            a.status_message.as_deref(),
+            Some("auto-update: fast-forwarded 0, 2 left alone")
+        );
+        assert!(
+            !a.auto_update_in_flight(),
+            "a cycle that spawned no merges must not look like one still running"
+        );
+    }
+
+    /// The other half of that: an idle tick, where nothing came back behind,
+    /// must stay silent rather than announce itself every poll interval.
+    #[test]
+    fn a_cycle_that_found_nothing_behind_says_nothing() {
+        let mut a = app(&["up-to-date"]);
+        a.poll_enabled = true;
+        a.auto_update = true;
+        a.on_poll_due();
+        let targets = a.take_poll_requested().expect("poll started");
+        let generation = a.probe_generation;
+
+        let mut s = probed(targets[0], "main");
+        s.upstream = Some("origin/main".into());
+        s.fetched = true;
+        a.on_probe(generation, s);
+
+        assert!(a.take_auto_update_requested().is_none());
+        assert!(a.status_message.is_none(), "an idle tick stays quiet");
     }
 
     /// A result tagged with an older auto-update generation belongs to a

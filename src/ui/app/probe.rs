@@ -19,6 +19,26 @@ use tokio::sync::{mpsc, Semaphore};
 /// table indefinitely (section 11, "Probe cost on a cold cache").
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// What the buckets in a working-tree summary count, in the order they are
+/// reported. Deliberately the same three `crate::summarize` uses for an `s`
+/// run, so the STATE column and RESULT describe one repo the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Change {
+    Modified,
+    Untracked,
+    Deleted,
+}
+
+/// The working-tree entries of [`RepoState::changed`] split by kind. Kinds
+/// git reports that fit none of the buckets (unmerged, ignored) are in the
+/// total and in none of these.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Changes {
+    pub modified: usize,
+    pub untracked: usize,
+    pub deleted: usize,
+}
+
 /// One repo's branch, upstream tracking, and working-tree state as of the
 /// last probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +52,10 @@ pub struct RepoState {
     pub upstream: Option<String>,
     pub ahead: u32,
     pub behind: u32,
+    /// Every working-tree entry git reported, whatever kind; also the
+    /// dirty/clean predicate `can_fast_forward` and `dirty_count` read.
     pub changed: usize,
+    pub changes: Changes,
     pub present: bool,
     /// The probe hit its per-repo timeout before `git status` returned;
     /// every other field is a default and should not be trusted.
@@ -60,6 +83,7 @@ impl RepoState {
             ahead: 0,
             behind: 0,
             changed: 0,
+            changes: Changes::default(),
             present: false,
             timed_out: false,
             fetched: false,
@@ -183,9 +207,38 @@ fn parse_porcelain_v2(text: &str) -> RepoState {
                 .unwrap_or(0);
         } else if !line.starts_with('#') && !line.is_empty() {
             state.changed += 1;
+            match change_kind(line) {
+                Some(Change::Modified) => state.changes.modified += 1,
+                Some(Change::Untracked) => state.changes.untracked += 1,
+                Some(Change::Deleted) => state.changes.deleted += 1,
+                None => {}
+            }
         }
     }
     state
+}
+
+/// Which bucket a porcelain v2 entry falls in. `?` is untracked outright;
+/// `1` (ordinary) and `2` (renamed or copied) carry an `XY` field, staged
+/// then unstaged, read here the way `crate::summarize` reads short format:
+/// a line counts once, under the first column that says anything. Unmerged
+/// (`u`) and ignored (`!`) entries have no bucket and are left to the total.
+fn change_kind(line: &str) -> Option<Change> {
+    let mut fields = line.split(' ');
+    match fields.next()? {
+        "?" => Some(Change::Untracked),
+        "1" | "2" => {
+            let mut xy = fields.next()?.chars();
+            let (staged, unstaged) = (xy.next()?, xy.next()?);
+            [staged, unstaged].into_iter().find_map(|c| match c {
+                'M' | 'R' | 'C' => Some(Change::Modified),
+                'A' => Some(Change::Untracked),
+                'D' => Some(Change::Deleted),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Branch text for a row: `-` when not checked out, `?` on a timeout,
@@ -200,19 +253,34 @@ pub fn branch_text(state: &RepoState) -> String {
     state.branch.clone().unwrap_or_else(|| "(detached)".into())
 }
 
-/// The working tree alone: `clean` or a modified count, with no ahead/behind
-/// or timeout/absent handling layered on top. The building block both
-/// [`dirty_text`] and the detail sidebar's briefer column share.
+/// The working tree alone: `clean`, or the same bucketed phrasing an `s` run
+/// puts in RESULT (`2 modified, 1 untracked`), so the two never describe one
+/// repo differently. A repo whose only changes are unmerged or ignored has
+/// nothing to bucket and falls back to the bare total. No ahead/behind or
+/// timeout/absent handling is layered on top: this is the building block
+/// both [`dirty_text`] and the detail sidebar's briefer column share.
 fn working_tree_text(state: &RepoState) -> String {
     if state.changed == 0 {
-        "clean".to_string()
+        return "clean".to_string();
+    }
+    let parts: Vec<String> = [
+        (state.changes.modified, "modified"),
+        (state.changes.untracked, "untracked"),
+        (state.changes.deleted, "deleted"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, label)| format!("{count} {label}"))
+    .collect();
+    if parts.is_empty() {
+        format!("{} changed", state.changed)
     } else {
-        format!("{} modified", state.changed)
+        parts.join(", ")
     }
 }
 
-/// Working-tree summary: clean or a modified count, plus ahead/behind when
-/// there is an upstream to compare against. The behind count is withheld
+/// Working-tree summary: `working_tree_text` plus ahead/behind when there
+/// is an upstream to compare against. The behind count is withheld
 /// entirely until this specific repo has fetched: it compares against the
 /// local remote-tracking ref, so a stale one would read as "up to date"
 /// rather than "not asked recently", and a repo whose own fetch failed
@@ -366,6 +434,98 @@ mod tests {
         );
         let state = parse_porcelain_v2(text);
         assert_eq!(state.changed, 2);
+    }
+
+    /// A parsed fixture as a row would see it: the porcelain stream carries
+    /// neither `index` nor `present`.
+    fn checked_out(text: &str) -> RepoState {
+        RepoState {
+            present: true,
+            ..parse_porcelain_v2(text)
+        }
+    }
+
+    #[test]
+    fn an_untracked_file_is_not_called_modified() {
+        let state = checked_out("# branch.head main\n? new-file.txt\n");
+        assert_eq!(dirty_text_brief(&state), "1 untracked");
+    }
+
+    #[test]
+    fn an_edited_file_is_called_modified() {
+        let state = checked_out(concat!(
+            "# branch.head main\n",
+            "1 .M N... 100644 100644 100644 abc def src/main.rs\n",
+        ));
+        assert_eq!(dirty_text_brief(&state), "1 modified");
+    }
+
+    #[test]
+    fn mixed_kinds_are_named_rather_than_summed() {
+        let state = checked_out(concat!(
+            "# branch.head main\n",
+            "1 .M N... 100644 100644 100644 abc def src/main.rs\n",
+            "1 M. N... 100644 100644 100644 abc def Cargo.toml\n",
+            "? new-file.txt\n",
+        ));
+        assert_eq!(dirty_text_brief(&state), "2 modified, 1 untracked");
+    }
+
+    #[test]
+    fn a_deletion_and_a_rename_land_in_their_own_buckets() {
+        let state = checked_out(concat!(
+            "# branch.head main\n",
+            "1 .D N... 100644 100644 000000 abc def gone.txt\n",
+            "2 R. N... 100644 100644 100644 abc def R100 new.txt\told.txt\n",
+        ));
+        assert_eq!(dirty_text_brief(&state), "1 modified, 1 deleted");
+    }
+
+    #[test]
+    fn a_file_staged_then_edited_again_counts_once() {
+        let state = checked_out(concat!(
+            "# branch.head main\n",
+            "1 MM N... 100644 100644 100644 abc def src/main.rs\n",
+        ));
+        assert_eq!(dirty_text_brief(&state), "1 modified");
+    }
+
+    /// The two forms of one real repo (a deletion, an edit, a rename, a
+    /// staged add and an untracked file), captured from git itself. The STATE
+    /// column reads the v2 form and an `s` run's RESULT reads the short one,
+    /// so the point of the fixture is that they still say the same sentence.
+    #[test]
+    fn the_state_column_and_an_s_run_phrase_one_repo_the_same_way() {
+        let porcelain_v2 = concat!(
+            "# branch.oid 256d2aa5\n",
+            "# branch.head main\n",
+            "1 .D N... 100644 100644 000000 61780798 61780798 gone.txt\n",
+            "1 .M N... 100644 100644 100644 78981922 78981922 keep.txt\n",
+            "2 R. N... 100644 100644 100644 f2ad6c76 f2ad6c76 R100 renamed.txt\told.txt\n",
+            "1 A. N... 000000 100644 100644 00000000 19d9cc85 staged.txt\n",
+            "? brand-new.txt\n",
+        );
+        let short = concat!(
+            "## main\n",
+            " D gone.txt\n",
+            " M keep.txt\n",
+            "R  old.txt -> renamed.txt\n",
+            "A  staged.txt\n",
+            "?? brand-new.txt\n",
+        );
+        assert_eq!(
+            dirty_text_brief(&checked_out(porcelain_v2)),
+            crate::summarize::summarize(crate::summarize::Shape::Status, short, "", 0),
+        );
+    }
+
+    #[test]
+    fn a_change_with_no_bucket_falls_back_to_a_bare_total() {
+        let state = checked_out(concat!(
+            "# branch.head main\n",
+            "u UU N... 100644 100644 100644 100644 abc def ghi conflict.txt\n",
+        ));
+        assert_eq!(dirty_text_brief(&state), "1 changed");
     }
 
     #[test]

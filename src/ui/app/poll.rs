@@ -221,6 +221,7 @@ mod tests {
             ahead,
             behind,
             changed,
+            changes: Default::default(),
             present,
             timed_out: false,
             fetched: false,

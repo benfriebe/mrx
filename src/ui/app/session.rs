@@ -2,7 +2,7 @@
 //! cursor, and the freshness poll's own settings, written on change and
 //! read at startup so reopening the app puts you back where you left off.
 //!
-//! No serde: the shape is five scalars, a string list, and an optional
+//! No serde: the shape is five scalars, two string lists, and an optional
 //! number, and a hand-written reader and writer is smaller than the
 //! dependency would be. Three rules hold regardless of what is on disk: a
 //! name the current set no longer has is dropped silently, since a config
@@ -40,6 +40,13 @@ pub struct Session {
     pub filter: String,
     pub selected: Vec<String>,
     pub cursor: Option<String>,
+    /// Repos known to have fetched, by name. Kept across restarts because a
+    /// fetch is a fact about the repo rather than about the process that
+    /// watched it happen, and `FETCH_HEAD` alone cannot be re-derived: a new
+    /// process reads it for the first time and has nothing to compare it
+    /// against, so without this the behind count a previous session settled
+    /// would go back to reading as unknown.
+    pub fetched: Vec<String>,
     /// `Some` means the poll was on, at this interval; `None` means it was
     /// off. This one field is both the poll's setting and its on/off state,
     /// matching the plan's own on-disk shape (a bare `"poll": 300` rather
@@ -50,7 +57,9 @@ pub struct Session {
 
 impl Session {
     /// Snapshot the parts of `app` worth remembering across a restart.
-    fn snapshot(app: &App) -> Self {
+    /// Visible to the rest of `app` so a restart can be exercised without
+    /// going near the real session file.
+    pub(super) fn snapshot(app: &App) -> Self {
         Self {
             set: (app.set_label != "(unnamed)").then(|| app.set_label.clone()),
             filter: app.filter.clone(),
@@ -60,6 +69,11 @@ impl Session {
                 .filter_map(|&i| app.repos.get(i).map(|r| r.name.clone()))
                 .collect(),
             cursor: app.repos.get(app.cursor).map(|r| r.name.clone()),
+            fetched: app
+                .fetched_repos
+                .iter()
+                .filter_map(|&i| app.repos.get(i).map(|r| r.name.clone()))
+                .collect(),
             poll_interval: app.poll_enabled.then_some(app.poll_interval),
             auto_update: app.auto_update,
         }
@@ -97,6 +111,14 @@ fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
                     .collect()
             }
             "cursor" => session.cursor = value.into_string(),
+            "fetched" => {
+                session.fetched = value
+                    .into_array()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(json::Value::into_string)
+                    .collect()
+            }
             // A value beyond `MAX_POLL_INTERVAL` is treated as if the field
             // were absent (poll off) rather than clamped down to the max: a
             // hand-edited or corrupted `ui.json` must degrade gracefully,
@@ -150,6 +172,13 @@ fn to_json(s: &Session) -> String {
     if let Some(cursor) = &s.cursor {
         out.push_str(&format!("  \"cursor\": {},\n", json::string(cursor)));
     }
+    let fetched = s
+        .fetched
+        .iter()
+        .map(|n| json::string(n))
+        .collect::<Vec<_>>()
+        .join(", ");
+    out.push_str(&format!("  \"fetched\": [{fetched}],\n"));
     if let Some(interval) = s.poll_interval {
         out.push_str(&format!("  \"poll\": {},\n", interval.as_secs()));
     }
@@ -449,6 +478,22 @@ mod tests {
             assert_eq!(loaded.cursor, Some("mr-yum".into()));
             assert_eq!(loaded.poll_interval, Some(Duration::from_secs(300)));
             assert!(loaded.auto_update);
+        });
+    }
+
+    /// A fetch is a fact about the repo, not about the process that saw it,
+    /// so the behind count it settled has to survive a restart.
+    #[test]
+    fn a_repo_known_to_have_fetched_survives_a_save_and_a_load() {
+        with_state_home(|_| {
+            let mut app = app_with(&["alpha", "beta"]);
+            app.fetched_repos = BTreeSet::from([1]);
+            save(&app).unwrap();
+
+            let mut restarted = app_with(&["alpha", "beta"]);
+            restarted.restore_session(&load());
+
+            assert_eq!(restarted.fetched_repos, BTreeSet::from([1]));
         });
     }
 

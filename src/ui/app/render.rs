@@ -511,14 +511,17 @@ fn repo_line(
     let name_padding = name_col.saturating_sub(display_width(&name)) + COL_GAP;
 
     let probe = app.probe_display(idx);
-    let (branch_text, state_text) = if probe.spinner {
-        (spinner_frame(app.tick).to_string(), String::new())
+    // Only BRANCH gives its cell up to the spinner. A row being re-probed
+    // keeps the working-tree text it already had rather than going blank for
+    // the duration; a row probing for the first time has none to keep.
+    let branch_text = if probe.spinner {
+        spinner_frame(app.tick).to_string()
     } else {
-        (probe.branch, probe.state)
+        probe.branch
     };
     let branch = truncate(&branch_text, branch_col);
     let branch_padding = branch_col.saturating_sub(display_width(&branch)) + COL_GAP;
-    let state = truncate(&state_text, state_col);
+    let state = fit_state(&probe.state, state_col);
     let state_padding = state_col.saturating_sub(display_width(&state)) + COL_GAP;
 
     let result_text = app.result_text(idx);
@@ -538,6 +541,34 @@ fn repo_line(
         Span::raw(" ".repeat(state_padding)),
         Span::styled(result, result_style),
     ])
+}
+
+/// STATE's working-tree half and its trailing `↑n`/`↓n` counters, which
+/// [`super::probe::dirty_text`] appends after a gap. Splitting on the arrows
+/// is safe because nothing else the column can hold uses them.
+fn split_counters(text: &str) -> (&str, &str) {
+    match text.find(['↑', '↓']) {
+        Some(at) => {
+            let head = text[..at].trim_end();
+            (head, &text[head.len()..])
+        }
+        None => (text, ""),
+    }
+}
+
+/// STATE fitted to `max` cells with the ahead/behind counters kept, so the
+/// working-tree text absorbs the truncation instead. They sit at the end of
+/// the text and so are what a naive truncation drops first, but a missing
+/// `↓` is how the row says nothing has fetched this repo yet (the help
+/// overlay documents that), and dropping one silently makes the row lie.
+fn fit_state(text: &str, max: usize) -> String {
+    let (head, counters) = split_counters(text);
+    match max.checked_sub(display_width(counters)) {
+        // No room to keep the counters and still say anything about the
+        // working tree, so fall back to truncating the whole string.
+        None | Some(0) => truncate(text, max),
+        Some(head_max) => format!("{}{}", truncate(head, head_max), counters),
+    }
 }
 
 /// The result column's colour: green/red once a run has finished, yellow
@@ -578,7 +609,10 @@ fn sidebar_column_widths(app: &App, avail: usize) -> (usize, usize) {
 /// [`styled_two_column_line`] gives up. [`detail::sidebar_width`] caps it.
 pub(crate) fn sidebar_natural_width(app: &App) -> u16 {
     let columns = PREFIX_W + natural_name_width(app) + COL_GAP + natural_state_width(app);
+    // The header's own two columns need the same gap the rows use, or the
+    // title and the counts meet with nothing between them.
     let header = display_width(&header_title(app, true))
+        + COL_GAP
         + display_width(&app.header_right_text())
         + LEAD_IN.len();
     u16::try_from(columns.max(header)).unwrap_or(u16::MAX)
@@ -1037,6 +1071,7 @@ fn confirm_reason(pending: &PendingRun) -> String {
 mod tests {
     use super::*;
     use crate::config::Repo;
+    use crate::ui::app::probe;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -1169,6 +1204,161 @@ mod tests {
             .map(|byte| display_width(&haystack[..byte]))
     }
 
+    fn probed(branch: &str, changes: probe::Changes, ahead: u32) -> probe::RepoState {
+        probe::RepoState {
+            index: 0,
+            branch: Some(branch.into()),
+            upstream: Some(format!("origin/{branch}")),
+            ahead,
+            behind: 0,
+            changed: changes.modified + changes.untracked + changes.deleted,
+            changes,
+            present: true,
+            timed_out: false,
+            fetched: true,
+            fetch_head: None,
+        }
+    }
+
+    /// The row as it is drawn at `width`, at the same column widths `draw`
+    /// would hand it.
+    fn repo_line_at(a: &App, idx: usize, width: usize) -> Line<'static> {
+        let (name, branch, state, result) = column_widths(a, width - PREFIX_W);
+        repo_line(a, idx, name, branch, state, result)
+    }
+
+    fn row_at(a: &App, idx: usize, width: usize) -> String {
+        flatten(&repo_line_at(a, idx, width))
+    }
+
+    #[test]
+    fn a_re_probed_row_shows_a_spinner_without_losing_its_working_tree_text() {
+        let mut a = app(vec![repo("alpha")]);
+        a.probes[0] = Some(probed(
+            "main",
+            probe::Changes {
+                modified: 2,
+                untracked: 0,
+                deleted: 0,
+            },
+            0,
+        ));
+        a.probing.insert(0);
+
+        let (name, branch, state, result) = column_widths(&a, 155 - PREFIX_W);
+        let row = repo_line(&a, 0, name, branch, state, result);
+        assert_eq!(
+            row.spans[3].content.as_ref(),
+            spinner_frame(a.tick).to_string(),
+            "BRANCH should carry the spinner while the row is re-probing, got {:?}",
+            flatten(&row)
+        );
+        assert_eq!(
+            row.spans[5].content.as_ref(),
+            "2 modified",
+            "STATE should keep its working-tree text while re-probing, got {:?}",
+            flatten(&row)
+        );
+    }
+
+    /// The whole spinner contract in one pass, driven through the real probe
+    /// lifecycle rather than by planting `probing` and `probes` by hand:
+    /// state.rs decides the flag, render.rs decides which cell gives way.
+    #[test]
+    fn the_spinner_contract_holds_from_begin_probe_through_to_the_drawn_row() {
+        let mut a = app(vec![repo("alpha")]);
+        let changes = probe::Changes {
+            modified: 2,
+            untracked: 0,
+            deleted: 0,
+        };
+
+        let generation = a.begin_probe(&[0]);
+        a.on_probe(generation, probed("main", changes, 0));
+        let settled = repo_line_at(&a, 0, 155);
+        assert_eq!(settled.spans[3].content.as_ref(), "main");
+        assert_eq!(settled.spans[5].content.as_ref(), "2 modified");
+
+        let generation = a.begin_probe(&[0]);
+        let display = a.probe_display(0);
+        assert!(display.spinner, "a re-probe is a probe in flight");
+        assert_eq!(display.branch, "main", "state.rs still reports the branch");
+        assert_eq!(display.state, "2 modified");
+
+        let reprobing = repo_line_at(&a, 0, 155);
+        assert_eq!(
+            reprobing.spans[3].content.as_ref(),
+            spinner_frame(a.tick).to_string(),
+            "BRANCH takes the spinner, got {:?}",
+            flatten(&reprobing)
+        );
+        assert_eq!(
+            reprobing.spans[5].content.as_ref(),
+            "2 modified",
+            "STATE keeps the text state.rs handed it, got {:?}",
+            flatten(&reprobing)
+        );
+
+        a.on_probe(generation, probed("main", changes, 0));
+        let done = repo_line_at(&a, 0, 155);
+        assert_eq!(
+            done.spans[3].content.as_ref(),
+            "main",
+            "the branch comes back once the result lands"
+        );
+    }
+
+    #[test]
+    fn the_ahead_counter_survives_a_state_column_narrower_than_its_row() {
+        let mut a = app(vec![repo("alpha")]);
+        a.probes[0] = Some(probed(
+            "main",
+            probe::Changes {
+                modified: 12,
+                untracked: 34,
+                deleted: 1,
+            },
+            1,
+        ));
+
+        let row = row_at(&a, 0, 155);
+        assert!(
+            row.contains("↑1"),
+            "the ahead counter must not be the first thing truncation loses, got {row:?}"
+        );
+        assert!(
+            row.contains("12 modified"),
+            "the working-tree text is what gives up cells, got {row:?}"
+        );
+    }
+
+    /// Keeping the counters must not buy them room the column does not have:
+    /// at narrow widths the STATE cell still has to fit inside `state_col`,
+    /// or every column after it shifts right.
+    #[test]
+    fn a_row_with_counters_keeps_its_state_cell_inside_its_column() {
+        let mut a = app(vec![repo("alpha")]);
+        a.probes[0] = Some(probed(
+            "main",
+            probe::Changes {
+                modified: 12,
+                untracked: 34,
+                deleted: 1,
+            },
+            1,
+        ));
+
+        for width in 10..=200 {
+            let (name, branch, state_col, result) = column_widths(&a, width - PREFIX_W);
+            let row = repo_line(&a, 0, name, branch, state_col, result);
+            let cell = row.spans[5].content.as_ref();
+            assert!(
+                display_width(cell) <= state_col,
+                "width {width}: STATE cell {cell:?} overflows its {state_col} cells"
+            );
+        }
+    }
+
     #[test]
     fn every_column_label_starts_where_its_data_starts() {
         let mut a = app(vec![repo("bill-api"), repo("menu-api")]);
@@ -1179,6 +1369,7 @@ mod tests {
             ahead: 0,
             behind: 0,
             changed: 0,
+            changes: Default::default(),
             present: true,
             timed_out: false,
             fetched: true,
@@ -1313,7 +1504,8 @@ mod tests {
     }
 
     /// The counts are the half `styled_two_column_line` drops first, so the
-    /// sidebar has to ask for room for them even when the columns are narrow.
+    /// sidebar has to ask for room for them even when the columns are narrow,
+    /// and for the gap that keeps them from reading as part of the set name.
     #[test]
     fn the_sidebar_stays_wide_enough_for_its_own_header() {
         let mut a = app(vec![repo("ab")]);
@@ -1324,6 +1516,13 @@ mod tests {
             true,
         ));
         assert!(header.contains("1 repo"), "got {header:?}");
+        let (before_count, _) = header
+            .split_once("1 repo")
+            .unwrap_or_else(|| panic!("got {header:?}"));
+        assert!(
+            before_count.ends_with(' '),
+            "the set name and the count ran together: {header:?}"
+        );
     }
 
     #[test]

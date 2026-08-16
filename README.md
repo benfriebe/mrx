@@ -120,7 +120,8 @@ so `u` with nothing selected updates the lot; the header only counts a selection
 actually made, and says nothing when there isn't one.
 
 `/` starts an incremental filter on repo name; keep typing and the table narrows live.
-`Esc` drops the filter, `Enter` keeps it. Filtering narrows what's on screen but never
+`Esc` drops the filter, `Enter` keeps it, and `/` again starts over from the full list
+(which is how you drop a filter you've kept). Filtering narrows what's on screen but never
 touches the selection, so selecting some repos, then filtering, then selecting again
 adds to what was already picked.
 
@@ -230,7 +231,8 @@ moment either is on (`poll 5m`, `poll 5m · auto`), since a mode that touches
 working trees on a timer has no business being invisible. `Ctrl-A` refuses to
 turn on while the poll itself is off, since it has nothing to act on without one.
 
-The set, filter, selection, cursor, and both poll settings are written to
+The set, filter, selection, cursor, both poll settings, and which repos have
+been seen to fetch (so a `↓` count survives a restart) are written to
 `$XDG_STATE_HOME/mrx/ui.json` (`~/.local/state/mrx/ui.json` by default) as they
 change and restored the next time `mrx ui` opens, so reopening puts you back
 where you left off; a restored filter shows in the header with its match count
@@ -299,7 +301,7 @@ the body as `$1`.
 
 ### Environment
 
-Every action runs through `sh -c` with the repo as its working directory and:
+Every action runs through `sh -e -c` with the repo as its working directory and:
 
 ```
 MR_REPO      /Users/me/dev/api     # absolute path, also the cwd
