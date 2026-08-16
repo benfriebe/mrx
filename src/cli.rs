@@ -16,7 +16,7 @@ fn parse_jobs(s: &str) -> Result<usize, String> {
 #[derive(Parser)]
 #[command(
     name = "mrx",
-    about = "Multi Repo eXtreme — parallel multi-repo operations with TUI"
+    about = "Multi Repo eXtreme: parallel multi-repo operations with TUI"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -126,7 +126,7 @@ pub enum Command {
     Ls,
     /// List named repo sets
     Sets,
-    /// Open the resident app: browse a set, select repos, and run actions
+    /// Open ui mode: browse a set, select repos, and run actions
     /// without leaving the screen
     Ui,
     /// Any subcommand defined in .mrconfig (per-repo or [DEFAULT])
