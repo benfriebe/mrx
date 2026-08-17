@@ -4,6 +4,7 @@
 
 use crate::cli::Command;
 use crate::config::Repo;
+use crate::ui::widgets::truncate;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Where an action is defined.
@@ -19,6 +20,9 @@ pub enum Source {
     /// selection the next run will use, listed alongside the rest so `:`
     /// answers "what can I do from here". Never handed to the executor.
     Selection,
+    /// Not a runnable action either: choosing it opens the run-command
+    /// prompt, and whatever is typed there is what eventually runs.
+    Prompt,
 }
 
 /// One runnable action: its name, where it comes from, and how many repos in
@@ -96,9 +100,27 @@ pub fn command_for(name: &str) -> Command {
     }
 }
 
+/// How wide a [`body_label`] may be. Enough to recognise a command by, narrow
+/// enough to sit in the header and the confirmation prompt beside everything
+/// else those lines carry.
+const LABEL_WIDTH: usize = 40;
+
+/// A name for an ad-hoc run, which the header, the confirmation prompt and
+/// the row results all want and a typed body has none of: its first non-empty
+/// line, trimmed and truncated.
+pub fn body_label(body: &str) -> String {
+    let first = body
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    truncate(first, LABEL_WIDTH)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::widgets::display_width;
     use std::path::PathBuf;
 
     fn repo(name: &str, keys: &[(&str, &str)]) -> Repo {
@@ -174,6 +196,21 @@ mod tests {
         assert!(matches!(command_for("status"), Command::Status));
         assert!(matches!(command_for("fetch"), Command::Fetch));
         assert!(matches!(command_for("diff"), Command::Diff));
+    }
+
+    #[test]
+    fn a_body_is_labelled_by_its_first_non_empty_line_within_the_label_width() {
+        assert_eq!(body_label("git status"), "git status");
+
+        let long = body_label("git log --oneline --graph --decorate --all --since=yesterday");
+        assert!(display_width(&long) <= LABEL_WIDTH, "got {long:?}");
+        assert!(long.starts_with("git log"), "got {long:?}");
+
+        assert_eq!(
+            body_label("\n  npm ci  \nnpm test\n"),
+            "npm ci",
+            "the leading blank line is not the name of anything"
+        );
     }
 
     #[test]

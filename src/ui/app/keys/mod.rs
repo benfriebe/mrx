@@ -85,6 +85,10 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
         on_palette_key(app, key);
         return false;
     }
+    if app.run_command_open {
+        on_run_command_key(app, key);
+        return false;
+    }
     if app.filtering {
         on_filter_key(app, key);
         return false;
@@ -134,7 +138,8 @@ fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('i') => app.invert_selection(),
         KeyCode::Char('!') => app.request_shell(),
         KeyCode::Char('/') => app.start_filter(),
-        KeyCode::Char('r') => app.probe_requested = true,
+        KeyCode::Char('r') => app.open_run_command(),
+        KeyCode::Char('R') => app.probe_requested = true,
         KeyCode::Char('u') => app.request_run("update"),
         KeyCode::Char('s') => app.request_run("status"),
         KeyCode::Char('f') => app.request_run("fetch"),
@@ -204,6 +209,25 @@ fn on_palette_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Keys while the run-command prompt is open. The body is multi-line, so
+/// Enter is a newline and Ctrl-D is what runs it; everything else is text.
+fn on_run_command_key(app: &mut App, key: KeyEvent) {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        // Returns whatever the chord was, for the reason `on_list_key` gives.
+        if key.code == KeyCode::Char('d') {
+            app.run_command_confirm();
+        }
+        return;
+    }
+    match key.code {
+        KeyCode::Esc => app.close_run_command(),
+        KeyCode::Enter => app.run_command_push('\n'),
+        KeyCode::Backspace => app.run_command_backspace(),
+        KeyCode::Char(c) => app.run_command_push(c),
+        _ => {}
+    }
+}
+
 /// Keys while the dirty-selection confirmation is up: a modal that swallows
 /// everything but yes/no.
 fn on_confirm_key(app: &mut App, key: KeyEvent) -> bool {
@@ -264,7 +288,7 @@ fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::testkit::{app, ctrl, press};
+    use super::testkit::{app, ctrl, press, probed};
     use super::*;
 
     #[test]
@@ -338,32 +362,105 @@ mod tests {
         assert_eq!(a.cursor, 1);
     }
 
+    /// The two halves of one swap: `r` now types a command and `R` is what
+    /// re-probes, so pinning either alone would let them drift back together.
     #[test]
-    fn r_requests_a_reprobe() {
+    fn r_opens_the_run_command_prompt_and_shift_r_requests_a_reprobe() {
         let mut a = app(&["foo"]);
         assert!(!on_input(&mut a, press(KeyCode::Char('r'))));
+        assert!(a.run_command_open);
+        assert!(!a.probe_requested);
+
+        a.close_run_command();
+        assert!(!on_input(&mut a, press(KeyCode::Char('R'))));
         assert!(a.probe_requested);
+    }
+
+    #[test]
+    fn typed_keys_enter_and_backspace_build_a_multi_line_body() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, press(KeyCode::Char('r')));
+        for c in "ls".chars() {
+            on_input(&mut a, press(KeyCode::Char(c)));
+        }
+        on_input(&mut a, press(KeyCode::Enter));
+        for c in "pwdx".chars() {
+            on_input(&mut a, press(KeyCode::Char(c)));
+        }
+        on_input(&mut a, press(KeyCode::Backspace));
+
+        assert_eq!(a.run_command_input, "ls\npwd");
+        assert!(a.run_command_open, "enter is a newline, not a confirm");
+    }
+
+    #[test]
+    fn a_list_shortcut_letter_is_literal_text_in_the_run_command_prompt() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, press(KeyCode::Char('r')));
+        assert!(!on_input(&mut a, press(KeyCode::Char('q'))));
+        on_input(&mut a, press(KeyCode::Char('u')));
+        assert_eq!(a.run_command_input, "qu");
+        assert!(a.run_requested.is_none() && a.pending_run.is_none());
+    }
+
+    #[test]
+    fn an_unmatched_ctrl_chord_is_not_typed_into_the_run_command_prompt() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, press(KeyCode::Char('r')));
+        on_input(&mut a, ctrl(KeyCode::Char('u')));
+        assert!(a.run_command_input.is_empty());
+        assert!(a.run_command_open);
+    }
+
+    #[test]
+    fn ctrl_d_runs_the_typed_body_over_a_probed_clean_selection() {
+        let mut a = app(&["foo"]);
+        a.on_probe(0, probed(0, "main"));
+        on_input(&mut a, press(KeyCode::Char('r')));
+        for c in "git fetch".chars() {
+            on_input(&mut a, press(KeyCode::Char(c)));
+        }
+        on_input(&mut a, ctrl(KeyCode::Char('d')));
+
+        assert!(!a.run_command_open);
+        assert_eq!(a.run_requested.unwrap().body.as_deref(), Some("git fetch"));
+    }
+
+    #[test]
+    fn ctrl_d_on_a_dirty_selection_confirms_first_and_keeps_the_body() {
+        let mut a = app(&["foo"]);
+        let mut dirty = probed(0, "main");
+        dirty.changed = 1;
+        a.on_probe(0, dirty);
+
+        on_input(&mut a, press(KeyCode::Char('r')));
+        for c in "ls".chars() {
+            on_input(&mut a, press(KeyCode::Char(c)));
+        }
+        on_input(&mut a, ctrl(KeyCode::Char('d')));
+        assert!(a.run_requested.is_none());
+        assert!(a.pending_run.is_some());
+
+        on_input(&mut a, press(KeyCode::Char('y')));
+        assert_eq!(a.run_requested.unwrap().body.as_deref(), Some("ls"));
+    }
+
+    #[test]
+    fn esc_closes_the_run_command_prompt_without_running() {
+        let mut a = app(&["foo"]);
+        a.on_probe(0, probed(0, "main"));
+        on_input(&mut a, press(KeyCode::Char('r')));
+        on_input(&mut a, press(KeyCode::Char('x')));
+        on_input(&mut a, press(KeyCode::Esc));
+
+        assert!(!a.run_command_open);
+        assert!(a.run_requested.is_none() && a.pending_run.is_none());
     }
 
     #[test]
     fn u_requests_an_update_run_on_a_clean_selection() {
         let mut a = app(&["foo"]);
-        a.on_probe(
-            0,
-            crate::ui::app::probe::RepoState {
-                index: 0,
-                branch: Some("main".into()),
-                upstream: None,
-                ahead: 0,
-                behind: 0,
-                changed: 0,
-                changes: Default::default(),
-                present: true,
-                timed_out: false,
-                fetched: false,
-                fetch_head: None,
-            },
-        );
+        a.on_probe(0, probed(0, "main"));
         on_input(&mut a, press(KeyCode::Char('u')));
         assert_eq!(a.run_requested.unwrap().action, "update");
     }
@@ -505,19 +602,7 @@ mod tests {
     #[test]
     fn y_confirms_a_pending_run() {
         let mut a = app(&["foo"]);
-        let mut dirty = crate::ui::app::probe::RepoState {
-            index: 0,
-            branch: Some("main".into()),
-            upstream: None,
-            ahead: 0,
-            behind: 0,
-            changed: 0,
-            changes: Default::default(),
-            present: true,
-            timed_out: false,
-            fetched: false,
-            fetch_head: None,
-        };
+        let mut dirty = probed(0, "main");
         dirty.changed = 1;
         a.on_probe(0, dirty);
         a.request_run("update");
@@ -532,19 +617,7 @@ mod tests {
     fn c_confirms_a_pending_run_against_the_cursor_row_alone() {
         let mut a = app(&["foo", "bar"]);
         for i in 0..2 {
-            let mut dirty = crate::ui::app::probe::RepoState {
-                index: i,
-                branch: Some("main".into()),
-                upstream: None,
-                ahead: 0,
-                behind: 0,
-                changed: 1,
-                changes: Default::default(),
-                present: true,
-                timed_out: false,
-                fetched: false,
-                fetch_head: None,
-            };
+            let mut dirty = probed(i, "main");
             dirty.changed = 1;
             a.on_probe(0, dirty);
         }
@@ -725,19 +798,7 @@ mod tests {
     #[test]
     fn ctrl_c_quits_while_the_dirty_run_confirmation_is_up() {
         let mut a = app(&["foo"]);
-        let mut dirty = crate::ui::app::probe::RepoState {
-            index: 0,
-            branch: Some("main".into()),
-            upstream: None,
-            ahead: 0,
-            behind: 0,
-            changed: 0,
-            changes: Default::default(),
-            present: true,
-            timed_out: false,
-            fetched: false,
-            fetch_head: None,
-        };
+        let mut dirty = probed(0, "main");
         dirty.changed = 1;
         a.on_probe(0, dirty);
         a.request_run("update");

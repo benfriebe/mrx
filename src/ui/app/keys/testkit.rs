@@ -1,7 +1,9 @@
-//! Test fixtures shared by the keys submodules: an app to drive, and the two
-//! constructors that turn a key code into an input event.
+//! Test fixtures shared by the keys submodules: an app to drive, a probe
+//! result to feed it, and the two constructors that turn a key code into an
+//! input event.
 
 use crate::config::Repo;
+use crate::ui::app::probe::RepoState;
 use crate::ui::app::state::App;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::collections::BTreeMap;
@@ -26,6 +28,23 @@ pub(super) fn app(names: &[&str]) -> App {
         false,
         None,
     )
+}
+
+/// A clean, present repo: the state a run may start against unconfirmed.
+pub(super) fn probed(index: usize, branch: &str) -> RepoState {
+    RepoState {
+        index,
+        branch: Some(branch.to_string()),
+        upstream: None,
+        ahead: 0,
+        behind: 0,
+        changed: 0,
+        changes: Default::default(),
+        present: true,
+        timed_out: false,
+        fetched: false,
+        fetch_head: None,
+    }
 }
 
 pub(super) fn press(code: KeyCode) -> Event {

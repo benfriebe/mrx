@@ -10,6 +10,9 @@ const SELECT_ALL: &str = "select-all";
 const SELECT_VISIBLE: &str = "select-visible";
 const DESELECT_ALL: &str = "deselect-all";
 
+/// The palette's way into the run-command prompt, the same one `r` opens.
+const RUN_COMMAND: &str = "run-command";
+
 impl App {
     pub fn open_palette(&mut self) {
         self.palette_open = true;
@@ -22,12 +25,13 @@ impl App {
     }
 
     /// Actions matching the palette's filter, in the same order `discover`
-    /// returned them, then the selection commands.
+    /// returned them, then the run-command prompt and the selection commands.
     pub fn palette_visible(&self) -> Vec<Action> {
         let all = self
             .actions
             .iter()
             .cloned()
+            .chain(std::iter::once(self.run_command_entry()))
             .chain(self.selection_commands());
         if self.palette_filter.is_empty() {
             return all.collect();
@@ -52,6 +56,17 @@ impl App {
             command(SELECT_VISIBLE, self.visible_indices().len()),
             command(DESELECT_ALL, 0),
         ]
+    }
+
+    /// The palette's run-command entry. Nothing defines it, so its count is
+    /// the repos the body would run against rather than the repos it exists
+    /// on.
+    fn run_command_entry(&self) -> Action {
+        Action {
+            name: RUN_COMMAND.to_string(),
+            source: Source::Prompt,
+            repos: self.effective_selection().len(),
+        }
     }
 
     /// Apply a [`Source::Selection`] palette entry. The palette is the only
@@ -93,17 +108,17 @@ impl App {
 
     /// Close the palette and carry out whatever it's currently pointing at,
     /// if anything matches the filter: a run for an action, a new selection
-    /// for one of the selection commands.
+    /// for one of the selection commands, the prompt for the run-command one.
     pub fn palette_confirm(&mut self) {
         let chosen = self.palette_visible().get(self.palette_cursor).cloned();
         self.close_palette();
         let Some(action) = chosen else {
             return;
         };
-        if action.source == Source::Selection {
-            self.run_selection_command(&action.name);
-        } else {
-            self.request_run(&action.name);
+        match action.source {
+            Source::Selection => self.run_selection_command(&action.name),
+            Source::Prompt => self.open_run_command(),
+            _ => self.request_run(&action.name),
         }
     }
 }
@@ -177,6 +192,31 @@ mod tests {
                 (DESELECT_ALL.into(), 0),
             ]
         );
+    }
+
+    /// The palette is the second way to the prompt, and the one that could
+    /// most easily fire a run named `run-command` instead of opening it.
+    #[test]
+    fn the_palette_run_command_entry_opens_the_prompt_rather_than_running() {
+        let mut a = app(&["foo", "bar"]);
+        a.on_probe(0, probed(0, "main")); // clean and known, so a run would start at once
+        a.open_palette();
+        a.palette_filter = RUN_COMMAND.into();
+        a.palette_confirm();
+
+        assert!(a.run_command_open);
+        assert!(a.run_requested.is_none());
+        assert!(a.pending_run.is_none());
+    }
+
+    #[test]
+    fn the_palette_counts_the_repos_a_typed_command_would_run_against() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        a.selected = BTreeSet::from([0, 2]);
+        a.palette_filter = RUN_COMMAND.into();
+
+        let entry = a.palette_visible().pop().expect("the entry is offered");
+        assert_eq!(entry.repos, 2, "the effective selection, not the whole set");
     }
 
     #[test]

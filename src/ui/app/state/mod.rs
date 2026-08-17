@@ -18,6 +18,7 @@ mod list;
 mod palette;
 mod probing;
 mod run;
+mod run_command;
 mod run_request;
 mod set_picker;
 #[cfg(test)]
@@ -83,7 +84,7 @@ pub struct App {
     /// perform: an `update` action pulls, and the re-probe that follows sees
     /// the newer timestamp.
     pub fetch_baseline: BTreeMap<usize, Option<SystemTime>>,
-    /// Set by the `r` key.
+    /// Set by the `R` key.
     pub probe_requested: bool,
     /// Bumped every time a run starts; an executor event tagged with an
     /// older id belongs to a run that's since been cancelled and superseded,
@@ -120,6 +121,12 @@ pub struct App {
     pub palette_open: bool,
     pub palette_filter: String,
     pub palette_cursor: usize,
+
+    /// Whether the run-command prompt (`r`) is capturing keystrokes.
+    pub run_command_open: bool,
+    /// The body typed into that prompt, newlines and all: it is handed to
+    /// `sh` as one script rather than a line at a time.
+    pub run_command_input: String,
 
     /// A run waiting on the dirty-selection confirmation; `None` once it's
     /// been answered either way.
@@ -277,6 +284,8 @@ impl App {
             palette_open: false,
             palette_filter: String::new(),
             palette_cursor: 0,
+            run_command_open: false,
+            run_command_input: String::new(),
             pending_run: None,
             run_requested: None,
             run_action: None,

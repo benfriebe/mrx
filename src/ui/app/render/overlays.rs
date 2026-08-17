@@ -125,20 +125,32 @@ pub(super) fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let repo_count = app.repos.len();
-    let items: Vec<ListItem> = app
-        .palette_visible()
+    let entries = app.palette_visible();
+    // Names vary in width, so what follows them only reads as a column if
+    // every name is padded out to the widest.
+    let name_col = entries
+        .iter()
+        .map(|a| display_width(&a.name))
+        .max()
+        .unwrap_or(0);
+
+    let items: Vec<ListItem> = entries
         .iter()
         .enumerate()
         .map(|(i, a)| {
+            let pad = name_col + COL_GAP - display_width(&a.name);
+            let name = format!("{}{:pad$}", a.name, "");
+
             // A selection command's count is what it leaves selected, not how
             // many repos define it, so it is worded differently.
             let text = match a.source {
                 Source::Selection => {
-                    format!("{}  leaves {} of {} selected", a.name, a.repos, repo_count)
+                    format!("{name}leaves {} of {} selected", a.repos, repo_count)
                 }
-                Source::Builtin => format!("{}  builtin, {} of {}", a.name, a.repos, repo_count),
-                Source::Default => format!("{}  every repo, {} of {}", a.name, a.repos, repo_count),
-                Source::PerRepo => format!("{}  per-repo, {} of {}", a.name, a.repos, repo_count),
+                Source::Builtin => format!("{name}builtin, {} of {}", a.repos, repo_count),
+                Source::Default => format!("{name}every repo, {} of {}", a.repos, repo_count),
+                Source::PerRepo => format!("{name}per-repo, {} of {}", a.repos, repo_count),
+                Source::Prompt => format!("{name}prompt, runs on {} of {}", a.repos, repo_count),
             };
             let style = if i == app.palette_cursor {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -153,6 +165,43 @@ pub(super) fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .title(format!(" action: {} ", app.palette_filter));
     frame.render_widget(List::new(items).block(block), popup);
+}
+
+/// The run-command prompt (`r`): the body being typed, run as one `sh`
+/// script against the selection once Ctrl-D closes it. Editing is
+/// append-only, so the cursor block always sits at the end of the last line.
+pub(super) fn draw_run_command(frame: &mut Frame, app: &App, area: Rect) {
+    let targets = app.effective_selection().len();
+
+    let body: Vec<&str> = app.run_command_input.split('\n').collect();
+    let last = body.len() - 1;
+    let mut lines: Vec<Line> = body
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            if i == last {
+                Line::from(vec![
+                    Span::raw(text.to_string()),
+                    Span::styled(" ", Style::default().bg(Color::Cyan)),
+                ])
+            } else {
+                Line::from(text.to_string())
+            }
+        })
+        .collect();
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        "enter newline   ^d run   esc cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let popup = centered_rect(60, 40, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default().borders(Borders::ALL).title(format!(
+        " run on {targets} repo{} ",
+        if targets == 1 { "" } else { "s" }
+    ));
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 /// The set picker (`tab`): every set `sets::discover()` finds, plus the
@@ -268,6 +317,55 @@ mod tests {
         assert!(
             rows.iter().any(|line| line.contains(last)),
             "the last note was cropped off the bottom: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn the_run_command_overlay_shows_the_typed_body_and_how_to_run_it() {
+        let mut a = app(vec![repo("bill-api"), repo("crew")]);
+        a.open_run_command();
+        for c in "git fetch\ngit status".chars() {
+            a.run_command_push(c);
+        }
+        let rows = frame_rows(&a, 100, 30);
+
+        assert!(
+            rows.iter().any(|row| row.contains("run on 2 repos")),
+            "the title says what the body would run against: {rows:#?}"
+        );
+        for line in ["git fetch", "git status"] {
+            assert!(
+                rows.iter().any(|row| row.contains(line)),
+                "the body is drawn a line at a time, missing {line:?}: {rows:#?}"
+            );
+        }
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("enter newline   ^d run   esc cancel")),
+            "the hint is the only place Ctrl-D is named: {rows:#?}"
+        );
+    }
+
+    /// The palette's names run from `push` to `select-visible`, so the source
+    /// and counts land wherever the name happens to end unless they are given
+    /// a column of their own.
+    #[test]
+    fn every_palette_row_starts_its_source_at_the_same_column() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.palette_open = true;
+        let rows = frame_rows(&a, 100, 40);
+
+        let phrases = ["builtin,", "every repo,", "per-repo,", "prompt,", "leaves"];
+        let columns: Vec<usize> = rows
+            .iter()
+            .filter_map(|row| phrases.iter().find_map(|p| col_of(row, p)))
+            .collect();
+
+        // Six built-in verbs, the prompt, and three selection commands.
+        assert_eq!(columns.len(), 10, "not every row was found: {rows:#?}");
+        assert!(
+            columns.iter().all(|&c| c == columns[0]),
+            "sources landed at {columns:?}: {rows:#?}"
         );
     }
 }

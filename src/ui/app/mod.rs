@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use crate::cli::Command;
 use crate::config::Repo;
 use crate::executor::{self, RunEvent};
 use crate::operations;
@@ -43,7 +44,14 @@ fn spawn_action_run(
     tx: &mpsc::UnboundedSender<RunEvent>,
     req: state::RunRequest,
 ) -> executor::RunHandle {
-    let command = actions::command_for(&req.action);
+    // A body typed at the run-command prompt is planned as `run`, which hands
+    // it to `sh` whole; only a named action has a definition to look up.
+    let command = match &req.body {
+        Some(body) => Command::Run {
+            cmd: vec![body.clone()],
+        },
+        None => actions::command_for(&req.action),
+    };
     let targets: Vec<(usize, operations::Operation)> = req
         .targets
         .iter()

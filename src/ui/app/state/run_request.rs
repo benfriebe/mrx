@@ -2,12 +2,16 @@
 //! its three answers.
 
 use super::App;
+use crate::ui::app::actions;
 
 /// A run waiting on user confirmation because part of its target selection
 /// is dirty, or because part of it has no probe result yet and dirtiness is
 /// simply unknown.
 pub struct PendingRun {
     pub action: String,
+    /// The shell body of an ad-hoc run, `None` for a named action the run
+    /// loop is to look up instead.
+    pub body: Option<String>,
     pub targets: Vec<usize>,
     pub dirty_count: usize,
     pub unknown_count: usize,
@@ -21,6 +25,8 @@ pub struct PendingRun {
 /// is ready for the run loop to plan and spawn.
 pub struct RunRequest {
     pub action: String,
+    /// As on [`PendingRun`], carried across the confirmation unchanged.
+    pub body: Option<String>,
     pub targets: Vec<usize>,
 }
 
@@ -64,6 +70,20 @@ impl App {
             self.actions.iter().any(|a| a.name == action_name),
             "the palette must never offer an action nothing defines: {action_name}"
         );
+        self.request(action_name, None);
+    }
+
+    /// Ask to run an ad-hoc shell `body` over the effective selection, under
+    /// the label [`actions::body_label`] derives from it. No assertion to
+    /// match [`request_run`](Self::request_run)'s: a body typed at the prompt
+    /// is by definition not one of `self.actions`.
+    pub fn request_run_body(&mut self, body: &str) {
+        self.request(&actions::body_label(body), Some(body.to_string()));
+    }
+
+    /// What the two entry points above share: everything from here on is the
+    /// same whether the run has a name or a body.
+    fn request(&mut self, action_name: &str, body: Option<String>) {
         if self.refuse_if_mutation_blocked("start a run") {
             return;
         }
@@ -80,6 +100,7 @@ impl App {
                     .then_some(self.cursor);
             self.pending_run = Some(PendingRun {
                 action: action_name.to_string(),
+                body,
                 targets,
                 dirty_count: dirty,
                 unknown_count: unknown,
@@ -88,6 +109,7 @@ impl App {
         } else {
             self.run_requested = Some(RunRequest {
                 action: action_name.to_string(),
+                body,
                 targets,
             });
         }
@@ -106,6 +128,7 @@ impl App {
         }
         self.run_requested = Some(RunRequest {
             action: p.action,
+            body: p.body,
             targets: p.targets,
         });
     }
@@ -125,6 +148,7 @@ impl App {
         }
         self.run_requested = Some(RunRequest {
             action: p.action,
+            body: p.body,
             targets: vec![cursor],
         });
     }

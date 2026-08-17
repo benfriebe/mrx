@@ -22,7 +22,9 @@ use footer::{status_line, LEAD_IN};
 /// Glob so every `render::` geometry path the crate already uses keeps working.
 pub(crate) use layout::*;
 use list::draw_list;
-use overlays::{draw_confirm, draw_help, draw_palette, draw_quit_confirm, draw_set_picker};
+use overlays::{
+    draw_confirm, draw_help, draw_palette, draw_quit_confirm, draw_run_command, draw_set_picker,
+};
 
 const COL_GAP: usize = 2;
 /// Width of the leading " ▸ ● " cursor and selection markers.
@@ -58,6 +60,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     if app.palette_open {
         draw_palette(frame, app, area);
+    }
+    if app.run_command_open {
+        draw_run_command(frame, app, area);
     }
     if app.set_picker_open {
         draw_set_picker(frame, app, area);
