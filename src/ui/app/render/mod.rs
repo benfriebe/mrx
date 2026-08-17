@@ -25,11 +25,10 @@ use list::draw_list;
 use overlays::{draw_confirm, draw_help, draw_palette, draw_quit_confirm, draw_set_picker};
 
 const COL_GAP: usize = 2;
-/// Width of the leading " ▸ ● ⠹ " cursor marker, selection marker, and
-/// activity cell.
-const PREFIX_W: usize = 7;
-/// The sidebar drops the selection marker, so its rows start " ▸ ⠹ ".
-const SIDEBAR_PREFIX_W: usize = 5;
+/// Width of the leading " ▸ ● " cursor and selection markers.
+const PREFIX_W: usize = 5;
+/// The sidebar drops the selection marker, so its rows start " ▸ ".
+const SIDEBAR_PREFIX_W: usize = 3;
 
 const REPO_LABEL: &str = "REPO";
 const BRANCH_LABEL: &str = "BRANCH";

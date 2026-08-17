@@ -92,21 +92,29 @@ fn column_label_line(prefix_w: usize, columns: &[(&str, usize)]) -> Line<'static
     Line::from(spans)
 }
 
-/// The one-cell spinner column that sits between the markers and the repo
-/// name, matching where the one-shot progress view puts its status icon. It
-/// spins for anything the row is waiting on, a probe or a run alike, since
-/// from the outside both are just "this repo is busy". Blank otherwise, so
-/// the name column never moves.
-fn activity_cell(app: &App, idx: usize) -> Span<'static> {
-    let running = matches!(
-        app.run_results.get(idx).and_then(|r| r.as_ref()),
-        Some(RunStatus::Running | RunStatus::Step { .. })
-    );
-    if app.probing.contains(&idx) || running {
-        Span::styled(
+/// Whether the row is waiting on anything, a probe or a run alike: from the
+/// outside both are just "this repo is busy".
+fn is_busy(app: &App, idx: usize) -> bool {
+    app.probing.contains(&idx)
+        || matches!(
+            app.run_results.get(idx).and_then(|r| r.as_ref()),
+            Some(RunStatus::Running | RunStatus::Step { .. })
+        )
+}
+
+/// The cell left of the repo name, where the one-shot progress view puts its
+/// status icon. It normally holds the selection dot, and a busy row's spinner
+/// borrows it: the spinner is always temporary, and one shared cell keeps the
+/// gutter as narrow as the markers alone need.
+fn select_cell(app: &App, idx: usize) -> Span<'static> {
+    if is_busy(app, idx) {
+        return Span::styled(
             format!("{} ", spinner_frame(app.tick)),
             Style::default().fg(Color::Yellow),
-        )
+        );
+    }
+    if app.selected.contains(&idx) {
+        Span::styled("● ", Style::default().fg(Color::Cyan).bold())
     } else {
         Span::raw("  ")
     }
@@ -122,15 +130,8 @@ fn repo_line(
 ) -> Line<'static> {
     let repo = &app.repos[idx];
     let is_cursor = idx == app.cursor;
-    let is_selected = app.selected.contains(&idx);
 
     let cursor_marker = if is_cursor { "▸" } else { " " };
-    let select_marker = if is_selected { "●" } else { " " };
-    let marker_style = if is_selected {
-        Style::default().fg(Color::Cyan).bold()
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
     let name_style = if is_cursor {
         Style::default().bold()
     } else {
@@ -152,10 +153,10 @@ fn repo_line(
 
     Line::from(vec![
         Span::styled(
-            format!(" {} {} ", cursor_marker, select_marker),
-            marker_style,
+            format!(" {} ", cursor_marker),
+            Style::default().fg(Color::Cyan),
         ),
-        activity_cell(app, idx),
+        select_cell(app, idx),
         Span::styled(name, name_style),
         Span::raw(" ".repeat(name_padding)),
         Span::styled(branch, Style::default().fg(Color::DarkGray)),
@@ -224,8 +225,12 @@ fn sidebar_repo_line(app: &App, idx: usize, name_col: usize, state_col: usize) -
     let name = truncate(&repo.name, name_col);
     let name_padding = name_col.saturating_sub(display_width(&name)) + COL_GAP;
 
+    // No selection dot here for the spinner to share, so it takes the state
+    // cell instead, which a row this pane can only reach through the cursor
+    // has usually already filled in.
     let state_text = match app.probes.get(idx).and_then(|p| p.as_ref()) {
         Some(state) => probe::dirty_text_brief(state),
+        None if is_busy(app, idx) => spinner_frame(app.tick).to_string(),
         None => String::new(),
     };
     let state = truncate(&state_text, state_col);
@@ -235,7 +240,6 @@ fn sidebar_repo_line(app: &App, idx: usize, name_col: usize, state_col: usize) -
             format!(" {} ", cursor_marker),
             Style::default().fg(Color::Cyan),
         ),
-        activity_cell(app, idx),
         Span::styled(name, name_style),
         Span::raw(" ".repeat(name_padding)),
         Span::styled(state, Style::default().fg(Color::DarkGray)),
@@ -268,7 +272,7 @@ mod tests {
 
     /// Span offsets in a drawn row, so the assertions below name their cell
     /// instead of indexing past the padding spans between them.
-    const ACTIVITY: usize = 1;
+    const MARKER: usize = 1;
     const BRANCH: usize = 4;
     const STATE: usize = 6;
 
@@ -290,14 +294,14 @@ mod tests {
         let generation = a.begin_probe(&[0]);
         a.on_probe(generation, probed("main", changes, 0));
         let settled = repo_line_at(&a, 0, 155);
-        assert_eq!(settled.spans[ACTIVITY].content.as_ref(), "  ");
+        assert_eq!(settled.spans[MARKER].content.as_ref(), "  ");
         assert_eq!(settled.spans[BRANCH].content.as_ref(), "main");
         assert_eq!(settled.spans[STATE].content.as_ref(), "2 modified");
 
         let generation = a.begin_probe(&[0]);
         let reprobing = repo_line_at(&a, 0, 155);
         assert_eq!(
-            reprobing.spans[ACTIVITY].content.as_ref(),
+            reprobing.spans[MARKER].content.as_ref(),
             spinner(&a),
             "the activity cell takes the spinner, got {:?}",
             flatten(&reprobing)
@@ -318,7 +322,7 @@ mod tests {
         a.on_probe(generation, probed("main", changes, 0));
         let done = repo_line_at(&a, 0, 155);
         assert_eq!(
-            done.spans[ACTIVITY].content.as_ref(),
+            done.spans[MARKER].content.as_ref(),
             "  ",
             "the spinner stops once the result lands"
         );
@@ -331,7 +335,7 @@ mod tests {
         let mut a = app(vec![repo("alpha")]);
         a.run_results[0] = Some(RunStatus::Running);
         assert_eq!(
-            repo_line_at(&a, 0, 155).spans[ACTIVITY].content.as_ref(),
+            repo_line_at(&a, 0, 155).spans[MARKER].content.as_ref(),
             spinner(&a)
         );
 
@@ -339,7 +343,7 @@ mod tests {
             label: "git pull".into(),
         });
         assert_eq!(
-            repo_line_at(&a, 0, 155).spans[ACTIVITY].content.as_ref(),
+            repo_line_at(&a, 0, 155).spans[MARKER].content.as_ref(),
             spinner(&a)
         );
 
@@ -348,18 +352,47 @@ mod tests {
             exit_code: 0,
         });
         assert_eq!(
-            repo_line_at(&a, 0, 155).spans[ACTIVITY].content.as_ref(),
+            repo_line_at(&a, 0, 155).spans[MARKER].content.as_ref(),
             "  ",
             "a finished run has nothing left to wait on"
         );
     }
 
-    /// The cell is the row's only moving part, so it has to be exactly as
-    /// wide when idle as when spinning or the name column jitters.
+    /// The spinner and the selection dot share one cell, so a selected row
+    /// that starts working must get its dot back when it stops.
     #[test]
-    fn the_activity_cell_is_the_same_width_spinning_or_idle() {
+    fn a_busy_row_borrows_the_selection_dots_cell_and_gives_it_back() {
+        let mut a = app(vec![repo("alpha")]);
+        a.selected.insert(0);
+        assert_eq!(
+            repo_line_at(&a, 0, 155).spans[MARKER].content.as_ref(),
+            "● "
+        );
+
+        a.probing.insert(0);
+        assert_eq!(
+            repo_line_at(&a, 0, 155).spans[MARKER].content.as_ref(),
+            spinner(&a),
+            "the spinner is the more urgent of the two"
+        );
+
+        a.probing.remove(&0);
+        assert_eq!(
+            repo_line_at(&a, 0, 155).spans[MARKER].content.as_ref(),
+            "● "
+        );
+    }
+
+    /// Whatever the cell is holding it is the row's only moving part, so it
+    /// has to be the same width in all three states or the name column jitters.
+    #[test]
+    fn the_marker_cell_is_the_same_width_selected_spinning_or_idle() {
         let mut a = app(vec![repo("alpha")]);
         let idle = display_width(&flatten(&repo_line_at(&a, 0, 155)));
+
+        a.selected.insert(0);
+        assert_eq!(idle, display_width(&flatten(&repo_line_at(&a, 0, 155))));
+
         a.probing.insert(0);
         assert_eq!(idle, display_width(&flatten(&repo_line_at(&a, 0, 155))));
     }

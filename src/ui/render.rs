@@ -1,6 +1,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
+use super::output;
 use super::state::AppState;
 use super::widgets::{self, Columns, RepoRow};
 
@@ -106,8 +107,7 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
         ));
 
         if state.expanded == Some(i) {
-            if let Some(content) = state.expanded_content() {
-                let content_lines: Vec<&str> = content.lines().collect();
+            if let Some(content_lines) = state.expanded_lines() {
                 let max_visible = list_height.saturating_sub(3).max(3);
                 let start = state
                     .scroll_offset
@@ -122,11 +122,12 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
                 )));
 
                 for cl in &content_lines[start..end] {
-                    let truncated: String = cl.chars().take(box_width.saturating_sub(2)).collect();
-                    lines.push(Line::from(vec![
-                        Span::styled("    │ ", Style::default().fg(Color::DarkGray)),
-                        Span::raw(truncated),
-                    ]));
+                    // The panel has no right border to overrun, so what
+                    // doesn't fit is left to the paragraph to clip.
+                    let mut spans =
+                        vec![Span::styled("    │ ", Style::default().fg(Color::DarkGray))];
+                    spans.extend(output::output_line(&cl.text, cl.stderr, "").spans);
+                    lines.push(Line::from(spans));
                 }
 
                 if content_lines.len() > max_visible {
@@ -166,16 +167,12 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
 }
 
 fn calculate_scroll(state: &AppState, list_height: usize) -> (usize, usize) {
-    let expanded_rows = if state.expanded.is_some() {
-        if let Some(content) = state.expanded_content() {
-            let content_lines = content.lines().count();
+    let expanded_rows = match state.expanded_lines() {
+        Some(content_lines) => {
             let max_visible = list_height.saturating_sub(3).max(3);
-            content_lines.min(max_visible) + 2 // +2 for borders
-        } else {
-            0
+            content_lines.len().min(max_visible) + 2 // +2 for borders
         }
-    } else {
-        0
+        None => 0,
     };
 
     let effective_height = list_height.saturating_sub(expanded_rows);

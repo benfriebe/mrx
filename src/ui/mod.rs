@@ -1,8 +1,10 @@
 //! Terminal front ends. `run` is the one-shot progress view; `app` is ui
-//! mode. Both share the terminal setup below.
+//! mode. Both share the terminal setup below, and `output` for drawing
+//! captured process output.
 
 pub mod app;
 pub mod event;
+pub mod output;
 pub mod render;
 pub mod run;
 pub mod state;

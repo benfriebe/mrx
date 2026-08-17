@@ -1,8 +1,16 @@
+use crate::ansi;
 use crate::config::Repo;
 use crate::ui::app::probe::{self, RepoState};
 
 /// Shown for a repo whose branch the probe hasn't reported back for yet.
 const PROBING: &str = "…";
+
+/// One line of the expanded panel, tagged with the stream it came from so
+/// [`crate::ui::output`] can colour stderr by severity.
+pub struct OutputLine {
+    pub text: String,
+    pub stderr: bool,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RepoStatus {
@@ -10,9 +18,9 @@ pub enum RepoStatus {
     Running,
     Done {
         summary: String,
-        /// Plain text: ANSI stripped when this is built (see `ui::run::apply_event`),
-        /// since this view's width and truncation math has no notion of an escape
-        /// sequence being zero-width.
+        /// Kept as the tool wrote it, escapes and all: [`AppState::expanded_lines`]
+        /// hands them to [`crate::ui::output`], which turns them into styled
+        /// spans rather than measuring them as text.
         stdout: String,
         stderr: String,
         exit_code: i32,
@@ -141,28 +149,37 @@ impl AppState {
         }
     }
 
-    pub fn expanded_content(&self) -> Option<String> {
+    /// The expanded panel's contents: one [`OutputLine`] per line of the
+    /// repo's captured output, stdout then stderr. A repo with nothing to
+    /// show yet gets a single stand-in line instead, so the panel is never
+    /// empty once it is open.
+    pub fn expanded_lines(&self) -> Option<Vec<OutputLine>> {
         let idx = self.expanded?;
+        let note = |text: &str| {
+            Some(vec![OutputLine {
+                text: text.to_string(),
+                stderr: false,
+            }])
+        };
         match &self.statuses[idx] {
             RepoStatus::Done { stdout, stderr, .. } => {
-                let mut content = String::new();
-                if !stdout.is_empty() {
-                    content.push_str(stdout);
+                let lines: Vec<OutputLine> = [(stdout, false), (stderr, true)]
+                    .into_iter()
+                    .flat_map(|(text, stderr)| {
+                        ansi::split_lines(text)
+                            .into_iter()
+                            .map(move |text| OutputLine { text, stderr })
+                    })
+                    .collect();
+                if lines.is_empty() {
+                    note("(no output)")
+                } else {
+                    Some(lines)
                 }
-                if !stderr.is_empty() {
-                    if !content.is_empty() {
-                        content.push('\n');
-                    }
-                    content.push_str(stderr);
-                }
-                if content.is_empty() {
-                    content.push_str("(no output)");
-                }
-                Some(content)
             }
-            RepoStatus::Running => Some("(still running...)".into()),
-            RepoStatus::Pending => Some("(pending...)".into()),
-            RepoStatus::Skipped { reason } => Some(format!("(skipped: {})", reason)),
+            RepoStatus::Running => note("(still running...)"),
+            RepoStatus::Pending => note("(pending...)"),
+            RepoStatus::Skipped { reason } => note(&format!("(skipped: {})", reason)),
         }
     }
 
@@ -206,6 +223,40 @@ mod tests {
             stderr: String::new(),
             exit_code,
         }
+    }
+
+    /// Concatenating the two streams into one blob was what stopped this
+    /// view colouring stderr the way the detail pane does.
+    #[test]
+    fn the_expanded_panel_keeps_each_line_tagged_with_the_stream_it_came_from() {
+        let mut state = AppState::new(vec![repo("a")], "update");
+        state.statuses[0] = RepoStatus::Done {
+            summary: "done".into(),
+            stdout: "one\ntwo\n".into(),
+            stderr: "npm warn something\n".into(),
+            exit_code: 0,
+        };
+        state.expanded = Some(0);
+
+        let lines = state.expanded_lines().unwrap();
+        let tagged: Vec<(&str, bool)> = lines.iter().map(|l| (l.text.as_str(), l.stderr)).collect();
+        assert_eq!(
+            tagged,
+            vec![("one", false), ("two", false), ("npm warn something", true)]
+        );
+    }
+
+    #[test]
+    fn a_repo_that_produced_no_output_still_fills_the_panel() {
+        let mut state = AppState::new(vec![repo("a")], "update");
+        state.statuses[0] = RepoStatus::Done {
+            summary: "done".into(),
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+        };
+        state.expanded = Some(0);
+        assert_eq!(state.expanded_lines().unwrap()[0].text, "(no output)");
     }
 
     #[test]

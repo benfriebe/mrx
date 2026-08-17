@@ -7,9 +7,12 @@ use ratatui::widgets::Paragraph;
 use super::footer::status_line;
 use super::layout::detail_content_height;
 use super::{focus_marker, separator, title_style, two_column_line, FOOTER_ROWS};
-use crate::ansi;
 use crate::ui::app::detail;
 use crate::ui::app::state::{App, Pane, RunStatus};
+use crate::ui::output;
+
+/// Output lines sit two cells in, clear of the pane's left edge.
+const INDENT: &str = "  ";
 
 /// The detail view for the cursor row: a title, a line of run and scroll
 /// state, the output as labelled step sections, and a footer unless `split`
@@ -122,50 +125,10 @@ fn render_detail_line(line: &detail::DetailLine) -> Line<'static> {
                 Style::default().fg(color).bold(),
             ))
         }
-        detail::DetailLine::Stdout(s) => styled_output_line(s, None),
-        detail::DetailLine::Stderr(s) => {
-            // severity() reads the lead words, which a leading escape would
-            // hide from it, so it gets the stripped text.
-            let fallback = match detail::severity(&ansi::strip(s)) {
-                detail::Severity::Plain => Color::DarkGray,
-                detail::Severity::Warn => Color::Yellow,
-                detail::Severity::Error => Color::Red,
-            };
-            styled_output_line(s, Some(fallback))
-        }
+        detail::DetailLine::Stdout(s) => output::output_line(s, false, INDENT),
+        detail::DetailLine::Stderr(s) => output::output_line(s, true, INDENT),
         detail::DetailLine::Blank => Line::default(),
     }
-}
-
-/// A Stdout/Stderr line as one span per [`ansi::Run`]: a run carrying its own
-/// SGR colour keeps it (the tool knew what it meant), and `fallback_fg` fills
-/// in for a run that set none. The two-space indent merges into the first span
-/// rather than standing alone, so a line with no escapes is still one span.
-fn styled_output_line(text: &str, fallback_fg: Option<Color>) -> Line<'static> {
-    let mut runs = ansi::parse(text);
-    if runs.is_empty() {
-        runs.push(ansi::Run {
-            text: String::new(),
-            style: Style::default(),
-        });
-    }
-    let spans = runs
-        .into_iter()
-        .enumerate()
-        .map(|(i, run)| {
-            let mut style = run.style;
-            if style.fg.is_none() {
-                style.fg = fallback_fg;
-            }
-            let text = if i == 0 {
-                format!("  {}", run.text)
-            } else {
-                run.text
-            };
-            Span::styled(text, style)
-        })
-        .collect::<Vec<_>>();
-    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -179,47 +142,20 @@ mod tests {
             .fg
     }
 
+    /// The two stream variants have to reach [`output::output_line`] with the
+    /// right flag, or stderr silently loses its severity colouring.
     #[test]
-    fn only_stderr_lines_that_claim_trouble_are_drawn_as_trouble() {
-        assert_eq!(
-            stderr_color("From ssh://example.com/x"),
-            Some(Color::DarkGray)
-        );
-        assert_eq!(
-            stderr_color("npm warn install-scripts 4 packages"),
-            Some(Color::Yellow)
-        );
+    fn each_stream_is_handed_to_the_shared_renderer_as_itself() {
         assert_eq!(stderr_color("npm error code ELIFECYCLE"), Some(Color::Red));
-    }
-
-    #[test]
-    fn a_line_with_ansi_escapes_renders_as_multiple_spans_with_their_own_colours() {
-        // The first run carries its own colour; the second sets none, so it
-        // falls back to Warn, from "npm warn" in the stripped text.
-        let line = detail::DetailLine::Stderr("\u{1b}[34mnote: \u{1b}[0mnpm warn trailing".into());
-        let rendered = render_detail_line(&line);
-        assert_eq!(rendered.spans.len(), 2, "got {:?}", rendered.spans);
-        assert_eq!(rendered.spans[0].content, "  note: ");
-        assert_eq!(rendered.spans[0].style.fg, Some(Color::Blue));
-        assert_eq!(rendered.spans[1].content, "npm warn trailing");
-        assert_eq!(rendered.spans[1].style.fg, Some(Color::Yellow));
-    }
-
-    #[test]
-    fn a_stderr_lines_own_colour_wins_over_its_severity_colour() {
-        // Severity alone would call this an error; the line's own colour wins.
         assert_eq!(
-            stderr_color("\u{1b}[34mnpm error code ELIFECYCLE"),
-            Some(Color::Blue)
-        );
-    }
-
-    #[test]
-    fn severity_is_still_detected_when_the_line_starts_with_an_escape_sequence() {
-        // A leading escape that sets only bold must not hide the lead words.
-        assert_eq!(
-            stderr_color("\u{1b}[1mnpm warn something"),
-            Some(Color::Yellow)
+            render_detail_line(&detail::DetailLine::Stdout(
+                "npm error code ELIFECYCLE".into()
+            ))
+            .spans[0]
+                .style
+                .fg,
+            None,
+            "stdout is the data channel and keeps the terminal's own colour"
         );
     }
 

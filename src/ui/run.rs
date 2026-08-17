@@ -72,10 +72,7 @@ pub fn run(
                             KeyCode::Esc | KeyCode::Enter => state.collapse(),
                             KeyCode::Up | KeyCode::Char('k') => state.scroll_up(),
                             KeyCode::Down | KeyCode::Char('j') => {
-                                let max = state
-                                    .expanded_content()
-                                    .map(|c| c.lines().count())
-                                    .unwrap_or(0);
+                                let max = state.expanded_lines().map_or(0, |c| c.len());
                                 state.scroll_down(max);
                             }
                             KeyCode::Char('q') => break,
@@ -159,15 +156,8 @@ fn apply_event(state: &mut AppState, event: &TaskEvent) {
             exit_code,
         } => {
             let summary = summarize::summarize_steps(steps, *exit_code);
-            // Stripped once here: `RepoStatus::Done` holds plain text.
-            let stdout: String = steps
-                .iter()
-                .map(|s| crate::ansi::strip(&s.stdout))
-                .collect();
-            let stderr: String = steps
-                .iter()
-                .map(|s| crate::ansi::strip(&s.stderr))
-                .collect();
+            let stdout: String = steps.iter().map(|s| s.stdout.as_str()).collect();
+            let stderr: String = steps.iter().map(|s| s.stderr.as_str()).collect();
             state.statuses[*index] = RepoStatus::Done {
                 summary,
                 stdout,
