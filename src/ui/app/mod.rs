@@ -290,9 +290,9 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    /// Stands in for `app.poll_interval` in the ticker tests. The real
-    /// default is 300s; these wait on wall-clock ticks, so they use an
-    /// interval that is still an order of magnitude clear of the grace.
+    /// Stands in for `app.poll_interval` in the ticker tests, which run on a
+    /// paused clock: nothing here waits in real time, so the interval only has
+    /// to stay an order of magnitude clear of [`POLL_RESET_GRACE`].
     ///
     /// Both ticker tests rebuild the ticker themselves, so they pin
     /// [`poll_ticker_restart_delay`], not its call site in [`run`]: deleting
@@ -310,13 +310,13 @@ mod tests {
         assert_eq!(poll_ticker_restart_delay(false, false), None);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn switching_the_poll_on_pulls_its_next_cycle_off_the_interval_boundary() {
         let mut ticker =
             tokio::time::interval_at(tokio::time::Instant::now() + TEST_INTERVAL, TEST_INTERVAL);
         // The poll starts off, so the ticker is running but every tick is
         // declined; `F` arrives partway through the current interval.
-        let pressed = std::time::Instant::now();
+        let pressed = tokio::time::Instant::now();
         if let Some(delay) = poll_ticker_restart_delay(false, true) {
             ticker = tokio::time::interval_at(tokio::time::Instant::now() + delay, TEST_INTERVAL);
         }
@@ -329,7 +329,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_poll_already_on_keeps_the_ticker_it_has() {
         let mut ticker =
             tokio::time::interval_at(tokio::time::Instant::now() + TEST_INTERVAL, TEST_INTERVAL);

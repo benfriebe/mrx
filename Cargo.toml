@@ -6,7 +6,18 @@ edition = "2021"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 configparser = "3"
-tokio = { version = "1", features = ["full"] }
+# Spelled out rather than "full": mrx runs child processes and timers, it
+# never opens a socket, so "full" was compiling tokio's whole net stack for
+# nothing.
+tokio = { version = "1", features = [
+    "fs",
+    "io-util",
+    "macros",
+    "process",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
 ratatui = "0.30"
 crossterm = "0.29"
 num_cpus = "1"
@@ -15,6 +26,15 @@ unicode-width = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# Paused clocks for the ticker tests, which would otherwise spend seconds of
+# every `cargo test` waiting on real time.
+tokio = { version = "1", features = ["test-util"] }
+
+[profile.dev]
+# Enough debuginfo for a backtrace with line numbers, without the full type
+# information a debugger wants. Most of a dev build's link time is spent on
+# what this drops.
+debug = "line-tables-only"
 
 [profile.release]
 lto = true
