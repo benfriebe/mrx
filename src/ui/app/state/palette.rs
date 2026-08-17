@@ -26,11 +26,20 @@ impl App {
 
     /// Actions matching the palette's filter, in the same order `discover`
     /// returned them, then the run-command prompt and the selection commands.
+    ///
+    /// Every runnable entry's count is re-scoped to the current selection by
+    /// [`targets_defining`](Self::targets_defining): `discover` counts the
+    /// whole set, which is not the question being asked at the moment someone
+    /// is picking what to run.
     pub fn palette_visible(&self) -> Vec<Action> {
+        let targets = self.effective_selection();
         let all = self
             .actions
             .iter()
-            .cloned()
+            .map(|a| Action {
+                repos: self.targets_defining(a, &targets),
+                ..a.clone()
+            })
             .chain(std::iter::once(self.run_command_entry()))
             .chain(self.selection_commands());
         if self.palette_filter.is_empty() {
@@ -56,6 +65,20 @@ impl App {
             command(SELECT_VISIBLE, self.visible_indices().len()),
             command(DESELECT_ALL, 0),
         ]
+    }
+
+    /// How many of `targets` would actually run `action`. A built-in verb and
+    /// a `[DEFAULT]` key run everywhere, so only a per-repo key can come back
+    /// short, and that shortfall is the number worth showing: those are the
+    /// repos the run will silently skip.
+    fn targets_defining(&self, action: &Action, targets: &[usize]) -> usize {
+        match action.source {
+            Source::PerRepo => targets
+                .iter()
+                .filter(|&&i| self.repos[i].keys.contains_key(&action.name))
+                .count(),
+            _ => targets.len(),
+        }
     }
 
     /// The palette's run-command entry. Nothing defines it, so its count is
@@ -207,6 +230,45 @@ mod tests {
         assert!(a.run_command_open);
         assert!(a.run_requested.is_none());
         assert!(a.pending_run.is_none());
+    }
+
+    /// A selection is the whole point of the palette, and a count reading
+    /// "99 of 99" while two rows are selected says the opposite of what the
+    /// run will do.
+    #[test]
+    fn a_selection_narrows_what_the_palette_says_an_action_will_run_on() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        let count = |a: &App, name: &str| {
+            a.palette_visible()
+                .into_iter()
+                .find(|x| x.name == name)
+                .expect("the action is offered")
+                .repos
+        };
+        assert_eq!(count(&a, "update"), 3, "no selection means every repo");
+
+        a.selected = BTreeSet::from([0, 2]);
+        assert_eq!(count(&a, "update"), 2);
+    }
+
+    /// The count a per-repo action loses is the warning: those repos are
+    /// skipped rather than failed, so the palette is the last place to say so.
+    #[test]
+    fn a_per_repo_action_counts_only_the_selected_repos_that_define_it() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        a.repos[0]
+            .keys
+            .insert("deploy".into(), "./deploy.sh".into());
+        a.actions = crate::ui::app::actions::discover(&a.repos, &a.defaults);
+
+        a.selected = BTreeSet::from([0, 1]);
+        let deploy = a
+            .palette_visible()
+            .into_iter()
+            .find(|x| x.name == "deploy")
+            .expect("the action is offered");
+        assert_eq!(deploy.repos, 1, "only foo defines it");
+        assert_eq!(deploy.source, Source::PerRepo);
     }
 
     #[test]

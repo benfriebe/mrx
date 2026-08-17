@@ -7,6 +7,7 @@ use super::poll;
 use super::probe::RepoState;
 use super::session::Session;
 use crate::config::Repo;
+use crate::ui::textarea::TextArea;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
@@ -126,7 +127,7 @@ pub struct App {
     pub run_command_open: bool,
     /// The body typed into that prompt, newlines and all: it is handed to
     /// `sh` as one script rather than a line at a time.
-    pub run_command_input: String,
+    pub run_command: TextArea,
 
     /// A run waiting on the dirty-selection confirmation; `None` once it's
     /// been answered either way.
@@ -285,7 +286,7 @@ impl App {
             palette_filter: String::new(),
             palette_cursor: 0,
             run_command_open: false,
-            run_command_input: String::new(),
+            run_command: TextArea::default(),
             pending_run: None,
             run_requested: None,
             run_action: None,

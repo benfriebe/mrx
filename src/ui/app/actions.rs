@@ -27,8 +27,10 @@ pub enum Source {
 
 /// One runnable action: its name, where it comes from, and how many repos in
 /// the current set actually define it. `repos` alongside `source` is what
-/// makes an unfamiliar name trustworthy: "deploy, per-repo, 3 of 42" says up
-/// front that running it against the full selection skips 39 repos.
+/// makes an unfamiliar name trustworthy: a per-repo action is one only some
+/// of the set can run, and the count says how many. The palette narrows it to
+/// the current selection before drawing it, since that is the number that
+/// answers "what will this do".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Action {
     pub name: String,

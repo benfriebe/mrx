@@ -8,6 +8,7 @@ pub mod output;
 pub mod render;
 pub mod run;
 pub mod state;
+pub mod textarea;
 pub mod widgets;
 
 use crossterm::{

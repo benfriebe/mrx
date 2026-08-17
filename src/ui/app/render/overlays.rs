@@ -125,6 +125,7 @@ pub(super) fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let repo_count = app.repos.len();
+    let targets = app.effective_selection().len();
     let entries = app.palette_visible();
     // Names vary in width, so what follows them only reads as a column if
     // every name is padded out to the widest.
@@ -141,16 +142,16 @@ pub(super) fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
             let pad = name_col + COL_GAP - display_width(&a.name);
             let name = format!("{}{:pad$}", a.name, "");
 
-            // A selection command's count is what it leaves selected, not how
-            // many repos define it, so it is worded differently.
+            // A selection command's count is what it leaves selected, not
+            // what it would run on, so it is worded against the whole set.
             let text = match a.source {
                 Source::Selection => {
                     format!("{name}leaves {} of {} selected", a.repos, repo_count)
                 }
-                Source::Builtin => format!("{name}builtin, {} of {}", a.repos, repo_count),
-                Source::Default => format!("{name}every repo, {} of {}", a.repos, repo_count),
-                Source::PerRepo => format!("{name}per-repo, {} of {}", a.repos, repo_count),
-                Source::Prompt => format!("{name}prompt, runs on {} of {}", a.repos, repo_count),
+                Source::Builtin => format!("{name}builtin, {}", runs_on(a.repos, targets)),
+                Source::Default => format!("{name}every repo, {}", runs_on(a.repos, targets)),
+                Source::PerRepo => format!("{name}per-repo, {}", runs_on(a.repos, targets)),
+                Source::Prompt => format!("{name}prompt, {}", runs_on(a.repos, targets)),
             };
             let style = if i == app.palette_cursor {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -167,33 +168,35 @@ pub(super) fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items).block(block), popup);
 }
 
+/// What a palette entry would run against right now. The `of` half appears
+/// only when the two differ, which is exactly when a per-repo action would
+/// skip part of the selection.
+fn runs_on(defined: usize, targets: usize) -> String {
+    if defined == targets {
+        format!("runs on {targets}")
+    } else {
+        format!("runs on {defined} of {targets}")
+    }
+}
+
 /// The run-command prompt (`r`): the body being typed, run as one `sh`
-/// script against the selection once Ctrl-D closes it. Editing is
-/// append-only, so the cursor block always sits at the end of the last line.
+/// script against the selection once Ctrl-D closes it.
 pub(super) fn draw_run_command(frame: &mut Frame, app: &App, area: Rect) {
     let targets = app.effective_selection().len();
+    let (cursor_line, cursor_byte) = app.run_command.cursor_cell();
 
-    let body: Vec<&str> = app.run_command_input.split('\n').collect();
-    let last = body.len() - 1;
-    let mut lines: Vec<Line> = body
-        .iter()
+    let lines: Vec<Line> = app
+        .run_command
+        .lines()
         .enumerate()
         .map(|(i, text)| {
-            if i == last {
-                Line::from(vec![
-                    Span::raw(text.to_string()),
-                    Span::styled(" ", Style::default().bg(Color::Cyan)),
-                ])
+            if i == cursor_line {
+                line_with_cursor(text, cursor_byte)
             } else {
                 Line::from(text.to_string())
             }
         })
         .collect();
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        "enter newline   ^d run   esc cancel",
-        Style::default().fg(Color::DarkGray),
-    )));
 
     let popup = centered_rect(60, 40, area);
     frame.render_widget(Clear, popup);
@@ -201,7 +204,61 @@ pub(super) fn draw_run_command(frame: &mut Frame, app: &App, area: Rect) {
         " run on {targets} repo{} ",
         if targets == 1 { "" } else { "s" }
     ));
-    frame.render_widget(Paragraph::new(lines).block(block), popup);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    // The hints keep their rows whatever the body does, so they are laid out
+    // beside it rather than appended to it and scrolled away. The editing keys
+    // are named here rather than under `?`: this is the one screen they work
+    // on, and the help overlay has no room left for them.
+    let [body, hints] = Layout::vertical([Constraint::Fill(1), Constraint::Length(2)]).areas(inner);
+    let cursor_column =
+        display_width(&app.run_command.lines().nth(cursor_line).unwrap_or("")[..cursor_byte]);
+    frame.render_widget(
+        Paragraph::new(lines).scroll((
+            scroll_to_show(cursor_line, body.height),
+            scroll_to_show(cursor_column, body.width),
+        )),
+        body,
+    );
+    let dim = Style::default().fg(Color::DarkGray);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled("enter newline   ^d run   esc cancel", dim)),
+            Line::from(Span::styled(
+                "^a/^e ends   ^w/^u/^k cut   alt-b/f word",
+                dim,
+            )),
+        ]),
+        hints,
+    );
+}
+
+/// How far to scroll one axis so `at` is the last cell still on screen.
+/// Nothing scrolls until the cursor would otherwise leave, so a body that
+/// fits is drawn from its start.
+fn scroll_to_show(at: usize, extent: u16) -> u16 {
+    u16::try_from(at.saturating_sub(usize::from(extent).saturating_sub(1))).unwrap_or(u16::MAX)
+}
+
+/// A line with the cell at `byte` drawn as the cursor. Past the end of the
+/// line that cell is a space, which is the only thing that makes the cursor
+/// visible on an empty line or at the end of a full one.
+fn line_with_cursor(text: &str, byte: usize) -> Line<'static> {
+    let block = Style::default().bg(Color::Cyan).fg(Color::Black);
+    let (before, rest) = text.split_at(byte.min(text.len()));
+    let mut chars = rest.chars();
+    match chars.next() {
+        Some(c) => Line::from(vec![
+            Span::raw(before.to_string()),
+            Span::styled(c.to_string(), block),
+            Span::raw(chars.as_str().to_string()),
+        ]),
+        None => Line::from(vec![
+            Span::raw(before.to_string()),
+            Span::styled(" ", block),
+        ]),
+    }
 }
 
 /// The set picker (`tab`): every set `sets::discover()` finds, plus the
@@ -304,6 +361,7 @@ fn confirm_reason(pending: &PendingRun) -> String {
 mod tests {
     use super::super::testkit::*;
     use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     /// The overlay grows with the keymap, and `centred` crops rather than
     /// scrolls, so the notes at the bottom are what a terminal one row too
@@ -324,8 +382,16 @@ mod tests {
     fn the_run_command_overlay_shows_the_typed_body_and_how_to_run_it() {
         let mut a = app(vec![repo("bill-api"), repo("crew")]);
         a.open_run_command();
-        for c in "git fetch\ngit status".chars() {
-            a.run_command_push(c);
+        for code in [
+            KeyCode::Char('l'),
+            KeyCode::Char('s'),
+            KeyCode::Enter,
+            KeyCode::Char('p'),
+            KeyCode::Char('w'),
+            KeyCode::Char('d'),
+        ] {
+            a.run_command
+                .on_key(KeyEvent::new(code, KeyModifiers::NONE));
         }
         let rows = frame_rows(&a, 100, 30);
 
@@ -333,7 +399,7 @@ mod tests {
             rows.iter().any(|row| row.contains("run on 2 repos")),
             "the title says what the body would run against: {rows:#?}"
         );
-        for line in ["git fetch", "git status"] {
+        for line in ["ls", "pwd"] {
             assert!(
                 rows.iter().any(|row| row.contains(line)),
                 "the body is drawn a line at a time, missing {line:?}: {rows:#?}"
@@ -343,6 +409,34 @@ mod tests {
             rows.iter()
                 .any(|row| row.contains("enter newline   ^d run   esc cancel")),
             "the hint is the only place Ctrl-D is named: {rows:#?}"
+        );
+    }
+
+    /// The cursor is the only thing on screen saying where the next keystroke
+    /// lands, so it has to follow the buffer rather than sit at the end.
+    #[test]
+    fn the_run_command_cursor_is_drawn_where_the_buffer_says_it_is() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.open_run_command();
+        for code in [KeyCode::Char('l'), KeyCode::Char('s'), KeyCode::Left] {
+            a.run_command
+                .on_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
+        terminal
+            .draw(|frame| super::super::draw(frame, &a))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let cursor = (0..20)
+            .flat_map(|y| (0..60).map(move |x| (x, y)))
+            .find(|&(x, y)| buffer[(x, y)].style().bg == Some(Color::Cyan))
+            .expect("the cursor cell is drawn");
+        assert_eq!(
+            buffer[cursor].symbol(),
+            "s",
+            "one left of the end is the `s`, not the cell after it"
         );
     }
 

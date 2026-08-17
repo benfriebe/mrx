@@ -209,23 +209,21 @@ fn on_palette_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Keys while the run-command prompt is open. The body is multi-line, so
-/// Enter is a newline and Ctrl-D is what runs it; everything else is text.
+/// Keys while the run-command prompt is open: the two the prompt itself owns,
+/// then whatever [`TextArea`](crate::ui::textarea::TextArea) makes of the
+/// rest. Ctrl-D is taken before the buffer sees it, so a body is ended by the
+/// chord that ends input everywhere else rather than by Enter, which the body
+/// needs for its own newlines.
 fn on_run_command_key(app: &mut App, key: KeyEvent) {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        // Returns whatever the chord was, for the reason `on_list_key` gives.
-        if key.code == KeyCode::Char('d') {
-            app.run_command_confirm();
-        }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
+        app.run_command_confirm();
         return;
     }
-    match key.code {
-        KeyCode::Esc => app.close_run_command(),
-        KeyCode::Enter => app.run_command_push('\n'),
-        KeyCode::Backspace => app.run_command_backspace(),
-        KeyCode::Char(c) => app.run_command_push(c),
-        _ => {}
+    if key.code == KeyCode::Esc {
+        app.close_run_command();
+        return;
     }
+    app.run_command.on_key(key);
 }
 
 /// Keys while the dirty-selection confirmation is up: a modal that swallows
@@ -389,7 +387,7 @@ mod tests {
         }
         on_input(&mut a, press(KeyCode::Backspace));
 
-        assert_eq!(a.run_command_input, "ls\npwd");
+        assert_eq!(a.run_command.text(), "ls\npwd");
         assert!(a.run_command_open, "enter is a newline, not a confirm");
     }
 
@@ -399,7 +397,7 @@ mod tests {
         on_input(&mut a, press(KeyCode::Char('r')));
         assert!(!on_input(&mut a, press(KeyCode::Char('q'))));
         on_input(&mut a, press(KeyCode::Char('u')));
-        assert_eq!(a.run_command_input, "qu");
+        assert_eq!(a.run_command.text(), "qu");
         assert!(a.run_requested.is_none() && a.pending_run.is_none());
     }
 
@@ -408,7 +406,7 @@ mod tests {
         let mut a = app(&["foo"]);
         on_input(&mut a, press(KeyCode::Char('r')));
         on_input(&mut a, ctrl(KeyCode::Char('u')));
-        assert!(a.run_command_input.is_empty());
+        assert!(a.run_command.text().is_empty());
         assert!(a.run_command_open);
     }
 
