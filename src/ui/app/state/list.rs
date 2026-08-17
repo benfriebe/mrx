@@ -29,17 +29,13 @@ impl App {
     }
 
     /// The repos a run would target: the explicit selection, or every
-    /// visible row when nothing is selected. "No selection" reads as "all of
-    /// them", which is what a multi-repo tool is for; narrowing to one repo
-    /// is what `space` and `/` are for.
+    /// visible row when nothing is selected.
     ///
-    /// An explicit selection is honored even if the active filter currently
-    /// hides every member of it: the user chose those repos on purpose, and
-    /// a filter narrows what's on screen, not what was already selected
-    /// (`selection_survives_a_filter_change`). The fallback has no such
-    /// choice behind it, so it follows the filter exactly, and a zero-match
-    /// filter targets nothing rather than reaching a repo that is no longer
-    /// on screen.
+    /// An explicit selection is honoured even if the active filter currently
+    /// hides every member of it, since a filter narrows what's on screen,
+    /// not what was already selected. The fallback has no such choice behind
+    /// it, so it follows the filter exactly, and a zero-match filter targets
+    /// nothing rather than reaching a repo that is no longer on screen.
     pub fn effective_selection(&self) -> Vec<usize> {
         if !self.selected.is_empty() {
             return self.selected.iter().copied().collect();
@@ -48,9 +44,8 @@ impl App {
     }
 
     /// Status text for an action that would otherwise act on a repo the
-    /// filter currently hides: "no repos" when the set itself
-    /// is empty, "no repos match the filter" when a filter is why nothing
-    /// is visible.
+    /// filter currently hides, distinguishing an empty set from a filter
+    /// that matches nothing.
     pub(super) fn no_visible_rows_message(&self) -> String {
         if self.filter.is_empty() {
             "no repos".into()
@@ -117,12 +112,10 @@ impl App {
 
     /// Toggle the cursor row's selection, then advance the cursor so
     /// repeated presses of the key walk down the list. A no-op when the
-    /// cursor isn't on a row the filter currently shows: a filter that
-    /// narrows to zero matches can leave `cursor` pointing at a hidden repo
-    /// (`clamp_cursor_to_visible` has nothing visible to clamp it to), and
-    /// toggling that would manufacture an explicit selection the user never
-    /// saw on screen, which `effective_selection` then honors on purpose for
-    /// selections made while visible.
+    /// cursor isn't on a row the filter currently shows: a zero-match filter
+    /// leaves `cursor` pointing at a hidden repo, and toggling that would
+    /// manufacture an explicit selection the user never saw on screen, which
+    /// [`effective_selection`](Self::effective_selection) then honours.
     pub fn toggle_selection_at_cursor(&mut self) {
         if !self.visible_indices().contains(&self.cursor) {
             return;
@@ -134,10 +127,8 @@ impl App {
     }
 
     /// Select every row the current filter shows, replacing whatever was
-    /// selected before. A no-op with a status message, leaving the existing
-    /// selection untouched, when the filter hides every row: replacing a
-    /// real selection with an empty one just because nothing currently
-    /// matches would be a silent selection wipe.
+    /// selected before. A no-op with a status message when the filter hides
+    /// every row, rather than a silent selection wipe.
     pub fn select_all_visible(&mut self) {
         let visible = self.visible_indices();
         if visible.is_empty() {
@@ -147,10 +138,10 @@ impl App {
         self.selected = visible.into_iter().collect();
     }
 
-    /// Select every repo in the set, filter or no filter. The filter-aware
-    /// [`select_all_visible`](Self::select_all_visible) is the common one;
-    /// this is for building a selection that outlives the filter you used to
-    /// find part of it.
+    /// Select every repo in the set, filter or no filter, for building a
+    /// selection that outlives the filter you used to find part of it. The
+    /// filter-aware [`select_all_visible`](Self::select_all_visible) is the
+    /// common one.
     pub fn select_all_in_set(&mut self) {
         if self.repos.is_empty() {
             self.status_message = Some("no repos".into());
@@ -316,9 +307,8 @@ mod tests {
         assert_eq!(a.effective_selection(), vec![0]);
     }
 
-    /// A filter that matches nothing leaves no row on screen, so the cursor
-    /// fallback must not act on whatever repo the cursor still happens to
-    /// index from before the filter narrowed to zero.
+    /// The cursor still indexes whatever repo it was on before the filter
+    /// narrowed to zero, and the fallback must not act on it.
     #[test]
     fn a_zero_match_filter_makes_the_cursor_fallback_empty() {
         let mut a = app(&["foo", "bar"]);
@@ -327,11 +317,8 @@ mod tests {
         assert_eq!(a.effective_selection(), Vec::<usize>::new());
     }
 
-    /// An explicit selection is a deliberate choice, unlike the cursor
-    /// fallback, so it still runs even when a filter typed afterwards hides
-    /// every member of it (the plan's own "decide deliberately" note): this
-    /// is the same invariant `selection_survives_a_filter_change` already
-    /// covers, just followed through to what a run actually targets.
+    /// `selection_survives_a_filter_change` followed through to what a run
+    /// actually targets.
     #[test]
     fn an_explicit_selection_still_targets_a_repo_the_filter_now_hides() {
         let mut a = app(&["foo", "bar"]);
@@ -340,10 +327,9 @@ mod tests {
         assert_eq!(a.effective_selection(), vec![0]);
     }
 
-    /// Cursor on a repo, then a filter that matches nothing, then space:
-    /// toggling must not manufacture an explicit selection out of a row the
-    /// user can no longer see, since an explicit selection is honored across
-    /// a filter change on purpose.
+    /// Toggling must not manufacture an explicit selection out of a row the
+    /// user can no longer see, since an explicit selection is then honoured
+    /// across every later filter change.
     #[test]
     fn toggling_selection_on_a_zero_match_filter_is_a_no_op() {
         let mut a = app(&["foo"]);

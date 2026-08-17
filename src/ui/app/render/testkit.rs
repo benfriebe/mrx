@@ -37,8 +37,8 @@ pub(super) fn flatten(line: &Line) -> String {
 }
 
 /// The display column `needle` starts at. Byte offsets would not do: the
-/// markers and the ellipsis are multi-byte, so a row's bytes and the
-/// terminal cells it occupies diverge well before the first column.
+/// markers and the ellipsis are multi-byte, so a row's bytes and the terminal
+/// cells it occupies diverge before the first column.
 pub(super) fn col_of(haystack: &str, needle: &str) -> Option<usize> {
     haystack
         .find(needle)
@@ -61,9 +61,8 @@ pub(super) fn probed(branch: &str, changes: probe::Changes, ahead: u32) -> probe
     }
 }
 
-/// Every row of a rendered frame, as plain text with trailing blanks
-/// trimmed, so a layout assertion can be made against what a terminal
-/// would actually show.
+/// Every row of a rendered frame, as plain text with trailing blanks trimmed,
+/// so a layout assertion runs against what a terminal would actually show.
 pub(super) fn frame_rows(app: &App, width: u16, height: u16) -> Vec<String> {
     let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| draw(frame, app)).unwrap();

@@ -1,8 +1,6 @@
-//! Standalone fixture, not part of the CLI: enters every terminal mode the
-//! resident app can be in (raw mode, the alternate screen, mouse capture)
-//! and then panics, so a pty test can drive it and confirm the installed
-//! panic hook actually restores all three before the app's own teardown
-//! code would ever run.
+//! Fixture for `tests/ui_pty.rs`: enters every terminal mode ui mode can be
+//! in (raw mode, the alternate screen, mouse capture), then panics with the
+//! panic hook installed and no other teardown in the way.
 use crossterm::event::EnableMouseCapture;
 use crossterm::execute;
 

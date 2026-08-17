@@ -1,5 +1,5 @@
-//! The bottom line of the frame: the status message or the mode's key hints,
-//! and the rule that fits those hints to the width available.
+//! The bottom line of the frame: the status message, or the mode's key hints
+//! fitted to the width available.
 
 use ratatui::prelude::*;
 
@@ -9,7 +9,6 @@ use crate::ui::app::state::App;
 use crate::ui::widgets::display_width;
 
 /// Marks bindings left off the end of a footer too narrow for all of them.
-/// Ascii, so it never costs a cell more than it looks like it does.
 const FOOTER_ELLIPSIS: &str = "…  ";
 
 pub(super) fn status_line(app: &App, width: usize) -> Line<'static> {
@@ -22,12 +21,9 @@ pub(super) fn status_line(app: &App, width: usize) -> Line<'static> {
     keys_footer(&keymap::bindings_for(app), width)
 }
 
-/// The current mode's keys, fitted to `width` so a narrow terminal never
-/// pushes `? help` off the right edge the way an unbounded line would.
-///
-/// Help is drawn last but budgeted first, so it is the one binding a narrow
-/// terminal never loses: everything else fills what is left, whole bindings
-/// only, with an ellipsis standing in for what did not fit.
+/// The current mode's keys, fitted to `width`. Help is drawn last but budgeted
+/// first, so it is the one binding a narrow terminal never loses; everything
+/// else fills what is left, with an ellipsis standing in for what did not fit.
 fn keys_footer(bindings: &[keymap::Binding], width: usize) -> Line<'static> {
     let hinted: Vec<keymap::Binding> = bindings.iter().copied().filter(|b| b.hinted).collect();
     let budget = width
@@ -39,9 +35,7 @@ fn keys_footer(bindings: &[keymap::Binding], width: usize) -> Line<'static> {
     for binding in &fitting {
         spans.extend(footer_spans(*binding));
     }
-    // Too narrow even for the marker means too narrow to say anything but
-    // `? help`, and overflowing the line to admit that would be worse than
-    // leaving it unsaid.
+    // Too narrow even for the marker: better silent than overflowing the line.
     if dropped && budget >= display_width(FOOTER_ELLIPSIS) {
         spans.push(Span::styled(
             FOOTER_ELLIPSIS,
@@ -52,12 +46,12 @@ fn keys_footer(bindings: &[keymap::Binding], width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Indent shared with every other line in the table, so the footer's first
-/// key sits under the first column rather than hard against the edge.
+/// Indent shared with every other line in the table, so the footer's first key
+/// sits under the first column rather than hard against the edge.
 pub(super) const LEAD_IN: &str = "  ";
 
-/// One binding as the footer draws it: the keys, then the label dimmed
-/// behind the gap separating it from the next.
+/// One binding as the footer draws it: the keys, then the label dimmed, then
+/// the gap separating it from the next.
 fn footer_spans(binding: keymap::Binding) -> [Span<'static>; 2] {
     [
         Span::styled(binding.keys, Style::default().fg(Color::Gray)),
@@ -74,12 +68,9 @@ fn footer_width(binding: &keymap::Binding) -> usize {
 }
 
 /// The longest run of `bindings`, in order, that fits in `budget` cells, and
-/// whether anything had to be left off to get there.
-///
-/// A binding is kept whole or not at all: cutting one mid-label would read
-/// as a different, shorter key. When something does not fit, the ellipsis's
-/// own room is set aside up front, so the marker cannot crowd out the
-/// bindings it is there to explain.
+/// whether anything had to be left off. A binding is kept whole or not at all,
+/// since cutting one mid-label would read as a different, shorter key; the
+/// ellipsis's own room comes out of the budget before anything is kept.
 fn fitted(bindings: &[keymap::Binding], budget: usize) -> (Vec<keymap::Binding>, bool) {
     let whole: usize = bindings.iter().map(footer_width).sum();
     if whole <= budget {

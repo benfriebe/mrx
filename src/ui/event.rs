@@ -9,7 +9,7 @@ pub enum AppEvent {
 pub fn poll(timeout: Duration) -> Option<AppEvent> {
     if event::poll(timeout).ok()? {
         if let Event::Key(key) = event::read().ok()? {
-            // Only respond to Press events (ignore Release on some terminals)
+            // Some terminals also emit Release for the same key.
             if key.kind == crossterm::event::KeyEventKind::Press {
                 return Some(AppEvent::Key(key.code, key.modifiers));
             }

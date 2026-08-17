@@ -7,8 +7,7 @@ use crate::ui::app::detail;
 use crate::ui::app::render;
 use crate::ui::app::state::App;
 
-/// How many rows/lines one wheel tick moves, versus the half-page jump
-/// `Ctrl-D`/`Ctrl-U` use.
+/// Rows, or transcript lines, that one wheel tick moves.
 const WHEEL_STEP: isize = 3;
 
 pub(super) fn on_mouse(app: &mut App, mouse: MouseEvent) -> bool {
@@ -33,10 +32,9 @@ fn on_drag(app: &mut App, column: u16, row: u16) {
     }
 }
 
-/// The transcript line under a pointer in the output pane, or `None` when
-/// the pointer is elsewhere or past the end of the output. Repeats the
-/// geometry `draw_detail` lays out with: four rows of chrome above the
-/// content, and the shared footer below it whichever layout is up.
+/// The transcript line under a pointer in the output pane, or `None` when the
+/// pointer is elsewhere or past the end of the output. Repeats the geometry
+/// `draw_detail` lays out with, so the two have to move together.
 fn output_line_at(app: &App, column: u16, row: u16) -> Option<usize> {
     if !app.detail_open {
         return None;
@@ -49,9 +47,7 @@ fn output_line_at(app: &App, column: u16, row: u16) -> Option<usize> {
         return None;
     }
     let content_row = (row as usize).checked_sub(render::LIST_HEADER_ROWS)?;
-    // Same count draw_detail lands on for either layout: see
-    // detail_content_height's doc for why passing `false` here still
-    // matches a split pane.
+    // See detail_content_height's doc for why `false` still matches a split.
     let content_height = render::detail_content_height(app.terminal_height, false);
     if content_row >= content_height {
         return None;
@@ -62,17 +58,16 @@ fn output_line_at(app: &App, column: u16, row: u16) -> Option<usize> {
 }
 
 /// Click a row to move the cursor to it, click the row already under the
-/// cursor to open its detail view. A click inside the detail pane itself,
-/// or while a modal overlay is up, has no target (section 03: "no click
-/// target without a key").
+/// cursor to open its detail view. A click inside the detail pane itself, or
+/// while a modal overlay is up, has no target.
 fn on_click(app: &mut App, column: u16, row: u16) {
     if app.pending_run.is_some() || app.palette_open || app.set_picker_open || app.quit_pending {
         return;
     }
 
     if app.detail_open {
-        // A press in the output is the start of a text selection, not a
-        // click on anything: the pane has no click targets of its own.
+        // A press in the output starts a text selection: the pane has no
+        // click targets of its own.
         if let Some(line) = output_line_at(app, column, row) {
             app.begin_output_selection(line);
             return;
@@ -133,8 +128,8 @@ fn on_scroll(app: &mut App, column: u16, dir: isize) {
     app.move_cursor(dir * WHEEL_STEP);
 }
 
-/// There's no drag support (section 03); the first one swallowed while the
-/// mouse is captured tells you how to get native selection back instead.
+/// The first drag with nowhere to land tells you, once, how to get the
+/// terminal's own selection back from mouse capture.
 fn on_drag_swallowed(app: &mut App) {
     if !app.drag_hint_shown {
         app.drag_hint_shown = true;
@@ -369,10 +364,8 @@ mod tests {
         );
     }
 
-    /// A drag is never one event. The terminal sends a press, one motion
-    /// per cell crossed, and a release, so the hint is only ever on screen
-    /// if it survives everything the gesture sends after the motion that
-    /// set it.
+    /// A drag is never one event, so the hint only reaches the screen if it
+    /// survives the rest of the gesture.
     #[test]
     fn the_drag_hint_survives_the_rest_of_the_gesture() {
         let mut a = app(&["foo", "bar"]);

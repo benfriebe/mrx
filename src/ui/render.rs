@@ -38,15 +38,12 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
     let (name_col, branch_col, status_col) =
         compute_column_widths(name_nat, branch_nat, status_nat, avail);
 
-    // Calculate visible area for repo list
     let list_height = area.height.saturating_sub(5) as usize; // header + 2 separators + column headers + footer
 
-    // Determine scroll window
     let (view_start, expanded_rows) = calculate_scroll(state, list_height);
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Header
     let summary = state.summary_line();
     let title = format!("  mrx {}", state.command_name);
     let gap = (area.width as usize).saturating_sub(title.len() + summary.len());
@@ -56,13 +53,12 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
         Span::styled(&summary, Style::default().fg(Color::DarkGray)),
     ]));
 
-    // Separator
     lines.push(Line::from(Span::styled(
         "─".repeat(area.width as usize),
         Style::default().fg(Color::DarkGray),
     )));
 
-    // Column headers (labels truncate alongside their column on narrow viewports)
+    // Header labels truncate alongside their own column on narrow viewports.
     let repo_label = widgets::truncate("REPO", name_col);
     let branch_label = widgets::truncate("BRANCH", branch_col);
     let status_label = widgets::truncate("STATUS", status_col);
@@ -80,7 +76,6 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
         Span::styled(status_label, header_style),
     ]));
 
-    // Repo rows
     let visible_end = state
         .total()
         .min(view_start + list_height.saturating_sub(expanded_rows));
@@ -110,7 +105,6 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
             &columns,
         ));
 
-        // Expanded content right after the selected row
         if state.expanded == Some(i) {
             if let Some(content) = state.expanded_content() {
                 let content_lines: Vec<&str> = content.lines().collect();
@@ -122,7 +116,6 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
 
                 let box_width = area.width.saturating_sub(6) as usize;
 
-                // Top border
                 lines.push(Line::from(Span::styled(
                     format!("    ┌{}┐", "─".repeat(box_width)),
                     Style::default().fg(Color::DarkGray),
@@ -136,7 +129,6 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
                     ]));
                 }
 
-                // Bottom border (with scroll indicator if needed)
                 if content_lines.len() > max_visible {
                     let indicator = format!(" [{}-{}/{}] ", start + 1, end, content_lines.len());
                     let dash_len = box_width.saturating_sub(indicator.len());
@@ -154,13 +146,11 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
         }
     }
 
-    // Separator
     lines.push(Line::from(Span::styled(
         "─".repeat(area.width as usize),
         Style::default().fg(Color::DarkGray),
     )));
 
-    // Footer
     let footer = if state.expanded.is_some() {
         "  [↑↓] scroll  [esc] collapse  [q] quit"
     } else {
@@ -199,13 +189,11 @@ fn calculate_scroll(state: &AppState, list_height: usize) -> (usize, usize) {
     (view_start, expanded_rows)
 }
 
-/// Allocate widths for the REPO, BRANCH, and STATUS columns to fit `avail`.
-/// When natural widths exceed the budget, shrink BRANCH first (long branch names
-/// are the common offender), then STATUS, finally REPO. Each column has a soft
-/// floor equal to its header label width so the header reads cleanly. On very
-/// narrow viewports where even the floors do not fit, a final pass shrinks
-/// columns below their floors (BRANCH, then STATUS, then REPO) so the row never
-/// overflows the viewport.
+/// Allocate widths for the REPO, BRANCH, and STATUS columns to fit `avail`,
+/// shrinking BRANCH first (long branch names are the usual offender), then
+/// STATUS, then REPO. Each column floors at its header label width; if even
+/// the floors don't fit, a second pass shrinks below them in the same order so
+/// the row can never overflow the viewport.
 fn compute_column_widths(
     name_nat: usize,
     branch_nat: usize,
@@ -225,7 +213,7 @@ fn compute_column_widths(
     let mut branch = branch_nat;
     let mut status = status_nat;
 
-    // Pass 1: shrink toward floors in priority order (branch, status, name).
+    // Pass 1: down to the floors.
     let over = total - avail;
     let give = (branch.saturating_sub(branch_min)).min(over);
     branch -= give;
@@ -244,8 +232,8 @@ fn compute_column_widths(
         name -= give;
     }
 
-    // Pass 2: viewport is narrower than the sum of floors. Shrink unconditionally
-    // (down to 0) so the row fits, even if header labels truncate.
+    // Pass 2: narrower than the sum of the floors, so shrink through them
+    // (down to 0) even though the header labels then truncate.
     let total = name + branch + status;
     if total > avail {
         let mut over = total - avail;
@@ -285,9 +273,8 @@ mod tests {
 
     #[test]
     fn shrinks_status_after_branch_floor() {
-        // total nat = 50, avail = 16. branch shrinks 30→6 (floor), still 6 over,
-        // status shrinks 10→4… wait status_min = 6, so status stays 6 and name absorbs.
-        // name_nat=10 → name_min=4, name absorbs 6: 4 + 6 + 6 = 16. ✓
+        // nat 10/30/10 into 16: branch and status hit their 6-cell floors, so
+        // name absorbs the remainder down to its own floor of 4.
         let (n, b, s) = compute_column_widths(10, 30, 10, 16);
         assert_eq!(n + b + s, 16);
         assert_eq!(b, 6); // floored at "BRANCH"

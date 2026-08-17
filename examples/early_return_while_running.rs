@@ -1,10 +1,7 @@
-//! Standalone fixture, not part of the CLI: enters the same terminal state
-//! `ui::app::run` does (raw mode, the alternate screen, mouse capture), then
-//! returns an `Err` early rather than panicking, the way a `?` deep inside
-//! the run loop would. Deliberately does *not* install the panic hook, so a
-//! pty test can confirm `TerminalGuard`'s `Drop` restores the terminal on
-//! its own, independent of the panic-hook safety net that
-//! `panic_while_running` already covers.
+//! Fixture for `tests/ui_pty.rs`: enters the terminal state `ui::app::run`
+//! does (raw mode, the alternate screen, mouse capture), then returns `Err`
+//! from `main` rather than panicking. Deliberately installs no panic hook, so
+//! only `TerminalGuard`'s `Drop` is left to restore the terminal.
 
 use crossterm::event::EnableMouseCapture;
 use crossterm::execute;

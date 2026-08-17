@@ -1,7 +1,7 @@
-//! The resident app: a repo table that stays on screen across runs. Browse a
-//! set, watch the background probe fill in branch and dirty state, select
-//! repos, and run any action from `.mrconfig` against the selection without
-//! leaving the screen.
+//! ui mode: a repo table that stays on screen across runs. Browse a set,
+//! watch the background probe fill in branch and dirty state, select repos,
+//! and run any action from `.mrconfig` against the selection without leaving
+//! the screen.
 
 pub mod actions;
 pub mod detail;
@@ -36,8 +36,8 @@ fn spawn_probe_over(app: &mut App, tx: &mpsc::UnboundedSender<Probed>, targets: 
 }
 
 /// Plan and spawn a run over `req`'s targets, tagging the app with the run
-/// id it needs to attribute incoming `RunEvent`s to and drive the header
-/// with. Returns the handle so the caller can cancel it later.
+/// id incoming `RunEvent`s are attributed by. Returns the handle so the
+/// caller can cancel it later.
 fn spawn_action_run(
     app: &mut App,
     tx: &mpsc::UnboundedSender<RunEvent>,
@@ -57,8 +57,8 @@ fn spawn_action_run(
         app.config_path.clone(),
         tx.clone(),
         run_id,
-        // The detail view shows output while it arrives, so the app is the
-        // one caller that wants a line at a time.
+        // The detail view shows output as it arrives, so this is the one
+        // caller that wants a line at a time.
         true,
     )
 }
@@ -72,17 +72,15 @@ const POLL_RESET_GRACE: Duration = Duration::from_millis(250);
 /// `poll_enabled` on the previous loop iteration and its value now, or
 /// `None` to leave the running ticker alone.
 ///
-/// Only the off-to-on transition re-phases the ticker: on every other
-/// iteration the running one is left to its own interval, so the startup
-/// delay [`run`] builds it with survives and a poll that stays on keeps
-/// firing on schedule.
+/// Only the off-to-on transition re-phases the ticker, so the startup delay
+/// [`run`] builds it with survives and a poll that stays on keeps firing on
+/// schedule.
 fn poll_ticker_restart_delay(was_enabled: bool, is_enabled: bool) -> Option<Duration> {
     (!was_enabled && is_enabled).then_some(POLL_RESET_GRACE)
 }
 
-/// Everything [`run`] needs to open the resident app, bundled to satisfy
-/// clippy's argument-count limit (the same shape `widgets::RepoRow` used
-/// for this in phase 0).
+/// Everything [`run`] needs to open ui mode, bundled to satisfy clippy's
+/// argument-count limit.
 pub struct RunOptions {
     pub repos: Vec<Repo>,
     pub set_label: String,
@@ -91,10 +89,8 @@ pub struct RunOptions {
     pub config_path: PathBuf,
     pub force: bool,
     pub dir_override: Option<PathBuf>,
-    /// Whatever `session::load()` returned before the repo list was even
-    /// resolved (`main.rs` needed it earlier, to decide which set to open
-    /// on the stored one's own terms); applied once, after `App::new`, to
-    /// restore the filter, selection, cursor, and poll settings.
+    /// Loaded by `main.rs` before the repo list exists, since the stored set
+    /// decides which repos to resolve; applied once, after `App::new`.
     pub session: session::Session,
     /// `--result-ttl`: how long a run's result stays on its row. `None` was
     /// asked for explicitly (`off`); an absent flag arrives here as the
@@ -102,7 +98,7 @@ pub struct RunOptions {
     pub result_ttl: Option<Duration>,
 }
 
-/// Open the resident app and block until the user quits.
+/// Open ui mode and block until the user quits.
 pub async fn run(options: RunOptions) -> io::Result<()> {
     let RunOptions {
         repos,
@@ -118,11 +114,9 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
 
     super::install_panic_hook();
     let mut terminal = super::setup_terminal()?;
-    // From here on, every `?` in this function (including the ones inside
-    // the run loop below) is a way to return early with raw mode and the
-    // alternate screen still active; `_terminal_guard`'s `Drop` is what
-    // restores the terminal on any of those paths, not just the explicit
-    // teardown at the bottom of this function.
+    // Every `?` from here on, the run loop's included, returns with raw mode
+    // and the alternate screen still active; this guard's `Drop` is what
+    // restores the terminal on those paths.
     let _terminal_guard = super::TerminalGuard;
     apply_mouse_capture(true)?;
 
@@ -137,33 +131,28 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
     );
     app.result_ttl = result_ttl;
     app.restore_session(&session);
-    // A corrupted or hostile `ui.json` is caught at the point it's parsed
-    // (`session::from_fields`); this is the last line of defense so that no
-    // path into `poll_interval`, present or future, can build an `Instant`
-    // that overflows below.
+    // `session::from_fields` already rejects an out-of-range interval; this
+    // is belt and braces, so no path into `poll_interval` can reach the
+    // `Instant` arithmetic below unclamped.
     app.poll_interval = poll::clamp_interval(app.poll_interval);
     let (mut input, input_gate, input_handle) = input_thread();
-    // Declared after `_terminal_guard` so it drops first; see the type's
-    // own doc comment for why the order matters. Dropped explicitly, ahead
-    // of the terminal teardown below, on the normal quit path; left to
-    // `Drop` on every early `?` return instead.
+    // Declared after `_terminal_guard` so it drops first; see
+    // [`InputThreadGuard`] for why the order matters. Dropped explicitly on
+    // the quit path below, left to `Drop` on every early `?` return.
     let input_guard = InputThreadGuard {
         gate: input_gate.clone(),
         handle: Some(input_handle),
     };
     let mut ticker = tokio::time::interval(Duration::from_millis(200));
-    // The interval arm always ticks, whether or not the poll is on
-    // (section 05); `on_poll_due` is what actually decides. Delayed a full
-    // interval past startup rather than firing immediately, so a restored
-    // "poll on" session doesn't race the very first, unconditional probe
-    // below.
+    // The interval arm always ticks; `on_poll_due` decides whether a cycle
+    // runs. Delayed a full interval past startup so a restored "poll on"
+    // session doesn't race the unconditional probe below.
     let mut poll_ticker = tokio::time::interval_at(
         tokio::time::Instant::now() + app.poll_interval,
         app.poll_interval,
     );
-    // `poll_enabled` as of the end of the previous iteration, so the loop
-    // can spot `F` turning the poll on without `toggle_poll` having to
-    // record anything for it.
+    // `poll_enabled` as of the previous iteration, so the loop can spot `F`
+    // turning the poll on without `toggle_poll` recording anything for it.
     let mut poll_was_enabled = app.poll_enabled;
     let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
     let (run_tx, mut run_rx) = mpsc::unbounded_channel::<RunEvent>();
@@ -181,26 +170,23 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
     app.terminal_height = completed.area.height;
 
     // The live run's handle, held here so `Esc` has something to cancel.
-    // Stale once its run is superseded or finished, but flipping its flag
-    // then is harmless: nothing is left to check it.
+    // Stale once its run is superseded or finished, but flipping a stale
+    // handle's flag is harmless: nothing is left to check it.
     let mut current_run: Option<executor::RunHandle> = None;
 
     loop {
         tokio::select! {
             ev = input.recv() => {
                 // `None` means the input thread's own read failed and it
-                // ended: pattern-matching on `Some(ev)` in the
-                // select arm above would just leave this arm permanently
-                // disabled instead, since the receiver stays instantly
-                // ready-with-None from here on, and the app would spin
-                // forever redrawing on ticks with no way left to quit.
-                // Treat that the same as an explicit quit.
+                // ended. Matching `Some(ev)` in the select arm instead would
+                // disable this arm for good, leaving the app spinning on
+                // ticks with no way left to quit, so treat it as a quit.
                 let Some(ev) = ev else {
                     break;
                 };
                 let should_quit = keys::on_input(&mut app, ev);
-                // Best-effort: a session write failing (a full disk, a
-                // read-only home) shouldn't take the app down over it.
+                // Best-effort: a failed session write (a full disk, a
+                // read-only home) shouldn't take the app down.
                 let _ = session::save(&app);
                 if should_quit {
                     break;
@@ -235,11 +221,10 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
                                 }
                             });
                         }
-                        // The terminal itself could not be restored; drawing
-                        // another frame against `terminal` would just paint
-                        // over a real shell that mrx no longer controls.
-                        // Propagate so `main.rs`'s `.expect()` panics and the
-                        // installed panic hook gets one last attempt at
+                        // The terminal itself could not be restored, so
+                        // drawing again would paint over a real shell mrx no
+                        // longer controls. Propagate, and let `main.rs`'s
+                        // `.expect()` hand the panic hook one last attempt at
                         // putting the terminal back.
                         Err(e) => return Err(e),
                     }
@@ -280,8 +265,6 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
                 }
             }
         }
-        // Turning the poll on asks for a cycle now, not at whatever tick
-        // boundary the ticker was already heading for.
         if let Some(delay) = poll_ticker_restart_delay(poll_was_enabled, app.poll_enabled) {
             poll_ticker =
                 tokio::time::interval_at(tokio::time::Instant::now() + delay, app.poll_interval);
@@ -293,12 +276,9 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
         app.terminal_height = completed.area.height;
     }
 
-    // Stop and join the input thread before handing the tty back: otherwise
-    // it's still polling stdin for up to GATE_POLL_INTERVAL after this
-    // returns, competing with the shell the terminal is about to be
-    // restored to for the first key the user types. An explicit drop here
-    // rather than waiting for scope exit, so this happens before the
-    // teardown below rather than after it.
+    // Explicit rather than waiting for scope exit, so the reader is stopped
+    // and joined before the teardown below hands the tty back rather than
+    // after it; see [`InputThreadGuard`].
     drop(input_guard);
 
     apply_mouse_capture(false)?;
@@ -314,10 +294,9 @@ mod tests {
     /// default is 300s; these wait on wall-clock ticks, so they use an
     /// interval that is still an order of magnitude clear of the grace.
     ///
-    /// The two ticker tests below rebuild the ticker themselves, so they
-    /// pin [`poll_ticker_restart_delay`] and tokio's `interval_at`, not the
-    /// call site in [`run`]: deleting that call leaves them green. Only
-    /// driving the app covers it.
+    /// Both ticker tests rebuild the ticker themselves, so they pin
+    /// [`poll_ticker_restart_delay`], not its call site in [`run`]: deleting
+    /// that call leaves them green.
     const TEST_INTERVAL: Duration = Duration::from_secs(4);
 
     #[test]

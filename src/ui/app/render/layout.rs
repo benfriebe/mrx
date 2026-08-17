@@ -34,11 +34,10 @@ pub(crate) fn detail_content_height(pane_height: u16, split: bool) -> usize {
     (pane_height as usize).saturating_sub(LIST_HEADER_ROWS + footer)
 }
 
-/// Name and state column widths for the two-column sidebar. The name column
-/// shrink-wraps the longest repo name so the state text sits beside the
-/// names rather than across a field of empty cells, capped at two thirds of
-/// `avail` so one very long name can't squeeze the state out. State takes
-/// what is left, being the last column.
+/// Name and state column widths for the two-column sidebar. Name shrink-wraps
+/// the longest repo name so the state text sits beside the names rather than
+/// across a field of empty cells, capped at two thirds of `avail` so one long
+/// name can't squeeze the state out; state takes what is left.
 pub(super) fn sidebar_column_widths(app: &App, avail: usize) -> (usize, usize) {
     if avail == 0 {
         return (0, 0);
@@ -54,8 +53,8 @@ pub(super) fn sidebar_column_widths(app: &App, avail: usize) -> (usize, usize) {
 /// [`styled_two_column_line`] gives up. [`detail::sidebar_width`] caps it.
 pub(crate) fn sidebar_natural_width(app: &App) -> u16 {
     let columns = PREFIX_W + natural_name_width(app) + COL_GAP + natural_state_width(app);
-    // The header's own two columns need the same gap the rows use, or the
-    // title and the counts meet with nothing between them.
+    // The header's columns need the same gap the rows use, or the title and
+    // the counts meet with nothing between them.
     let header = display_width(&header_title(app, true))
         + COL_GAP
         + display_width(&app.header_right_text())
@@ -85,10 +84,9 @@ fn natural_state_width(app: &App) -> usize {
         .max(display_width(STATE_LABEL))
 }
 
-/// Column widths for the four-column repo table: NAME, BRANCH, and STATE
-/// each get their natural width up to a share of `avail`, RESULT gets
-/// whatever is left, since a summary or a live step label is usually the
-/// most interesting thing in the row.
+/// Column widths for the four-column repo table: NAME, BRANCH and STATE each
+/// get their natural width up to a share of `avail`; RESULT takes the rest,
+/// being the column whose text is usually worth reading in full.
 pub(super) fn column_widths(app: &App, avail: usize) -> (usize, usize, usize, usize) {
     let name_nat = app
         .repos
@@ -116,9 +114,8 @@ pub(super) fn column_widths(app: &App, avail: usize) -> (usize, usize, usize, us
 }
 
 /// First visible-list index to draw: `prev` where it still shows the cursor,
-/// otherwise the nearest offset that does. Moving the window only as far as
-/// the cursor demands is what lets the cursor travel within the window
-/// instead of dragging the whole list along with it.
+/// otherwise the nearest offset that does, so the cursor travels within the
+/// window instead of dragging the whole list along with it.
 pub(crate) fn scroll_offset(
     prev: usize,
     cursor_pos: usize,
@@ -153,8 +150,7 @@ mod tests {
 
     #[test]
     fn scroll_offset_holds_still_while_the_cursor_moves_inside_the_window() {
-        // The window that row 9 forced open, with the cursor walking back up
-        // through it: rows 5..=9 keep the same five rows on screen.
+        // The window row 9 forced open, with the cursor walking back up it.
         assert_eq!(scroll_offset(5, 8, 10, 5), 5);
         assert_eq!(scroll_offset(5, 5, 10, 5), 5);
         // Only stepping off the top edge moves it, and only by the one row.

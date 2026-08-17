@@ -5,13 +5,10 @@ use super::App;
 use crate::ui::app::poll::{self, AutoUpdateOutcome, AutoUpdateResult};
 
 impl App {
-    /// The tick loop's poll `Interval` arm always fires; this is what
-    /// decides whether a given tick actually does anything (section 05,
-    /// "a timer that exists but does nothing is cheaper to reason about
-    /// than one that gets created and dropped as the mode toggles").
-    /// Suspended rather than queued while a run is live (section 02): a
-    /// fetch storm competing with a live update for the network is worse
-    /// than a poll landing a cycle late.
+    /// The tick loop's poll `Interval` arm always fires; this is what decides
+    /// whether a given tick actually does anything. Suspended rather than
+    /// queued while a run is live: a fetch storm competing with a live update
+    /// for the network is worse than a poll landing a cycle late.
     pub fn on_poll_due(&mut self) {
         if !self.poll_enabled || self.run_action.is_some() {
             return;
@@ -22,17 +19,14 @@ impl App {
         self.poll_targets_requested = Some(targets);
     }
 
-    /// Set by [`on_poll_due`](Self::on_poll_due); consumed by the run loop,
-    /// the only thing with a runtime handle to spawn the resulting fetch
-    /// with.
     pub fn take_poll_requested(&mut self) -> Option<Vec<usize>> {
         self.poll_targets_requested.take()
     }
 
     /// `F`: turn the freshness poll on or off. The interval stays whatever
     /// it last was rather than resetting to the default every time. Turning
-    /// it off also turns auto-update off: a fast-forward pass with nothing
-    /// feeding it fresh data has nothing to act on (section 02).
+    /// it off also turns auto-update off, which has nothing to act on
+    /// without a poll feeding it fresh data.
     pub fn toggle_poll(&mut self) {
         self.poll_enabled = !self.poll_enabled;
         if !self.poll_enabled {
@@ -41,8 +35,7 @@ impl App {
     }
 
     /// `Ctrl-A`: turn auto-update on or off. Refuses while the poll itself
-    /// is off, since auto-update only ever acts on a poll's results
-    /// (section 02: "after a poll, pull the repos that came back behind").
+    /// is off, since auto-update only ever acts on a poll's results.
     pub fn toggle_auto_update(&mut self) {
         if !self.poll_enabled {
             self.status_message = Some("auto-update needs the freshness poll on first".into());
@@ -59,17 +52,13 @@ impl App {
             return;
         }
         self.poll_generation = None;
-        // Per-repo freshness is already recorded as each result lands (see
-        // `on_probe`); nothing left to do here for that. A plain probe
-        // reaching this point never got here at all, since it never set
-        // `poll_generation` to begin with.
+        // Per-repo freshness is already recorded as each result lands, in
+        // `on_probe`; there is nothing left to do here for that.
         if !self.auto_update {
             return;
         }
-        // A run that started after this poll began but before it finished
-        // suspends the fast-forward pass the same way `on_poll_due` would
-        // have suspended the poll itself from starting (section 02: "both
-        // suspend while a run is live").
+        // A run that started mid-cycle suspends the fast-forward pass, the
+        // same way `on_poll_due` suspends the poll itself.
         if self.run_action.is_some() {
             return;
         }
@@ -79,10 +68,8 @@ impl App {
         if self.auto_update_in_flight() {
             return;
         }
-        // `s.fetched` restricts eligibility to repos whose fetch actually
-        // succeeded in this cycle; a repo whose fetch failed keeps whatever
-        // stale ahead/behind it already had and must not be trusted for a
-        // merge on the strength of it.
+        // A repo whose fetch failed keeps whatever stale ahead/behind it
+        // already had, so `s.fetched` is what makes it ineligible.
         //
         // Everything this cycle found behind is either a target or a skip,
         // split on `can_fast_forward` itself so the two can't drift apart.
@@ -129,26 +116,21 @@ impl App {
     }
 
     /// The generation the current in-flight auto-update cycle was tagged
-    /// with; consumed by the run loop to tag the `spawn_auto_update` call it
-    /// is about to make.
+    /// with, for the caller to tag its `spawn_auto_update` call with.
     pub fn auto_update_generation(&self) -> u64 {
         self.auto_update_generation
     }
 
-    /// Set by [`maybe_complete_poll`](Self::maybe_complete_poll); consumed
-    /// by the run loop, the only thing with a runtime handle to spawn the
-    /// resulting merges with.
     pub fn take_auto_update_requested(&mut self) -> Option<Vec<usize>> {
         self.auto_update_requested.take()
     }
 
     /// Apply one repo's outcome from an auto-update pass, unless it belongs
-    /// to a cycle a later one has since superseded (a late
-    /// result from an old cycle must not corrupt a new one's counters).
-    /// Once every targeted repo has reported in, leaves an honest one-line
-    /// summary in the status bar: repos a fast-forward could not touch are
-    /// reported, not fixed (section 02), counted rather than named. That
-    /// count spans both the repos that failed here and the ones
+    /// to a cycle a later one has since superseded. Once every targeted repo
+    /// has reported in, leaves a one-line summary in the status bar: repos a
+    /// fast-forward could not touch are reported rather than fixed, counted
+    /// rather than named, and that count spans both the repos that failed
+    /// here and the ones
     /// [`maybe_complete_poll`](Self::maybe_complete_poll) never targeted.
     pub fn on_auto_update_result(&mut self, result: AutoUpdateResult) {
         if result.generation != self.auto_update_generation {
@@ -178,17 +160,12 @@ impl App {
         self.auto_update_skipped = 0;
     }
 
-    /// Set once an auto-update pass finishes with at least one repo it
-    /// actually touched; consumed by the run loop, which owns spawning the
-    /// resulting re-probe so those rows' branch and ahead/behind reflect
-    /// the merge.
     pub fn take_auto_update_reprobe_targets(&mut self) -> Option<Vec<usize>> {
         self.auto_update_reprobe_targets.take()
     }
 
     /// The header's `poll 5m` / `poll 5m · auto` text, `None` when the poll
-    /// is off. A mode that silently modifies repos and is invisible on
-    /// screen is a bug waiting to be filed (section 02).
+    /// is off, so a mode that modifies repos is never invisible on screen.
     pub fn poll_status_text(&self) -> Option<String> {
         if !self.poll_enabled {
             return None;
@@ -302,11 +279,8 @@ mod tests {
 
     #[test]
     fn a_run_starting_mid_poll_suppresses_that_polls_auto_update() {
-        // The poll begins while nothing is running, so `on_poll_due` lets it
-        // start; a run then begins before every repo's fetch has landed.
-        // The fast-forward pass that poll cycle would otherwise queue must
-        // not fire underneath the live run (section 02: "both suspend while
-        // a run is live").
+        // The poll starts with nothing running, then a run begins before
+        // every repo's fetch has landed.
         let mut a = app(&["clean-behind"]);
         a.poll_enabled = true;
         a.auto_update = true;
@@ -603,9 +577,6 @@ mod tests {
             generation: 1,
             outcome: AutoUpdateOutcome::FastForwarded,
         });
-        // The point of the test is that this doesn't panic; a debug build
-        // panics on integer underflow, which is what an unguarded
-        // `total - ok` would do here.
     }
 
     #[test]

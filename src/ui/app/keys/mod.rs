@@ -1,7 +1,7 @@
-//! Keymap and mouse dispatch for the resident app. Input arrives as a
+//! Keymap and mouse dispatch for ui mode. Input arrives as a
 //! `crossterm::Event` rather than a `KeyEvent`, so mouse and resize land on
-//! this same entry point; keys.rs owns both so a click and Enter can't
-//! disagree about what opening a row means.
+//! this same entry point, and a click and Enter can't disagree about what
+//! opening a row means.
 
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -31,14 +31,10 @@ pub fn on_input(app: &mut App, event: Event) -> bool {
     }
 }
 
-/// The status line is transient: the user's next action replaces it with
-/// the footer. The tail of a mouse gesture is not that next action, and
-/// treating it as one is why the swallowed-drag hint was never on screen
-/// long enough to read. One press-drag-release sends a press, a motion per
-/// cell crossed, and a release, so the motion that sets the hint is always
-/// followed by more events from the same gesture. Mouse capture also asks
-/// for all motion (`?1003h`), so even a still gesture is followed by a
-/// `Moved` the moment the pointer twitches.
+/// The status line is transient: the user's next action replaces it with the
+/// footer. The tail of a mouse gesture is not that action, and treating it as
+/// one wiped the swallowed-drag hint before it could be painted. Capture also
+/// asks for all motion (`?1003h`), so `Moved` arrives on a mere twitch.
 fn clears_status_message(event: &Event) -> bool {
     !matches!(
         event,
@@ -49,22 +45,19 @@ fn clears_status_message(event: &Event) -> bool {
     )
 }
 
-/// `Terminal::draw` re-queries the real terminal size and resizes its own
-/// buffers on its own (ratatui's `autoresize`), so this just keeps `App`'s
-/// cached width/height, used for click and scroll geometry between draws,
-/// from lagging a frame behind an actual resize.
+/// `Terminal::draw` resizes its own buffers (ratatui's `autoresize`), so all
+/// this does is keep `App`'s cached width/height, used for click and scroll
+/// geometry between draws, from lagging a frame behind a real resize.
 fn on_resize(app: &mut App, width: u16, height: u16) {
     app.terminal_width = width;
     app.terminal_height = height;
 }
 
 fn on_key(app: &mut App, key: KeyEvent) -> bool {
-    // Handled ahead of every modal dispatch below: section 03 binds
-    // `q / Ctrl-C` to quit in mode "any", and a mode-local handler that
-    // forgets to wire it (the set picker, the dirty-run confirm) would
-    // otherwise strand the user in a state with no way out. A second
-    // Ctrl-C at the quit prompt itself confirms rather than declining, same
-    // as `y`/Enter there.
+    // Quit is bound in every mode, and handled here rather than in each of
+    // them: a mode-local handler that forgets to wire it (the set picker, the
+    // dirty-run confirm) would strand the user with no way out. A second
+    // Ctrl-C at the quit prompt confirms rather than declining, like `y`.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return if app.quit_pending {
             app.confirm_quit()
@@ -75,9 +68,8 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
     if app.quit_pending {
         return on_quit_confirm_key(app, key);
     }
-    // Dismissed by anything that could mean "done reading", since the
-    // overlay reads rather than does, and hunting for its one exit key is
-    // the annoyance a help screen is least entitled to.
+    // Dismissed by any key: the overlay reads rather than does, so there is
+    // nothing to hunt for an exit key over.
     if app.help_open {
         app.help_open = false;
         return false;
@@ -105,12 +97,9 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
 
 fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
-        // A held Ctrl that matches none of these must not fall through to
-        // the plain-letter shortcuts below: crossterm reports Ctrl+U as
-        // `Char('u')` with the modifier set, and `KeyCode::Char('u')` alone
-        // would otherwise match it, running `update` (or worse, `s`/`f`/`d`)
-        // on a common readline chord like Ctrl-U with no confirmation.
-        // Ctrl-C is handled centrally in `on_key`, ahead of this dispatch.
+        // crossterm reports Ctrl-U as `Char('u')` with the modifier set, so an
+        // unmatched Ctrl chord must return rather than fall through to the
+        // plain-letter shortcuts and run `update` on a readline keystroke.
         return match key.code {
             KeyCode::Char('d') => {
                 app.move_cursor_half_page(1);
@@ -175,9 +164,9 @@ fn on_quit_confirm_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-/// Keys while the set picker is open: just navigation and the two exits.
-/// No text capture, unlike the action palette, since the list of sets is
-/// short enough to scan without filtering it.
+/// Keys while the set picker is open: just navigation and the two exits. No
+/// text capture, unlike the palette, since the list of sets is short enough to
+/// scan without filtering it.
 fn on_set_picker_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.close_set_picker(),
@@ -190,8 +179,7 @@ fn on_set_picker_key(app: &mut App, key: KeyEvent) {
 
 /// Keys while `/` is capturing text. Everything but Esc, Enter, and
 /// Backspace is literal filter text, including letters that are shortcuts in
-/// the normal mode. Ctrl-C is handled centrally in `on_key`, ahead of this
-/// dispatch, so it still quits rather than becoming filter text.
+/// the normal mode.
 fn on_filter_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.cancel_filter(),
@@ -204,7 +192,6 @@ fn on_filter_key(app: &mut App, key: KeyEvent) {
 
 /// Keys while the action palette is open. Same shape as filter capture:
 /// only navigation and the exits are special, everything else is text.
-/// Ctrl-C is handled centrally in `on_key`, ahead of this dispatch.
 fn on_palette_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.close_palette(),
@@ -217,8 +204,8 @@ fn on_palette_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Keys while the dirty-selection confirmation is up (section 11): a modal
-/// that swallows everything but yes/no.
+/// Keys while the dirty-selection confirmation is up: a modal that swallows
+/// everything but yes/no.
 fn on_confirm_key(app: &mut App, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Char('y') | KeyCode::Enter => app.confirm_pending_run(),
@@ -233,7 +220,6 @@ fn on_confirm_key(app: &mut App, key: KeyEvent) -> bool {
 /// underlying selection (the view follows it), plus scrolling, copying, and
 /// the exit back to the full-width list.
 fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
-    // Ctrl-C is handled centrally in `on_key`, ahead of this dispatch.
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
             KeyCode::Char('d') => {
@@ -253,10 +239,8 @@ fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
     }
     match key.code {
         KeyCode::Char('q') => return app.request_quit(),
-        // `j`/`k` follow the focus: on the list they walk rows and the
-        // output follows; on the output they scroll it and the cursor stays
-        // where it is. Both panes are on screen either way, so which one
-        // moves has to be something the user chose.
+        // `j`/`k` follow the focus. Both panes are on screen either way, so
+        // which one moves has to be something the user chose.
         KeyCode::Char('j') | KeyCode::Down => match app.focus {
             Pane::List => app.move_cursor(1),
             Pane::Output => app.detail_scroll_by(1),
@@ -310,9 +294,9 @@ mod tests {
         assert_eq!(a.filter, "ba");
     }
 
-    /// Esc in the list is a deliberate no-op, so a committed filter has no
-    /// key of its own that drops it; `/` starts over instead of resuming the
-    /// search that is already narrowing the list.
+    /// Esc in the list cancels a run, not a filter, so a committed filter has
+    /// no key of its own that drops it; `/` starts over instead of resuming
+    /// the search already narrowing the list.
     #[test]
     fn slash_starts_a_fresh_search_after_a_committed_filter() {
         let mut a = app(&["alpha", "bravo"]);

@@ -1,5 +1,5 @@
 //! Hand-rolled ANSI escape handling: no crate does exactly "split into ratatui
-//! runs" for us, and pulling one in for this much surface area isn't worth it.
+//! runs" for us.
 //!
 //! The parser tracks one running [`Style`], applies `CSI ... m` (SGR) parameters
 //! to it left to right, and cuts a new [`Run`] each time the style actually
@@ -61,7 +61,7 @@ pub fn parse(line: &str) -> Vec<Run> {
                 chars.next();
             }
             None => {
-                // Stray ESC as the last character. Nothing follows to consume.
+                // Stray ESC as the last character.
             }
         }
     }
@@ -84,9 +84,9 @@ pub fn strip(s: &str) -> String {
 /// in `0x20..=0x3F`, then a final byte in `0x40..=0x7E`. Returns the raw
 /// parameter text and the final byte.
 ///
-/// If the string ends, or a byte outside those ranges shows up, first, the
+/// If the string ends, or a byte outside those ranges shows up first, the
 /// sequence is abandoned: whatever was read is dropped as an incomplete
-/// escape, but the offending byte itself is left for the caller to process as
+/// escape, but the offending byte is left for the caller to process as
 /// ordinary text rather than being eaten too.
 fn consume_csi(chars: &mut Peekable<Chars>) -> (String, Option<char>) {
     let mut params = String::new();
@@ -209,10 +209,9 @@ fn bright_color(n: u32) -> Color {
 /// how many extra parameters (beyond the `38`/`48` itself) it consumed.
 ///
 /// A malformed or truncated sequence still reports every parameter it looked
-/// at as consumed, so the caller always skips past them: a `38`/`48`
-/// introducer commits its trailing parameters to describing a colour, and
-/// they must never fall through to being reinterpreted as unrelated SGR
-/// codes (e.g. a truncated `38;2;R;G` misread as bold/dim).
+/// at as consumed: a `38`/`48` introducer commits its trailing parameters to
+/// describing a colour, and they must never fall through to being
+/// reinterpreted as unrelated SGR codes (a truncated `38;2;R;G` as bold/dim).
 fn extended_color(rest: &[u32]) -> (Option<Color>, usize) {
     match rest.first() {
         Some(5) => match rest.get(1) {
@@ -233,11 +232,9 @@ fn extended_color(rest: &[u32]) -> (Option<Color>, usize) {
 /// start of each line whatever [`Style`] was still active at the end of the
 /// previous one.
 ///
-/// A real terminal carries SGR state across newlines; parsing each line of a
-/// multi-line block independently (as [`parse`] does, by design, for a single
-/// line) would otherwise drop that state at every line boundary. Callers that
-/// need per-line styling of a block that may span several lines should split
-/// with this instead of `str::lines()`.
+/// A real terminal carries SGR state across newlines, but [`parse`] works one
+/// line at a time and would drop it at every boundary. Split a multi-line
+/// block with this instead of `str::lines()`.
 ///
 /// When no style is carried in, nothing is prepended, so a plain line comes
 /// back byte-identical to what `str::lines()` yields.
@@ -286,9 +283,8 @@ fn advance_style(style: &mut Style, text: &str) {
 }
 
 /// Serialises `style` back into the SGR sequence that re-establishes it from
-/// scratch: a reset followed by whichever colours and modifiers are set.
-/// Emitting the reset first makes this absolute rather than relative, so it
-/// is safe to prepend to a line regardless of what preceded it.
+/// scratch: a reset followed by whichever colours and modifiers are set. The
+/// leading reset makes it absolute, so it is safe to prepend to any line.
 ///
 /// `Style::default()` serialises to an empty string: there is nothing to
 /// re-establish, and callers rely on that to leave unstyled lines untouched.
@@ -493,8 +489,8 @@ mod tests {
 
     #[test]
     fn malformed_csi_interrupted_by_control_byte_keeps_trailing_text() {
-        // 0x01 falls outside both the CSI parameter and final-byte ranges, so it
-        // aborts the sequence without being consumed, and the text after it survives.
+        // 0x01 is outside both CSI byte ranges, so it aborts the sequence
+        // without being consumed and the text after it survives.
         assert_eq!(strip("before\u{1b}[123\u{1}after"), "before\u{1}after");
     }
 
@@ -561,9 +557,8 @@ mod tests {
 
     #[test]
     fn truncated_truecolor_yields_no_colour_and_no_spurious_modifiers() {
-        // "38;2;1;2" is a truecolor introducer missing its blue component: the
-        // whole malformed sequence must be swallowed, not reinterpreted as
-        // DIM(2)/BOLD(1)/DIM(2) once the colour parse gives up.
+        // A truecolor introducer missing its blue component must be swallowed
+        // whole, not reinterpreted as DIM(2)/BOLD(1)/DIM(2).
         let runs = parse("\u{1b}[38;2;1;2mtext");
         assert_eq!(runs[0].style.fg, None);
         assert_eq!(runs[0].style, Style::default());
@@ -596,8 +591,6 @@ mod tests {
         // The first line is untouched: no style was carried in yet.
         assert_eq!(lines[0], "\u{1b}[1;33mWARNING");
 
-        // The second and third lines re-open bold-yellow before their text, so
-        // parsing each one independently still recovers the carried style.
         let bold_yellow = |runs: &[Run]| {
             runs[0].style.fg == Some(Color::Yellow)
                 && runs[0].style.add_modifier.contains(Modifier::BOLD)
@@ -606,8 +599,8 @@ mod tests {
         assert_eq!(texts(&parse(&lines[1])), vec!["  - step one"]);
         assert!(bold_yellow(&parse(&lines[2])));
 
-        // Line three's trailing reset ends the block, so the style carried
-        // into line four is back to default: nothing is prepended.
+        // Line three's trailing reset ends the block, so nothing is prepended
+        // to line four.
         assert_eq!(lines[3], "  - step three");
         assert_eq!(parse(&lines[3])[0].style, Style::default());
     }
@@ -619,10 +612,9 @@ mod tests {
         assert_eq!(lines[0], "\u{1b}[31mred");
         assert_eq!(parse(&lines[1])[0].style.fg, Some(Color::Red));
         // The reset lives inside line three's own content, so that line still
-        // renders plain even though red style was carried into it.
+        // renders plain even though red was carried into it.
         assert_eq!(texts(&parse(&lines[2])), vec!["plain"]);
         assert_eq!(parse(&lines[2])[0].style, Style::default());
-        // By line four the carried style is default, so nothing is prepended.
         assert_eq!(lines[3], "still plain");
     }
 }

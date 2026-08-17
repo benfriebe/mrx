@@ -30,7 +30,6 @@ impl App {
             .collect();
         // `discover` only returns sets that exist on disk under a name; the
         // active config may be neither, e.g. an implicit default or `-c`.
-        // Matches `print_sets`' handling of the same case.
         if !entries.iter().any(|e| e.path == self.config_path) {
             entries.push(SetEntry {
                 name: "(unnamed)".into(),
@@ -58,23 +57,19 @@ impl App {
         self.set_picker_cursor = next;
     }
 
-    /// Confirm the highlighted set: load its config and switch to it, with
-    /// a full re-probe (section 03, "switching reloads the config and
-    /// restarts the probe").
+    /// Confirm the highlighted set: load its config and switch to it, with a
+    /// full re-probe.
     ///
-    /// Re-checks [`mutation_blocker`](Self::mutation_blocker) here rather
-    /// than trusting the check [`open_set_picker`](Self::open_set_picker)
-    /// made when the picker opened: a run or an auto-update pass can start
-    /// in the time the picker sat open waiting for Enter, and switching sets
-    /// out from under either would hand their in-flight results indices
-    /// belonging to the wrong repo list.
+    /// Re-checks [`mutation_blocker`](Self::mutation_blocker) rather than
+    /// trusting the check [`open_set_picker`](Self::open_set_picker) made: a
+    /// run or an auto-update pass can start while the picker sits open, and
+    /// switching sets would hand its in-flight results indices belonging to
+    /// the wrong repo list.
     ///
-    /// Uses [`config::try_load`] rather than `config::load`: this runs with
-    /// raw mode, the alternate screen, and mouse capture all
-    /// active, so a `std::process::exit` here would skip teardown and the
-    /// panic hook and leave the terminal wrecked. An unreadable or
-    /// unparseable config keeps the set currently open and reports the
-    /// error instead.
+    /// Uses [`config::try_load`] rather than `config::load`, whose
+    /// `std::process::exit` would skip teardown and the panic hook and leave
+    /// the terminal in raw mode on the alternate screen. An unreadable or
+    /// unparseable config keeps the set currently open and reports the error.
     pub fn confirm_set_picker(&mut self) {
         let Some(entry) = self.set_entries.get(self.set_picker_cursor).cloned() else {
             self.close_set_picker();
@@ -99,14 +94,9 @@ impl App {
 
     /// `Ctrl-R`: re-read the active config from disk without changing which
     /// config is active. Blocked by
-    /// [`mutation_blocker`](Self::mutation_blocker), the same guard
-    /// [`open_set_picker`](Self::open_set_picker) uses.
-    ///
-    /// Uses [`config::try_load`] rather than `config::load` for the same
-    /// reason [`confirm_set_picker`](Self::confirm_set_picker) does: this runs
-    /// with the terminal in raw mode, so exiting the
-    /// process here bypasses teardown. A bad edit mid-save keeps the current
-    /// config loaded and reports the error rather than killing the app.
+    /// [`mutation_blocker`](Self::mutation_blocker), and uses
+    /// [`config::try_load`] for the reason
+    /// [`confirm_set_picker`](Self::confirm_set_picker) gives.
     pub fn reload_config(&mut self) {
         if self.refuse_if_mutation_blocked("reload") {
             return;
@@ -167,9 +157,6 @@ impl App {
         self.full_reprobe_requested = true;
     }
 
-    /// Set by a config reload or set switch; consumed by the run loop,
-    /// which is the only thing with a runtime handle to spawn the resulting
-    /// probe with.
     pub fn take_full_reprobe_request(&mut self) -> bool {
         std::mem::take(&mut self.full_reprobe_requested)
     }
@@ -244,11 +231,9 @@ mod tests {
         assert!(a.status_message.is_some());
     }
 
-    /// `reload_config` used to call `config::load`, which calls
-    /// `std::process::exit(1)` on a bad file. `Ctrl-R` runs with raw mode,
-    /// the alternate screen, and mouse capture all active, so that exit
-    /// bypassed teardown and the panic hook and left the terminal wrecked.
-    /// It must instead keep the config already loaded and report the error.
+    /// `config::load` calls `std::process::exit(1)` on a bad file, which
+    /// would bypass teardown and the panic hook and leave the terminal
+    /// wrecked. A bad edit must keep the loaded config and report the error.
     #[test]
     fn reload_config_keeps_the_current_config_when_the_edit_does_not_parse() {
         let dir = tempfile::tempdir().unwrap();
@@ -325,12 +310,8 @@ mod tests {
         assert!(a.status_message.is_some());
     }
 
-    /// The picker can sit open with nothing blocking it, then an auto-update
-    /// pass can start while the user is still choosing: a poll completing
-    /// and starting a fast-forward cycle doesn't wait on a modal. Confirming
-    /// must re-check at that point rather than trusting the now-stale check
-    /// `open_set_picker` made, or the switch would hand the in-flight
-    /// auto-update's results indices into a repo list it no longer applies to.
+    /// A poll completing and starting a fast-forward cycle doesn't wait on a
+    /// modal, so an auto-update pass can start while the picker sits open.
     #[test]
     fn confirm_set_picker_is_blocked_when_auto_update_starts_after_the_picker_opened() {
         let dir = tempfile::tempdir().unwrap();

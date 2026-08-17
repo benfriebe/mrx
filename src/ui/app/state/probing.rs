@@ -6,9 +6,8 @@ use crate::ui::app::probe::{self, RepoState};
 
 impl App {
     /// Repos to re-probe for `r`: the selection, or everything when nothing
-    /// is selected. The same reading of an empty selection as
-    /// `effective_selection` uses, since "probe what I'm about to act on" is
-    /// the useful interpretation here too.
+    /// is selected, the same reading of an empty selection
+    /// [`effective_selection`](Self::effective_selection) uses.
     pub fn reprobe_targets(&self) -> Vec<usize> {
         if self.selected.is_empty() {
             (0..self.repos.len()).collect()
@@ -33,9 +32,8 @@ impl App {
             return;
         }
         self.probing.remove(&state.index);
-        // Sticky per repo, and set as soon as this one result lands rather
-        // than waiting on the rest of the cycle: a repo whose own fetch
-        // failed must not borrow another repo's success.
+        // Recorded as this one result lands rather than at the end of the
+        // cycle; see [`fetched_repos`](Self::fetched_repos).
         if state.fetched || self.fetch_head_moved(&state) {
             self.fetched_repos.insert(state.index);
         }
@@ -62,19 +60,15 @@ impl App {
         }
     }
 
-    /// Set by `r`; consumed by the run loop, which is the only thing with a
-    /// runtime handle to spawn the resulting probe with.
     pub fn take_probe_request(&mut self) -> bool {
         std::mem::take(&mut self.probe_requested)
     }
 
     /// Branch and working-tree text for a row, resolved once so `render.rs`
     /// only has to lay strings out. `spinner` is true while the row's probe
-    /// is in flight, whether or not it already has a result to show: a
-    /// re-probe is as much a probe as the first one, and a row that reports
-    /// no spinner for it looks like nothing is happening. The last known
-    /// text is reported alongside it rather than blanked, leaving render.rs
-    /// to decide how much of the row the spinner takes over.
+    /// is in flight, whether or not it already has a result to show, and the
+    /// last known text is reported alongside it rather than blanked: how
+    /// much of the row the spinner takes over is render.rs's decision.
     pub fn probe_display(&self, idx: usize) -> ProbeDisplay {
         let spinner = self.probing.contains(&idx);
         match self.probes.get(idx).and_then(|p| p.as_ref()) {

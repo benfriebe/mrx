@@ -12,9 +12,8 @@ use crate::ui::app::detail;
 use crate::ui::app::state::{App, Pane, RunStatus};
 
 /// The detail view for the cursor row: a title, a line of run and scroll
-/// state, the output as labelled step sections, and (when it owns the whole
-/// width) a footer. `split` says the frame's shared footer is drawing that
-/// last part instead.
+/// state, the output as labelled step sections, and a footer unless `split`
+/// says the frame's shared one is drawing that part instead.
 pub(super) fn draw_detail(frame: &mut Frame, app: &App, area: Rect, split: bool) {
     let width = area.width as usize;
     let content_height = detail_content_height(area.height, split);
@@ -83,9 +82,7 @@ pub(super) fn draw_detail(frame: &mut Frame, app: &App, area: Rect, split: bool)
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// How the cursor row's last run ended, for the line under the detail
-/// title: the one thing the title can't say and the output alone makes you
-/// count.
+/// How the cursor row's last run ended, for the line under the detail title.
 fn detail_summary(app: &App) -> String {
     match app.run_results.get(app.cursor).and_then(|r| r.as_ref()) {
         Some(RunStatus::Finished { steps, exit_code }) => {
@@ -95,15 +92,13 @@ fn detail_summary(app: &App) -> String {
         Some(RunStatus::Running) => "running".into(),
         Some(RunStatus::Step { label }) => format!("running {label}"),
         Some(RunStatus::Skipped { .. }) => "skipped".into(),
-        // The body already says the repo has not run; the line above it
-        // saying so too is one statement too many.
+        // The body already says the repo has not run.
         None => String::new(),
     }
 }
 
-/// Which slice of the output is on screen, or `None` when all of it is.
-/// The detail view has no scrollbar, so without this a long transcript
-/// gives no clue how much of it is above or below.
+/// Which slice of the output is on screen, or `None` when all of it is. The
+/// detail view has no scrollbar, so this is its only position cue.
 fn scroll_position(scroll: usize, total: usize, viewport: usize) -> Option<String> {
     (total > viewport && viewport > 0).then(|| {
         format!(
@@ -129,9 +124,8 @@ fn render_detail_line(line: &detail::DetailLine) -> Line<'static> {
         }
         detail::DetailLine::Stdout(s) => styled_output_line(s, None),
         detail::DetailLine::Stderr(s) => {
-            // severity() reads the lead words to classify the line; a raw
-            // leading escape would hide them from it, so it gets the
-            // stripped text rather than the one carrying ANSI bytes.
+            // severity() reads the lead words, which a leading escape would
+            // hide from it, so it gets the stripped text.
             let fallback = match detail::severity(&ansi::strip(s)) {
                 detail::Severity::Plain => Color::DarkGray,
                 detail::Severity::Warn => Color::Yellow,
@@ -143,12 +137,10 @@ fn render_detail_line(line: &detail::DetailLine) -> Line<'static> {
     }
 }
 
-/// A Stdout/Stderr line as one span per [`ansi::Run`]: a run that carries
-/// its own SGR colour keeps it (the tool knew what it meant), and
-/// `fallback_fg` fills in for a run that set none. Modifiers such as bold
-/// always survive, since only `fg` is patched here. The two-space indent
-/// merges into the first span rather than standing alone, so a line with no
-/// escapes still renders as exactly one span, coloured like the old code.
+/// A Stdout/Stderr line as one span per [`ansi::Run`]: a run carrying its own
+/// SGR colour keeps it (the tool knew what it meant), and `fallback_fg` fills
+/// in for a run that set none. The two-space indent merges into the first span
+/// rather than standing alone, so a line with no escapes is still one span.
 fn styled_output_line(text: &str, fallback_fg: Option<Color>) -> Line<'static> {
     let mut runs = ansi::parse(text);
     if runs.is_empty() {
@@ -202,9 +194,8 @@ mod tests {
 
     #[test]
     fn a_line_with_ansi_escapes_renders_as_multiple_spans_with_their_own_colours() {
-        // The first run carries its own colour (kept); the second sets none,
-        // so it falls back to the stderr severity colour (Warn, from "npm
-        // warn" in the stripped text).
+        // The first run carries its own colour; the second sets none, so it
+        // falls back to Warn, from "npm warn" in the stripped text.
         let line = detail::DetailLine::Stderr("\u{1b}[34mnote: \u{1b}[0mnpm warn trailing".into());
         let rendered = render_detail_line(&line);
         assert_eq!(rendered.spans.len(), 2, "got {:?}", rendered.spans);
@@ -216,8 +207,7 @@ mod tests {
 
     #[test]
     fn a_stderr_lines_own_colour_wins_over_its_severity_colour() {
-        // Severity alone would call this an error (red), but the line sets
-        // its own colour, and the tool that emitted it knew what it meant.
+        // Severity alone would call this an error; the line's own colour wins.
         assert_eq!(
             stderr_color("\u{1b}[34mnpm error code ELIFECYCLE"),
             Some(Color::Blue)
@@ -226,17 +216,15 @@ mod tests {
 
     #[test]
     fn severity_is_still_detected_when_the_line_starts_with_an_escape_sequence() {
-        // A leading escape with no colour of its own (just bold) must not
-        // hide the lead words from severity's classification.
+        // A leading escape that sets only bold must not hide the lead words.
         assert_eq!(
             stderr_color("\u{1b}[1mnpm warn something"),
             Some(Color::Yellow)
         );
     }
 
-    /// The blank rows that push the footer down are counted, not measured,
-    /// so an off-by-one there pads the key line off the bottom of the frame
-    /// where nothing else would notice it had gone.
+    /// The blank rows that push the footer down are counted, not measured, so
+    /// an off-by-one pads the key line off the bottom unnoticed.
     #[test]
     fn the_full_screen_detail_view_keeps_its_footer_on_the_last_row() {
         let mut a = app(vec![repo("bill-api")]);

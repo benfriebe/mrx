@@ -5,16 +5,15 @@ use super::App;
 
 /// A run waiting on user confirmation because part of its target selection
 /// is dirty, or because part of it has no probe result yet and dirtiness is
-/// simply unknown (section 11, "destructive actions one keystroke away").
+/// simply unknown.
 pub struct PendingRun {
     pub action: String,
     pub targets: Vec<usize>,
     pub dirty_count: usize,
     pub unknown_count: usize,
     /// The cursor row, when the targets are every visible repo only because
-    /// nothing was selected. The prompt offers it as a third answer: an
-    /// empty selection meaning "all" is easy to walk into, and narrowing to
-    /// one repo from the prompt beats cancelling to go and select it.
+    /// nothing was selected. The prompt offers it as a third answer, since
+    /// an empty selection meaning "all" is easy to walk into.
     pub cursor_only: Option<usize>,
 }
 
@@ -46,8 +45,7 @@ impl App {
     /// startup, a set switch, or a config reload, every repo starts this
     /// way. Treated the same as dirty for the confirmation in
     /// [`request_run`](Self::request_run), since a repo the app hasn't
-    /// actually looked at could be dirty and running unconfirmed against it
-    /// would defeat the point of the confirmation (section 11).
+    /// looked at could be dirty.
     pub fn unprobed_count(&self, targets: &[usize]) -> usize {
         targets
             .iter()
@@ -55,15 +53,12 @@ impl App {
             .count()
     }
 
-    /// Ask to run `action_name` over the effective selection. Debug-asserts
-    /// the action is actually defined somewhere: the palette must never
-    /// have offered it otherwise (section 08). Refused by
-    /// [`mutation_blocker`](Self::mutation_blocker), the same guard
-    /// `open_set_picker`/`reload_config` use, since a manual run sharing a
-    /// repo with a live auto-update pass would run `git` against it through
-    /// two different semaphores at once. Goes straight to `run_requested`
-    /// when nothing in the target selection is dirty or unprobed, or when
-    /// `force` is set; otherwise waits on confirmation.
+    /// Ask to run `action_name` over the effective selection. Goes straight
+    /// to `run_requested` when nothing in the target selection is dirty or
+    /// unprobed, or when `force` is set; otherwise waits on confirmation.
+    /// Refused by [`mutation_blocker`](Self::mutation_blocker), since a
+    /// manual run sharing a repo with a live auto-update pass would run
+    /// `git` against it through two different semaphores at once.
     pub fn request_run(&mut self, action_name: &str) {
         debug_assert!(
             self.actions.iter().any(|a| a.name == action_name),
@@ -100,10 +95,8 @@ impl App {
 
     /// Confirm a pending run. Re-checks
     /// [`mutation_blocker`](Self::mutation_blocker) rather than trusting the
-    /// check [`request_run`](Self::request_run) made when the confirmation
-    /// prompt opened: an auto-update pass can start while the prompt sat
-    /// waiting for an answer, and the pending run is dropped rather than
-    /// launched into a repo an auto-update pass already owns.
+    /// check [`request_run`](Self::request_run) made: an auto-update pass
+    /// can start while the prompt sits waiting for an answer.
     pub fn confirm_pending_run(&mut self) {
         let Some(p) = self.pending_run.take() else {
             return;
@@ -118,9 +111,8 @@ impl App {
     }
 
     /// Confirm a pending run, narrowed to the cursor row. A no-op unless the
-    /// prompt offered the choice: the answer must mean what the prompt said
-    /// it would, and a keystroke that silently rewrote a deliberate
-    /// selection down to one repo would not.
+    /// prompt offered the choice, so the keystroke can never silently
+    /// rewrite a deliberate selection down to one repo.
     pub fn confirm_pending_run_at_cursor(&mut self) {
         let Some(cursor) = self.pending_run.as_ref().and_then(|p| p.cursor_only) else {
             return;
@@ -141,9 +133,6 @@ impl App {
         self.pending_run = None;
     }
 
-    /// Set by a confirmed or unconfirmed-but-clean [`request_run`]; consumed
-    /// by the run loop, the only thing with a runtime handle to plan and
-    /// spawn the resulting operations with.
     pub fn take_run_requested(&mut self) -> Option<RunRequest> {
         self.run_requested.take()
     }
@@ -216,9 +205,7 @@ mod tests {
 
     #[test]
     fn an_unprobed_selection_waits_on_confirmation_unless_forced() {
-        // No probe result has come back yet, e.g. right after startup, a set
-        // switch, or a config reload: dirtiness is unknown, not clean, and
-        // must not run unconfirmed (section 11).
+        // No probe result has come back yet: dirtiness is unknown, not clean.
         let mut a = app(&["foo"]);
         a.request_run("update");
         assert!(
@@ -274,11 +261,8 @@ mod tests {
         assert!(a.status_message.is_some());
     }
 
-    /// The confirmation prompt can sit open with nothing blocking it, then
-    /// an auto-update pass can start while the user is still deciding: a
-    /// poll completing doesn't wait on a modal. Confirming must re-check at
-    /// that point rather than trusting the now-stale check `request_run`
-    /// made when the prompt opened.
+    /// A poll completing doesn't wait on a modal, so an auto-update pass can
+    /// start while the user is still deciding.
     #[test]
     fn confirm_pending_run_refuses_when_auto_update_starts_while_the_prompt_is_open() {
         let mut a = app(&["foo"]);

@@ -1,10 +1,9 @@
 use crate::executor::StepResult;
 
-/// How a step's output should be read: `operations::plan` decides this, since
+/// How a step's output should be read. `operations::plan` decides this, since
 /// it is the only place that knows whether a step is a built-in git call, a
-/// config-defined body, or a `post_` hook, rather than it being guessed here
-/// from the action's name (which is what used to make a custom `status`
-/// action get parsed as if it were `git status`).
+/// config-defined body, or a `post_` hook. Do not re-derive it here from the
+/// action's name: that parses a custom `status` body as `git status` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     Pull,
@@ -18,11 +17,10 @@ pub enum Shape {
 
 /// Summarise one step's output into a short, shape-aware description.
 ///
-/// `stdout`/`stderr` may carry ANSI escapes (forced on so the resident app can
-/// show colour), so this strips them once, up front: every prefix and substring
-/// match below, and every char-counted truncation, assumes plain text, and each
-/// of the shape-specific parsers below relies on that rather than stripping
-/// again itself.
+/// `stdout`/`stderr` may carry ANSI escapes (forced on so ui mode can show
+/// colour), so this strips them once, up front. Every prefix match, substring
+/// match, and char-counted truncation below assumes plain text; the
+/// shape-specific parsers rely on that rather than stripping again.
 pub fn summarize(shape: Shape, stdout: &str, stderr: &str, exit_code: i32) -> String {
     let stdout = crate::ansi::strip(stdout);
     let stderr = crate::ansi::strip(stderr);
@@ -51,12 +49,10 @@ pub fn summarize(shape: Shape, stdout: &str, stderr: &str, exit_code: i32) -> St
 
 /// Summarise a finished run from its steps.
 ///
-/// The chain stops at the first failing step, so the last step present is
-/// always the one that decided the outcome, whichever way it went: its shape
-/// and output are what the row shows. Selecting by shape rather than parsing
-/// a concatenation of every step's output is what keeps a `post_update` that
-/// runs long after a no-op pull from being summarised as "already up to
-/// date".
+/// The chain stops at the first failing step, so the last step present always
+/// decided the outcome: its shape and output are what the row shows.
+/// Concatenating every step's output instead would summarise a `post_update`
+/// that ran after a no-op pull as "already up to date".
 pub fn summarize_steps(steps: &[StepResult], exit_code: i32) -> String {
     let Some(last) = steps.last() else {
         return "done".into();
@@ -73,7 +69,6 @@ fn summarize_pull(stdout: &str, stderr: &str) -> String {
     if combined.contains("Already up to date") || combined.contains("Already up-to-date") {
         return "already up to date".into();
     }
-    // Look for "X files changed" summary
     for line in stdout.lines().chain(stderr.lines()) {
         if line.contains("files changed")
             || line.contains("file changed")
@@ -231,9 +226,9 @@ pub fn with_step(step: Option<&str>, summary: String) -> String {
 /// The line most likely to say why a step failed.
 ///
 /// Tools that fail loudly still warn first: npm prints screenfuls of
-/// `npm warn ERESOLVE ...` before `npm error Missing script: "build"`, so taking
-/// the first line reports a warning as the cause. Prefer a line that names an
-/// error, and never one that names a warning.
+/// `npm warn ERESOLVE ...` before `npm error Missing script: "build"`, so the
+/// first line reports a warning as the cause. Prefer a line naming an error,
+/// never one naming a warning.
 fn error_line(s: &str) -> Option<String> {
     const ERROR: [&str; 5] = ["error", "fatal:", "err!", "cannot ", "failed"];
     const WARNING: [&str; 3] = ["warn", "deprecat", "notice"];
@@ -328,8 +323,7 @@ mod tests {
 
     #[test]
     fn coloured_status_output_still_parses_the_porcelain_markers() {
-        // Same shape as a plain-text status, with SGR codes wrapped around the
-        // markers the way a forced-colour `git status --short` emits them.
+        // SGR codes around the markers, as forced-colour `git status --short` emits them.
         let stdout = "\u{1b}[31m M\u{1b}[0m file.txt\n\u{1b}[32m??\u{1b}[0m new.txt\n";
         assert_eq!(
             summarize(Shape::Status, stdout, "", 0),
@@ -396,9 +390,8 @@ mod tests {
 
     #[test]
     fn a_slow_post_update_after_an_up_to_date_pull_summarises_as_the_post_steps_result() {
-        // The bug this fixes: concatenating every step's output made "Already up
-        // to date" from the pull win the summary even though post_update, which
-        // ran afterwards and actually did something, is what the row should say.
+        // Concatenating every step's output let the pull's "Already up to date"
+        // win over the post_update that ran afterwards and actually did something.
         let steps = vec![
             step("git pull", Shape::Pull, "Already up to date.\n", 0),
             step("post_update", Shape::Generic, "wrote 3 files\n", 0),
@@ -411,9 +404,8 @@ mod tests {
         let steps = vec![step("status", Shape::Generic, "OK: 3 services up\n", 0)];
         assert_eq!(summarize_steps(&steps, 0), "OK: 3 services up");
 
-        // What used to happen when the shape was guessed from the action name:
-        // one line of output that doesn't look like porcelain still gets read as
-        // one changed file.
+        // Guessing the shape from the action name instead reads one line of
+        // non-porcelain output as one changed file.
         assert_eq!(
             summarize(Shape::Status, "OK: 3 services up\n", "", 0),
             "1 changed"

@@ -1,14 +1,11 @@
-//! Real-pty coverage for the phase 6 "wrecked terminal" tests (section 10,
-//! phase 6 row): the terminal has to come back exactly as it was after a
-//! plain quit, after suspending for `$EDITOR`, and after a panic mid-run.
+//! Real-pty coverage for the "wrecked terminal" cases: the terminal has to
+//! come back exactly as it was after a plain quit, after suspending for
+//! `$EDITOR`, and after a panic mid-run.
 //!
-//! `Command::output()`-style tests (see `ui_subcommand.rs`) never give the
-//! child a real terminal, so there is nothing here for `enable_raw_mode`
-//! to even act on. The only way to give `mrx ui` a real pty from a harness
-//! that has none of its own is the BSD `script` utility (`script -q
-//! /dev/null <command>`), which allocates one regardless of whether its own
-//! stdin is a terminal. Its argument syntax is BSD-specific (Linux's
-//! `script` takes different flags), so this file is macOS-only.
+//! `Command::output()`-style tests (see `ui_subcommand.rs`) give the child no
+//! terminal, so `enable_raw_mode` has nothing to act on. BSD `script -q
+//! /dev/null <command>` allocates a pty even when its own stdin isn't one;
+//! its argument syntax is BSD-specific, hence the macOS-only gate.
 
 #![cfg(target_os = "macos")]
 
@@ -17,11 +14,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// `stty -a`'s `pendin` (BSD: "pending special character") lflag flips on
-/// its own the first time a process on the pty enters and leaves raw mode,
-/// independent of anything `mrx` restores; comparing it would fail a
-/// before/after diff for a reason that has nothing to do with whether raw
-/// mode itself came back. Every other field is a real assertion.
+/// `stty -a`'s `pendin` lflag flips on its own the first time a process on
+/// the pty enters and leaves raw mode, so comparing it would fail a
+/// before/after diff for a reason unrelated to what `mrx` restored. Every
+/// other field is a real assertion.
 fn normalize_stty(raw: &str) -> String {
     raw.split_whitespace()
         .filter(|tok| *tok != "pendin" && *tok != "-pendin")
@@ -60,10 +56,8 @@ fn sh_quote(s: &str) -> String {
 }
 
 /// A driver script run under `script -q /dev/null bash <path>`: captures
-/// `stty -a` before and after `command_line`, so the comparison happens
-/// inside the same pty session the command itself ran in (a `stty -a` taken
-/// from outside, in this harness's own non-tty process, would have nothing
-/// to compare against).
+/// `stty -a` either side of `command_line`, inside the same pty session the
+/// command runs in. This harness's own process has no tty to compare against.
 fn write_driver_script(dir: &Path, command_line: &str, before: &Path, after: &Path) -> PathBuf {
     let script_path = dir.join("driver.sh");
     let content = format!(
@@ -76,17 +70,16 @@ fn write_driver_script(dir: &Path, command_line: &str, before: &Path, after: &Pa
 }
 
 struct PtySession {
+    /// Raw pty transcript. The driven command's exit code arrives in here as
+    /// `MRX_PTY_EXIT:<n>`; `script`'s own status is not it.
     output: Vec<u8>,
-    /// `script`'s own exit code, not the driven command's; the command's
-    /// real exit code is read back out of `MRX_PTY_EXIT:<n>` in `output`.
     timed_out: bool,
 }
 
 /// Run `driver_script` under a real pty via `script -q /dev/null`, sending
-/// each of `keys` (delayed relative to when the previous one was sent) into
-/// it, then waiting up to `timeout` for the session to end on its own
-/// before killing it, so a regression that breaks `q` fails fast rather
-/// than hanging the suite.
+/// each of `keys` after a delay relative to the previous one, then waiting up
+/// to `timeout` before killing the session, so a regression that breaks `q`
+/// fails fast rather than hanging the suite.
 fn run_in_pty(
     driver_script: &Path,
     envs: &[(&str, &str)],
@@ -154,8 +147,8 @@ fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
-/// The index of the last occurrence of `needle`, for asserting an enable
-/// sequence is followed by a later disable rather than just co-occurring.
+/// Last occurrence of `needle`, for asserting an enable sequence is followed
+/// by a later disable rather than merely co-occurring.
 fn last_index(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
@@ -236,8 +229,8 @@ fn dollar_editor_suspends_and_restores_the_terminal() {
     let after = dir.path().join("after.txt");
     let driver = write_driver_script(dir.path(), &command_line, &before, &after);
 
-    // `true` stands in for a real editor: it exits immediately, so `o` can
-    // be exercised without an interactive process to drive.
+    // `true` stands in for the editor: it exits at once, so `o` needs no
+    // interactive process to drive.
     let session = run_in_pty(
         &driver,
         &[("EDITOR", "true")],
@@ -266,8 +259,7 @@ fn dollar_editor_suspends_and_restores_the_terminal() {
         "stty -a must match before mrx ran and after it quit, even after a suspend in between"
     );
 
-    // Entered once at startup and again on resume from the editor; left
-    // once to suspend and again on the final quit.
+    // Entered at startup and again on resume; left to suspend and again on quit.
     assert!(
         count_occurrences(&session.output, ALT_SCREEN_ENTER) >= 2,
         "the alternate screen must be re-entered after the editor closes, got: {out}"
@@ -286,10 +278,9 @@ fn dollar_editor_suspends_and_restores_the_terminal() {
     );
 }
 
-/// `!` hands the terminal over the same way `o` does, and the app has to
-/// get it back the same way. A shell is the case where getting it wrong is
-/// worst: the user is left typing into a raw-mode terminal that no longer
-/// echoes.
+/// `!` hands the terminal over the way `o` does, and getting it back matters
+/// most here: botched, the user is left typing blind into a raw-mode terminal
+/// that no longer echoes.
 #[test]
 fn bang_drops_to_a_shell_and_takes_the_terminal_back() {
     require_script();
@@ -305,8 +296,7 @@ fn bang_drops_to_a_shell_and_takes_the_terminal_back() {
     let after = dir.path().join("after.txt");
     let driver = write_driver_script(dir.path(), &command_line, &before, &after);
 
-    // `true` stands in for an interactive shell: it exits immediately, so
-    // `!` can be exercised without one to drive.
+    // `true` stands in for the shell, exiting at once so `!` needs nothing to drive.
     let session = run_in_pty(
         &driver,
         &[("SHELL", "true")],
@@ -340,18 +330,12 @@ fn bang_drops_to_a_shell_and_takes_the_terminal_back() {
     );
 }
 
-/// An early `Err` return (no panic) between entering the terminal's
-/// raw/alt-screen/mouse-capture state and the app's own teardown used to
-/// skip cleanup entirely, since only the panic hook restored the terminal.
-/// `TerminalGuard`'s `Drop` must do it on its own, independent of that hook.
-/// Distinct from `a_panic_restores_the_terminal_over_a_real_pty`, which
-/// covers the panic path.
-///
-/// This isolates `TerminalGuard` itself: the fixture builds one directly
-/// and never calls `ui::app::run`, so it has no input thread and can't
-/// exercise `InputThreadGuard` or the ordering between the two guards.
-/// `an_early_return_from_run_restores_the_terminal_and_stops_the_input_thread`,
-/// below, drives the real resident entry point for that.
+/// `TerminalGuard`'s `Drop` must restore the terminal on an early `Err`
+/// return with no panic hook to fall back on. The fixture builds the guard
+/// directly and never calls `ui::app::run`, so nothing here covers
+/// `InputThreadGuard`;
+/// `an_early_return_from_run_restores_the_terminal_and_stops_the_input_thread`
+/// does that.
 #[test]
 fn an_early_return_restores_the_terminal_over_a_real_pty_without_panicking() {
     require_script();
@@ -423,20 +407,14 @@ fn an_early_return_restores_the_terminal_over_a_real_pty_without_panicking() {
     );
 }
 
-/// Unlike `an_early_return_restores_the_terminal_over_a_real_pty_without_panicking`,
-/// this drives the real `ui::app::run` entry point: the `app_run_draw_failure`
-/// fixture breaks stdout from a background thread once the resident app is
-/// up, so the 200ms ticker's next `terminal.draw` fails and `run` takes the
-/// same early `?` return every other draw failure inside its select loop
-/// would, with its real input reader thread still alive and polling the
-/// pty at the moment it happens. Confirms the terminal comes back and the
-/// process exits promptly rather than hanging on `InputThreadGuard`'s join.
+/// Drives the real `ui::app::run`: the fixture breaks stdout once ui mode is
+/// up, so the next ticker-driven `terminal.draw` fails and `run` takes the
+/// early `?` return any draw failure in its select loop would, input reader
+/// thread still polling the pty. Confirms the terminal comes back and the
+/// process exits rather than hanging on `InputThreadGuard`'s join.
 ///
-/// Doesn't prove the specific ordering between `InputThreadGuard` and
-/// `TerminalGuard` (that the input thread stops touching the tty strictly
-/// before raw mode comes off): the process exits so quickly after `run`
-/// returns that no observable window exists to check which happened first,
-/// only that both happened and neither hung.
+/// It can't prove the ordering between the two guards: the process exits too
+/// quickly after `run` returns for either to be observed separately.
 #[test]
 fn an_early_return_from_run_restores_the_terminal_and_stops_the_input_thread() {
     require_script();
@@ -489,12 +467,8 @@ fn an_early_return_from_run_restores_the_terminal_and_stops_the_input_thread() {
     );
 }
 
-/// `setup_terminal` must roll back raw mode itself if a later step of its
-/// own setup fails, rather than leaving it on with no guard yet
-/// constructed to undo it: the `setup_terminal_partial_failure` fixture
-/// breaks stdout before raw mode is even entered, so raw mode succeeds
-/// (it goes through the tty, not stdout) but entering the alternate screen
-/// fails right after.
+/// `setup_terminal` must roll back raw mode itself when a later step of its
+/// own setup fails, since no guard exists yet to undo it.
 #[test]
 fn setup_terminal_rolls_back_raw_mode_when_a_later_step_fails() {
     require_script();
@@ -548,11 +522,8 @@ fn setup_terminal_rolls_back_raw_mode_when_a_later_step_fails() {
     );
 }
 
-/// `run` (the one-shot progress view) must restore the terminal on an
-/// early `Err` return from inside its own draw loop, not just on the
-/// normal quit path: the `run_view_draw_failure` fixture breaks stdout
-/// well after `run` has already entered raw mode and the alternate screen
-/// successfully, forcing a later `terminal.draw` to fail instead.
+/// `run` (the one-shot progress view) must restore the terminal on an early
+/// `Err` return from inside its draw loop, not just on the normal quit path.
 #[test]
 fn the_one_shot_view_restores_raw_mode_on_an_early_draw_failure() {
     require_script();

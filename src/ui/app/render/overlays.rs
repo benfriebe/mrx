@@ -11,13 +11,10 @@ use crate::ui::app::keymap;
 use crate::ui::app::state::{App, PendingRun};
 use crate::ui::widgets::display_width;
 
-/// The full keymap, centred over the table rather than replacing it.
-///
-/// It lists the detail view's keys alongside the list's, since the overlay
-/// is the one place both sets can be read at once: inside the detail view
-/// only its own footer is on screen. Two bindings to a row: one each reads
-/// more easily but runs off the bottom of a short terminal, and a help
-/// screen that crops is worse than one that packs.
+/// The full keymap, centred over the table rather than replacing it. It lists
+/// the detail view's keys alongside the list's, since the overlay is the one
+/// place both sets can be read at once, two bindings to a row so a short
+/// terminal doesn't crop the bottom off.
 pub(super) fn draw_help(frame: &mut Frame, area: Rect) {
     let every = || keymap::LIST_KEYS.iter().chain(keymap::DETAIL_KEYS);
     let key_col = every().map(|b| display_width(b.keys)).max().unwrap_or(0);
@@ -81,8 +78,7 @@ pub(super) fn draw_help(frame: &mut Frame, area: Rect) {
                     .borders(Borders::ALL)
                     .title(" keys · esc to close "),
             )
-            // A note longer than the box wraps rather than losing its tail
-            // off the right edge.
+            // A note longer than the box wraps rather than losing its tail.
             .wrap(Wrap { trim: false }),
         popup,
     );
@@ -123,7 +119,7 @@ fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
 
 /// The action palette (`:`): every runnable action for the set, filtered as
 /// you type, showing source and repo count so an unfamiliar name is
-/// trustworthy before you run it (section 08).
+/// trustworthy before you run it.
 pub(super) fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered_rect(60, 60, area);
     frame.render_widget(Clear, popup);
@@ -134,9 +130,8 @@ pub(super) fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, a)| {
-            // A selection command's count is what it leaves selected, not
-            // how many repos define it, so it is worded rather than shaped
-            // to match.
+            // A selection command's count is what it leaves selected, not how
+            // many repos define it, so it is worded differently.
             let text = match a.source {
                 Source::Selection => {
                     format!("{}  leaves {} of {} selected", a.name, a.repos, repo_count)
@@ -190,8 +185,7 @@ pub(super) fn draw_set_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items).block(block), popup);
 }
 
-/// Shown when `q`/`Ctrl-C` is pressed while a run is still live (section 03,
-/// "prompts if a run is live").
+/// Shown when `q`/`Ctrl-C` is pressed while a run is still live.
 pub(super) fn draw_quit_confirm(frame: &mut Frame, area: Rect) {
     let popup = centered_rect(50, 20, area);
     frame.render_widget(Clear, popup);
@@ -208,8 +202,8 @@ pub(super) fn draw_quit_confirm(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(text).block(block), popup);
 }
 
-/// The dirty-selection confirmation from section 11: shown before a run
-/// touches any repo the last probe found dirty, unless `--force` skipped it.
+/// The dirty-selection confirmation: shown before a run touches any repo the
+/// last probe found dirty, unless `--force` skipped it.
 pub(super) fn draw_confirm(frame: &mut Frame, app: &App, pending: &PendingRun, area: Rect) {
     let mut text = vec![
         Line::from(format!(
@@ -245,9 +239,9 @@ pub(super) fn draw_confirm(frame: &mut Frame, app: &App, pending: &PendingRun, a
     frame.render_widget(Paragraph::new(text).block(block), popup);
 }
 
-/// The confirmation's reason clause: dirty and unprobed repos are both
-/// worth pausing over (section 11), but they are not the same claim, so a
-/// selection that is only unprobed says so rather than calling it dirty.
+/// The confirmation's reason clause. Unprobed is worth pausing over too, but
+/// it is not the same claim as dirty, so a selection that is only unprobed
+/// says so rather than being called dirty.
 fn confirm_reason(pending: &PendingRun) -> String {
     match (pending.dirty_count, pending.unknown_count) {
         (0, 0) => "confirm".to_string(),

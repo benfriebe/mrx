@@ -1,23 +1,17 @@
-//! Standalone fixture, not part of the CLI: repoints stdout at a pipe with
-//! its read end already closed before calling `mrx::ui::setup_terminal`, so
-//! raw mode enables fine (crossterm reads and writes terminal attributes
-//! through stdin's tty, not stdout) but entering the alternate screen fails
-//! with a broken pipe, since that writes an escape sequence to stdout.
-//! Exercises `setup_terminal`'s own rollback of the raw mode it already
-//! enabled before that later step failed; a pty test drives this and
-//! confirms raw mode did not leak past the `Err` return.
+//! Fixture for `tests/ui_pty.rs`: breaks stdout before calling
+//! `mrx::ui::setup_terminal`, so raw mode still enables (crossterm goes
+//! through stdin's tty) but entering the alternate screen fails with a broken
+//! pipe. Prints the outcome and exits.
 //!
-//! A pipe with no reader, rather than simply closing fd 1, because a closed
-//! fd number is up for grabs: something else opening any file in the
-//! meantime (crossterm's own terminal-size query included) can silently
-//! reclaim it, and the write that was meant to fail would then succeed
-//! against a whole different file instead. Holding fd 1 open against a
-//! guaranteed-broken destination rules that out.
+//! A pipe with no reader rather than a bare `close` on fd 1, because a closed
+//! fd number is up for grabs: anything else opening a file in the meantime
+//! (crossterm's own terminal-size query included) can reclaim it, and the
+//! write meant to fail would land on that file instead.
 
 use std::io;
 
-// FFI straight to the platform's C library, already linked by std on every
-// Unix target; not a new crate dependency.
+// Declared here rather than taking a libc dependency: std already links the
+// system C library on every Unix target.
 extern "C" {
     fn pipe(fds: *mut i32) -> i32;
     fn close(fd: i32) -> i32;

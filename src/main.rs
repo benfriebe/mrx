@@ -88,10 +88,9 @@ fn max_jobs(cli: &Cli) -> usize {
     cli.jobs.unwrap_or_else(|| num_cpus::get().min(8))
 }
 
-/// Label shown in the resident app's header: the named set if `-s` or
-/// `$MRX_SET` gave one, the persisted session's set if `restored` named
-/// one, otherwise `(unnamed)` for the bare config file, the same label
-/// `print_sets` uses for it.
+/// Label shown in ui mode's header: the named set if `-s` or `$MRX_SET` gave
+/// one, the persisted session's set if `restored` named one, otherwise
+/// `(unnamed)` for the bare config file, the same label `print_sets` uses.
 fn ui_set_label(cli: &Cli, restored: Option<&str>) -> String {
     named_set(cli)
         .or_else(|| restored.map(String::from))
@@ -99,11 +98,9 @@ fn ui_set_label(cli: &Cli, restored: Option<&str>) -> String {
 }
 
 /// The persisted session's stored set, but only when it should actually be
-/// used: nothing on the command line named one, and the stored name still
-/// resolves to a config on disk (section 09, "`-s` on the command line
-/// always wins over the stored set"; a set removed since the last session
-/// just falls back to the ordinary default rather than erroring, since a
-/// config edit is not an error).
+/// used: nothing on the command line named one (`-s` always wins), and the
+/// stored name still resolves to a config on disk. A set removed since the
+/// last session falls back to the ordinary default rather than erroring.
 fn restored_set(cli: &Cli, session: &ui::app::session::Session) -> Option<String> {
     if cli.config.is_some() || named_set(cli).is_some() {
         return None;
@@ -142,8 +139,7 @@ async fn main() {
 
     reject_bad_ui_invocation(&cli);
 
-    // Only `ui` has a session to restore; every other command resolves the
-    // config exactly as it always has.
+    // Only `ui` has a session to restore.
     let ui_session = matches!(cli.command, Command::Ui).then(ui::app::session::load);
     let ui_restored_set = ui_session.as_ref().and_then(|s| restored_set(&cli, s));
 
@@ -154,16 +150,15 @@ async fn main() {
         None => resolve_config_path(&cli),
     };
 
-    // Sets command: independent of the config's contents.
+    // Independent of the config's contents.
     if matches!(cli.command, Command::Sets) {
         print_sets(&config_path);
         return;
     }
 
-    // A config that is not there is a mistake, not an empty repo list. Without
-    // this every action succeeds having done nothing, the same silent
-    // succeed-by-skipping that the unknown-action guard below rejects.
-    // `register` is exempt because it is how the first config gets written.
+    // A config that is not there is a mistake, not an empty repo list: without
+    // this every action succeeds having done nothing. `register` is exempt
+    // because it is how the first config gets written.
     if !config_path.is_file() && !cli.command.is_register() {
         eprintln!("error: no config at {}", config_path.display());
         if cli.config.is_none() && named_set(&cli).is_none() {
@@ -180,13 +175,11 @@ async fn main() {
         base,
     } = config::load(&config_path, dir_override.as_deref());
 
-    // Register command: add current dir to config
     if cli.command.is_register() {
         register(&config_path, &base);
         return;
     }
 
-    // List command: just print and exit
     if cli.command.is_list() {
         for repo in &repos {
             let exists = repo.path.is_dir();
@@ -196,7 +189,6 @@ async fn main() {
         return;
     }
 
-    // Ui command: open the resident app and block until the user quits.
     if matches!(cli.command, Command::Ui) {
         let jobs = max_jobs(&cli);
         let label = ui_set_label(&cli, ui_restored_set.as_deref());
@@ -236,13 +228,11 @@ async fn main() {
         }
     }
 
-    // Plan operations
     let ops: Vec<operations::Operation> = repos
         .iter()
         .map(|r| operations::plan(&cli.command, r, &defaults))
         .collect();
 
-    // Execute
     let jobs = max_jobs(&cli);
     let rx = executor::execute_all(&repos, ops, jobs, config_path.clone());
 
@@ -267,7 +257,6 @@ async fn main() {
 fn register(config_path: &PathBuf, base_dir: &PathBuf) {
     let cwd = std::env::current_dir().expect("cannot determine current directory");
 
-    // Get the remote URL
     let output = StdCommand::new("git")
         .args(["remote", "get-url", "origin"])
         .current_dir(&cwd)
@@ -286,7 +275,6 @@ fn register(config_path: &PathBuf, base_dir: &PathBuf) {
         .expect("cannot determine directory name")
         .to_string_lossy();
 
-    // Compute relative section path from base_dir
     let section = match cwd.strip_prefix(base_dir) {
         Ok(rel) => rel.to_string_lossy().to_string(),
         Err(_) => {
@@ -299,7 +287,6 @@ fn register(config_path: &PathBuf, base_dir: &PathBuf) {
         }
     };
 
-    // Check if already registered
     let existing = std::fs::read_to_string(config_path).unwrap_or_default();
     let section_header = format!("[{}]", section);
     if existing.contains(&section_header) {
@@ -307,7 +294,6 @@ fn register(config_path: &PathBuf, base_dir: &PathBuf) {
         return;
     }
 
-    // Append to config
     let entry = format!(
         "\n[{}]\ncheckout = git clone '{}' '{}'\n",
         section, url, repo_name

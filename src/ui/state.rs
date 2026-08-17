@@ -94,10 +94,9 @@ impl AppState {
         self.repos.len()
     }
 
-    /// Reset all per-repo state so the command can be executed again. Statuses
-    /// return to `Pending`, branch labels go back to [`PROBING`] until the
-    /// caller's fresh probe fills them in (an update may have created new
-    /// clones or switched branches), and any expanded view is collapsed.
+    /// Reset all per-repo state so the command can be executed again. Branch
+    /// labels go back to [`PROBING`] until the caller's fresh probe reports:
+    /// an update may have created new clones or switched branches.
     pub fn reset_for_rerun(&mut self) {
         let n = self.repos.len();
         self.statuses = vec![RepoStatus::Pending; n];

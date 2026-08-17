@@ -39,8 +39,8 @@ impl App {
 
     /// The palette's selection entries, carrying the count each would leave
     /// selected so the list says what it is about to do. Built on demand
-    /// rather than stored: the counts move with the filter and the
-    /// selection, and a stale count in a menu is worse than no count.
+    /// rather than stored, since the counts move with the filter and the
+    /// selection.
     fn selection_commands(&self) -> Vec<Action> {
         let command = |name: &str, repos: usize| Action {
             name: name.to_string(),

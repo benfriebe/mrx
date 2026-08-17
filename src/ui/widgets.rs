@@ -1,7 +1,7 @@
-//! Widgets shared between every view that draws a repo table: the row itself
-//! and the spinner that animates a running one. Keeping this in one place is
-//! what stops the one-shot view and a future resident app from drawing the
-//! same repo two different ways.
+//! The one-shot progress view's repo table: its row, its status formatting,
+//! and the width helpers and spinner that ui mode's own renderer shares.
+//! `repo_row` and `format_status` are the one-shot view's alone; ui mode
+//! builds its rows in `ui::app::render::list`.
 
 use ratatui::prelude::*;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -57,8 +57,7 @@ fn running_text(command: &str) -> String {
     }
 }
 
-/// Icon, icon style, summary text, and summary style for a repo's current
-/// status. Shared so a row means the same thing wherever it is drawn.
+/// Icon, icon style, summary text, and summary style for a repo's current status.
 pub fn format_status(
     status: &RepoStatus,
     tick: usize,
@@ -125,8 +124,7 @@ pub struct RepoRow<'a> {
 }
 
 /// One repo row: selection marker, status icon, name, branch, and summary,
-/// each truncated to fit `columns`. Every view draws a repo through this so
-/// they can't drift apart.
+/// each truncated to fit `columns`.
 pub fn repo_row(row: &RepoRow, columns: &Columns) -> Line<'static> {
     const COL_GAP: usize = 2;
 
@@ -197,10 +195,9 @@ mod tests {
 
     #[test]
     fn truncate_handles_wide_glyphs() {
-        // CJK chars are 2 cells. "中文测试" = 8 cells.
+        // CJK chars are 2 cells, so a 5-cell budget fits "中文" (4) plus the ellipsis.
         assert_eq!(display_width("中文测试"), 8);
         let t = truncate("中文测试", 5);
-        // Want display width <= 5: take "中文" (4) + "…" (1) = 5.
         assert_eq!(display_width(&t), 5);
         assert_eq!(t, "中文…");
     }

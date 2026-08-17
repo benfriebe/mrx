@@ -1,4 +1,4 @@
-//! State for the resident app: the repo list, cursor, selection, and filter.
+//! State for ui mode: the repo list, cursor, selection, and filter.
 //! Every decision worth testing lives here as a method that returns data;
 //! `render.rs` only turns that data into widgets.
 
@@ -30,25 +30,27 @@ pub use run::{LiveRun, RunStatus, DEFAULT_RESULT_TTL};
 pub use run_request::{PendingRun, RunRequest};
 pub use set_picker::SetEntry;
 
-/// Shown for a repo that has never taken part in a run this session, per
-/// section 02: "a repo that has never been run shows `·` rather than a fake
-/// 'pending'".
+/// Shown for a repo that has never taken part in a run this session, rather
+/// than a fake "pending".
 const NEVER_RUN: &str = "·";
 
+/// Everything ui mode draws, plus the requests it hands back to the run loop.
+///
+/// State holds no runtime handle and does no I/O of its own, so anything
+/// needing a spawn, a terminal write, or the executor's `RunHandle` is
+/// recorded here as a flag or a target list and consumed by the run loop
+/// through the `take_*` methods.
 pub struct App {
     pub repos: Vec<Repo>,
     /// Active set's display name, or `(unnamed)` for a bare config file.
     pub set_label: String,
-    /// Default parallelism for runs launched from inside the app. Unused
-    /// until the executor work lands in a later phase.
+    /// Default parallelism for the probes, polls and runs ui mode spawns.
     pub jobs: usize,
     /// Global index into `repos`, always pointing at a visible row.
     pub cursor: usize,
     /// First visible-list position drawn at the top of the table. Kept as
-    /// state rather than derived from the cursor so the window only moves
-    /// when the cursor would otherwise leave it: a window pinned to the
-    /// cursor scrolls on every keypress, which reads as the cursor being
-    /// stuck to an edge.
+    /// state rather than derived from the cursor, so the window only moves
+    /// when the cursor would otherwise leave it.
     pub list_scroll: usize,
     pub selected: BTreeSet<usize>,
     pub filter: String,
@@ -62,8 +64,7 @@ pub struct App {
     /// shows a spinner instead of stale or blank data.
     pub probing: BTreeSet<usize>,
     /// Bumped every time a probe run starts; a result tagged with an older
-    /// generation is dropped rather than painted over newer data (section
-    /// 07, "superseded, not queued").
+    /// generation is dropped rather than painted over newer data.
     pub probe_generation: u64,
     /// Global indices of repos known to have fetched this session, either
     /// because a poll cycle's own `git fetch` succeeded for them or because
@@ -71,8 +72,8 @@ pub struct App {
     /// was taken. Until a given repo is in here, its behind column reads
     /// unknown rather than claiming to be current; a repo whose own fetch
     /// keeps failing (offline, VPN, auth) must not borrow another repo's
-    /// success just because they polled in the same cycle. Sticky per repo:
-    /// a later fetch-less reprobe doesn't downgrade a repo that has
+    /// success just because they polled in the same cycle. Sticky per repo,
+    /// so a later fetch-less reprobe doesn't downgrade a repo that has
     /// genuinely fetched before.
     pub fetched_repos: BTreeSet<usize>,
     /// Each repo's `FETCH_HEAD` timestamp as of the first probe that saw it,
@@ -82,13 +83,11 @@ pub struct App {
     /// perform: an `update` action pulls, and the re-probe that follows sees
     /// the newer timestamp.
     pub fetch_baseline: BTreeMap<usize, Option<SystemTime>>,
-    /// Set by the `r` key; the run loop owns actually spawning the probe
-    /// task, since `on_key` has no runtime handle to spawn one with.
+    /// Set by the `r` key.
     pub probe_requested: bool,
     /// Bumped every time a run starts; an executor event tagged with an
     /// older id belongs to a run that's since been cancelled and superseded,
-    /// and is dropped by [`on_task`](Self::on_task) rather than painted over
-    /// a newer run's results.
+    /// and is dropped by [`on_task`](Self::on_task).
     pub run_id: u64,
     /// Each repo's outcome from the most recent run it took part in, `None`
     /// for a repo that has never run this session.
@@ -100,9 +99,7 @@ pub struct App {
     /// [`expire_results`](Self::expire_results) can clear a stale one.
     pub result_at: BTreeMap<usize, Instant>,
     /// How long a finished result stays on the row before the column goes
-    /// back to `·`. `None` keeps every result until the next run replaces
-    /// it. A result is a statement about a moment, and an hour later it is
-    /// mostly a claim about the past dressed as the present.
+    /// back to `·`. `None` keeps every result until the next run replaces it.
     pub result_ttl: Option<Duration>,
     /// `[DEFAULT]` keys for the active config, so a run started from inside
     /// the app can plan an operation the same way the CLI does.
@@ -113,11 +110,10 @@ pub struct App {
     /// `-d`, carried along so a config reload or set switch resolves repo
     /// paths the same way the initial load did.
     pub dir_override: Option<PathBuf>,
-    /// Skip the dirty-selection confirmation (section 11); mirrors the
-    /// CLI's `--force`, since both mean "I already know what I'm doing".
+    /// Skip the dirty-selection confirmation; mirrors the CLI's `--force`.
     pub force: bool,
     /// Every runnable action for the active set, discovered once at
-    /// startup so the palette has something to filter (section 08).
+    /// startup so the palette has something to filter.
     pub actions: Vec<Action>,
 
     /// Whether the action palette (`:`) is capturing keystrokes.
@@ -128,9 +124,7 @@ pub struct App {
     /// A run waiting on the dirty-selection confirmation; `None` once it's
     /// been answered either way.
     pub pending_run: Option<PendingRun>,
-    /// Set once a run should actually start; the run loop owns spawning it,
-    /// since state has no runtime handle of its own (mirrors
-    /// `probe_requested`).
+    /// Set once a run should actually start.
     pub run_requested: Option<RunRequest>,
 
     /// The live run's action name, `None` once it finishes so the header
@@ -141,8 +135,7 @@ pub struct App {
     pub run_total: usize,
     pub run_completed: usize,
     pub run_failed: usize,
-    /// Set once a run finishes, to the repos it covered; the run loop owns
-    /// spawning the re-probe over them (section 06, "post-run re-probe").
+    /// Set once a run finishes, to the repos it covered, for a re-probe.
     pub post_run_targets: Option<Vec<usize>>,
 
     /// Whether Enter has opened the detail view for the cursor row. The
@@ -153,10 +146,9 @@ pub struct App {
     /// lose your place when you come back.
     pub detail_scroll: BTreeMap<usize, usize>,
 
-    /// Whether the mouse is currently captured; starts `true` (section 03).
+    /// Whether the mouse is currently captured; starts `true`.
     pub mouse_captured: bool,
-    /// Set by `m`; the run loop applies the actual capture toggle, since
-    /// that's a terminal write and state has no I/O of its own.
+    /// Set by `m`.
     pub mouse_capture_dirty: bool,
     /// Whether the modifier-drag escape hatch has already been mentioned
     /// this session, so it's shown once rather than on every drag.
@@ -174,22 +166,20 @@ pub struct App {
     pub set_picker_open: bool,
     /// Entries offered by the open picker: every set `sets::discover()`
     /// finds, plus the active config appended as `(unnamed)` when it isn't
-    /// one of them (section 11, "Unnamed active config"). Rebuilt each time
-    /// the picker opens, so a set created on disk since startup shows up.
+    /// one of them. Rebuilt each time the picker opens, so a set created on
+    /// disk since startup shows up.
     pub set_entries: Vec<SetEntry>,
     pub set_picker_cursor: usize,
 
     /// Set by a config reload or a set switch, both of which replace the
-    /// repo list out from under the probe; the run loop owns spawning the
-    /// resulting full re-probe, since state has no runtime handle of its own.
+    /// repo list out from under the probe.
     pub full_reprobe_requested: bool,
 
-    /// Set by `Esc` while a run is live; the run loop owns actually flipping
-    /// the executor's cancel flag, since only it holds the `RunHandle`.
+    /// Set by `Esc` while a run is live; only the run loop holds the
+    /// `RunHandle` carrying the executor's cancel flag.
     pub cancel_requested: bool,
 
-    /// Whether `q`/`Ctrl-C` is waiting on confirmation because a run is live
-    /// (section 03, "prompts if a run is live").
+    /// Whether `q`/`Ctrl-C` is waiting on confirmation because a run is live.
     pub quit_pending: bool,
 
     /// `?`: whether the keymap overlay is showing. Purely a view concern, so
@@ -203,52 +193,46 @@ pub struct App {
     pub output_selection: Option<OutputSelection>,
 
     /// `o` and `!`: what to run in the foreground once the app has stepped
-    /// out of the way. The run loop owns actually suspending the terminal,
-    /// since state has no I/O of its own (mirrors `probe_requested`,
-    /// `mouse_capture_dirty`).
+    /// out of the way.
     pub foreground: Option<Foreground>,
 
     /// `F`: whether the freshness poll is currently on. Off by default,
-    /// since freshness is an opt-in loop (section 07).
+    /// since freshness is an opt-in loop.
     pub poll_enabled: bool,
-    /// How often the poll fires when it's on; a value on `App` rather than
-    /// a hardcoded constant, so a persisted session can change it (section
-    /// 07: "the interval is a config value").
+    /// How often the poll fires when it's on; a value on `App` rather than a
+    /// hardcoded constant, so a persisted session can change it.
     pub poll_interval: Duration,
     /// `Ctrl-A`: whether a completed poll cycle is allowed to fast-forward
     /// what it finds behind. Off by default; never true while `poll_enabled`
     /// is false, since it has nothing to act on without one.
     pub auto_update: bool,
     /// Set by [`on_poll_due`](Self::on_poll_due) when a tick is actually
-    /// allowed to start a cycle; the run loop owns spawning it, since state
-    /// has no runtime handle of its own (mirrors `probe_requested`).
+    /// allowed to start a cycle.
     poll_targets_requested: Option<Vec<usize>>,
     /// The probe generation the current in-flight probe belongs to, when it
     /// was started as a poll cycle rather than a plain probe or reprobe.
     /// Lets [`on_probe`](Self::on_probe) tell "a poll cycle just finished"
     /// from "the user pressed r", without a second copy of the generation
-    /// machinery (section 02: "the existing generation counter").
+    /// machinery.
     poll_generation: Option<u64>,
     /// Set once a poll cycle's results are all in and some of them passed
-    /// [`poll::can_fast_forward`]; the run loop owns spawning the actual
-    /// merges.
+    /// [`poll::can_fast_forward`].
     auto_update_requested: Option<Vec<usize>>,
-    /// Bumped every time an auto-update cycle actually starts (mirrors
-    /// `probe_generation`); a result tagged with a different generation
-    /// belongs to a cycle that has since completed or been superseded and
-    /// is dropped rather than corrupting the current cycle's counters.
+    /// Bumped every time an auto-update cycle actually starts; a result
+    /// tagged with a different generation belongs to a cycle that has since
+    /// completed or been superseded and is dropped rather than corrupting
+    /// the current cycle's counters.
     auto_update_generation: u64,
     auto_update_total: usize,
     auto_update_done: usize,
     auto_update_ok: usize,
     /// Repos this cycle found behind but never targeted, because
     /// [`poll::can_fast_forward`] rejected them (dirty, diverged, no
-    /// upstream). They are the common case of "left alone" and the merge
-    /// counters never see them, so the summary adds them in separately.
+    /// upstream). The merge counters never see them, so the summary adds
+    /// them in separately.
     auto_update_skipped: usize,
-    /// Repos an auto-update pass actually fast-forwarded, so the run loop
-    /// can re-probe just those once the pass finishes and pick up their new
-    /// ahead/behind and branch state.
+    /// Repos an auto-update pass actually fast-forwarded, to be re-probed
+    /// for their new ahead/behind and branch state.
     auto_update_reprobe_targets: Option<Vec<usize>>,
 }
 
@@ -350,23 +334,21 @@ impl App {
         self.repos.iter().position(|r| r.name == name)
     }
 
-    /// Apply a persisted session on top of a freshly built app (section 09).
-    /// Filter and selection are matched by repo name so a config edit
-    /// doesn't misdirect them onto the wrong row, and any name the current
-    /// repo list doesn't have is dropped silently, a config edit is not an
-    /// error. `set_label` is left untouched: `main.rs` already decided which
-    /// config to load, `-s` beating the stored set if it named one, before
-    /// this ever runs.
+    /// Apply a persisted session on top of a freshly built app. Filter and
+    /// selection are matched by repo name so a config edit doesn't misdirect
+    /// them onto the wrong row, and a name the current repo list doesn't
+    /// have is dropped silently: a config edit is not an error. `set_label`
+    /// is left untouched, since `main.rs` already decided which config to
+    /// load before this ever runs.
     pub fn restore_session(&mut self, session: &Session) {
         self.filter = session.filter.clone();
 
         self.selected = self.indices_matching(|n| session.selected.iter().any(|s| s == n));
 
-        // A restart is not evidence that a fetch the last one saw never
-        // happened, and [`fetch_head_moved`](Self::fetch_head_moved) cannot
-        // work it out again: the first probe of a process has nothing to
-        // compare its `FETCH_HEAD` against, so an untouched repo would read
-        // as never fetched and its behind count would go back to withheld.
+        // `fetch_head_moved` cannot work this out again after a restart: the
+        // first probe of a process has nothing to compare its `FETCH_HEAD`
+        // against, so an untouched repo would read as never fetched and its
+        // behind count would go back to withheld.
         self.fetched_repos = self.indices_matching(|n| session.fetched.iter().any(|f| f == n));
 
         if let Some(pos) = session
@@ -397,13 +379,11 @@ impl App {
 
     /// Whichever mutating operation currently owns the repos on disk, if
     /// any. A live run, an in-flight auto-update pass, a set switch, a
-    /// config reload, and an editor suspension all either write to a
-    /// working tree or replace the repo list out from under indices another
-    /// of them is still using, so at most one may be underway at a time.
-    /// The single source of truth for that rule: every entry point that
-    /// commits one of these actions calls this at the moment it actually
-    /// commits, not only when it opens a modal, since another one can start
-    /// in the gap between the two.
+    /// config reload, and an editor suspension all either write to a working
+    /// tree or replace the repo list out from under indices another of them
+    /// is still using, so at most one may be underway at a time. Callers
+    /// must check at the moment they commit, not only when they open a
+    /// modal: another one can start in the gap between the two.
     fn mutation_blocker(&self) -> Option<&'static str> {
         if self.run_action.is_some() {
             Some("another run is already live")

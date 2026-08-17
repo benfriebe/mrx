@@ -68,10 +68,9 @@ pub struct Cli {
 /// A short duration for `--result-ttl`: a bare number of seconds, `90s`,
 /// `6m`, `1h`, or `off`/`0`.
 ///
-/// `off` parses to [`Duration::ZERO`] rather than to `None`: clap reads a
-/// `None` here as "the flag was not passed", which is the one thing it must
-/// not be confused with, since that falls back to the default instead of
-/// turning expiry off. `main.rs` maps the zero back to "never expire".
+/// `off` parses to [`Duration::ZERO`], not `None`: clap reads `None` as "the
+/// flag was not passed", which falls back to the default instead of turning
+/// expiry off. `main.rs` maps the zero back to "never expire".
 fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
     if s.eq_ignore_ascii_case("off") {
@@ -194,9 +193,7 @@ mod tests {
         assert_eq!(parse_duration("1h"), Ok(Duration::from_secs(3600)));
     }
 
-    /// `off` and an absent flag mean opposite things: never expire, versus
-    /// fall back to the default. Collapsing them into one `None` would make
-    /// `--result-ttl off` silently do nothing.
+    /// The distinction `parse_duration` documents, from clap's side.
     #[test]
     fn result_ttl_off_is_not_the_same_as_an_absent_flag() {
         let off = Cli::try_parse_from(["mrx", "--result-ttl", "off", "ui"]).unwrap();

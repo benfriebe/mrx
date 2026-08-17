@@ -43,8 +43,8 @@ impl App {
             return;
         }
         self.detail_open = true;
-        // Opening from a row means "show me this one", so the list keeps
-        // the keys and `j`/`k` keep walking rows with the output following.
+        // Opening from a row means "show me this one", so `j`/`k` keep
+        // walking rows with the output following.
         self.focus = Pane::List;
     }
 
@@ -69,10 +69,8 @@ impl App {
     }
 
     /// The transcript line drawn on the output pane's first content row. A
-    /// run still arriving follows its own tail, until a scroll says
-    /// otherwise: the interesting end of a live log is the one being
-    /// written, and reading it should not need a keystroke per screenful.
-    /// Any scroll leaves an entry behind and pins it.
+    /// run still arriving follows its own tail until a scroll says
+    /// otherwise; any scroll leaves an entry behind and pins it.
     pub fn detail_view_scroll(&self, total_lines: usize, content_height: usize) -> usize {
         match self.detail_scroll.get(&self.cursor) {
             Some(&scroll) => detail::clamp_scroll(scroll, total_lines, content_height),
@@ -105,10 +103,10 @@ impl App {
             .then(|| selection.anchor.min(selection.head)..=selection.anchor.max(selection.head))
     }
 
-    /// Copy what the drag selected, on the button coming back up. Mouse
-    /// capture is what makes this necessary: while it's on the terminal
-    /// hands drags to mrx instead of selecting text with them, so the app
-    /// owes the user a selection of its own.
+    /// Copy what the drag selected, on the button coming back up. While
+    /// mouse capture is on the terminal hands drags to mrx instead of
+    /// selecting text with them, so the app owes the user a selection of its
+    /// own.
     ///
     /// A press that never moved is a click, and a click clears the last
     /// selection rather than making a one-line one out of nothing.
@@ -171,9 +169,9 @@ impl App {
     /// render.rs clamps to when it draws.
     ///
     /// The first scroll of a row measures from what is on screen, not from
-    /// line 0: an unscrolled transcript is showing its tail, and a key that
-    /// jumped to the top of a 4000-line log instead of a half page up from
-    /// there would be answering a question nobody asked.
+    /// line 0: an unscrolled transcript is showing its tail, so measuring
+    /// from 0 would jump to the top of a 4000-line log instead of a half
+    /// page up from where the reader is.
     pub fn detail_scroll_by(&mut self, delta: isize) {
         let from = match self.detail_scroll.get(&self.cursor) {
             Some(&scroll) => scroll,
@@ -205,7 +203,7 @@ impl App {
     }
 
     /// Copy the step currently visible in the cursor row's detail view,
-    /// falling back to a file when there's no clipboard (section 03).
+    /// falling back to a file when there's no clipboard.
     pub fn copy_visible_step(&mut self) {
         let Some(Some(RunStatus::Finished { steps, .. })) = self.run_results.get(self.cursor)
         else {
@@ -218,8 +216,8 @@ impl App {
         let Some(step) = steps.get(idx) else {
             return;
         };
-        // Reads the raw StepResult directly rather than through DetailLine,
-        // so it strips ANSI escapes itself instead of inheriting DetailLine::text's.
+        // Reads the raw StepResult rather than DetailLine, so it has to strip
+        // ANSI escapes itself.
         let text = format!(
             "{}\n{}",
             ansi::strip(&step.stdout),

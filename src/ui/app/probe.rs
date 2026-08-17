@@ -1,10 +1,10 @@
 //! Background repo probe: one `git status --porcelain=v2 --branch` per repo,
 //! bounded by the same job limit as a run so a refresh can't swamp a machine
-//! that is already mid-update (section 07). The probe never fetches:
-//! ahead/behind and dirtiness are only ever as fresh as the last time
-//! something else did. It does read `FETCH_HEAD`'s timestamp, which is how
-//! it notices when that something else was an `update` action or another
-//! terminal rather than mrx's own poll.
+//! that is already mid-update. The probe never fetches: ahead/behind and
+//! dirtiness are only ever as fresh as the last time something else did. It
+//! does read `FETCH_HEAD`'s timestamp, which is how it notices when that
+//! something else was an `update` action or another terminal rather than
+//! mrx's own poll.
 
 use crate::config::Repo;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, Semaphore};
 
 /// A cold-cache `git status` on a large repo can take seconds; past this, the
 /// probe gives up on that one repo rather than holding up the rest of the
-/// table indefinitely (section 11, "Probe cost on a cold cache").
+/// table indefinitely.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What the buckets in a working-tree summary count, in the order they are
@@ -61,10 +61,9 @@ pub struct RepoState {
     /// every other field is a default and should not be trusted.
     pub timed_out: bool,
     /// Whether this result came from a poll cycle whose `git fetch` for this
-    /// specific repo actually succeeded. Always `false` for a plain probe,
-    /// which never fetches. A poll cycle can have some repos fetch
-    /// successfully and others fail (offline, VPN, auth), so this is a
-    /// per-repo fact, not a session-wide one.
+    /// specific repo succeeded; always `false` for a plain probe, which never
+    /// fetches. Fetches fail per repo (offline, VPN, auth), so this is not a
+    /// session-wide fact.
     pub fetched: bool,
     /// When `FETCH_HEAD` was last written, or `None` for a repo that has
     /// never fetched. Git rewrites it on every successful fetch, so a value
@@ -130,7 +129,7 @@ pub fn spawn_probe(
 }
 
 /// Visible to [`super::poll`], whose poll cycle is a `git fetch` followed by
-/// exactly this same status parse (section 07).
+/// exactly this same status parse.
 pub(super) async fn probe_one(index: usize, path: &Path) -> RepoState {
     if !path.is_dir() {
         return RepoState::absent(index);
@@ -157,8 +156,7 @@ pub(super) async fn probe_one(index: usize, path: &Path) -> RepoState {
     }
 }
 
-/// When this repo's `FETCH_HEAD` was last written. One `stat` alongside a
-/// `git status` that already spawned a process, and the only way the probe
+/// When this repo's `FETCH_HEAD` was last written: the only way the probe
 /// learns about a fetch it did not perform itself.
 fn fetch_head_written_at(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(git_dir(path).join("FETCH_HEAD"))
@@ -256,9 +254,9 @@ pub fn branch_text(state: &RepoState) -> String {
 /// The working tree alone: `clean`, or the same bucketed phrasing an `s` run
 /// puts in RESULT (`2 modified, 1 untracked`), so the two never describe one
 /// repo differently. A repo whose only changes are unmerged or ignored has
-/// nothing to bucket and falls back to the bare total. No ahead/behind or
-/// timeout/absent handling is layered on top: this is the building block
-/// both [`dirty_text`] and the detail sidebar's briefer column share.
+/// nothing to bucket and falls back to the bare total. The building block
+/// [`dirty_text`] and the detail sidebar's briefer column share, so it
+/// layers on no ahead/behind or timeout/absent handling of its own.
 fn working_tree_text(state: &RepoState) -> String {
     if state.changed == 0 {
         return "clean".to_string();
@@ -279,13 +277,11 @@ fn working_tree_text(state: &RepoState) -> String {
     }
 }
 
-/// Working-tree summary: `working_tree_text` plus ahead/behind when there
-/// is an upstream to compare against. The behind count is withheld
-/// entirely until this specific repo has fetched: it compares against the
-/// local remote-tracking ref, so a stale one would read as "up to date"
-/// rather than "not asked recently", and a repo whose own fetch failed
-/// (offline, VPN, auth) must not borrow another repo's success (section 02:
-/// "up to date" and "not asked recently" must not render identically).
+/// Working-tree summary: `working_tree_text` plus ahead/behind when there is
+/// an upstream to compare against. The behind count is withheld entirely
+/// until this specific repo has fetched: it compares against the local
+/// remote-tracking ref, so a stale one would render "not asked recently"
+/// identically to "up to date".
 pub fn dirty_text(state: &RepoState, repo_has_fetched: bool) -> String {
     if state.timed_out {
         return "timed out".into();
@@ -300,10 +296,8 @@ pub fn dirty_text(state: &RepoState, repo_has_fetched: bool) -> String {
         if state.ahead > 0 {
             text.push_str(&format!("  ↑{}", state.ahead));
         }
-        // Silence rather than a `?` for a count nothing has established
-        // yet: the question mark was on most rows most of the time, which
-        // made it read as clutter rather than as the caveat it was. An
-        // absent ↓ still isn't a claim of being up to date; a ↓0 would be,
+        // Silence, not a `?`, for a count nothing has established yet: an
+        // absent ↓ isn't a claim of being up to date, whereas a ↓0 would be,
         // which is why one is never drawn.
         if repo_has_fetched && state.behind > 0 {
             text.push_str(&format!("  ↓{}", state.behind));
@@ -314,10 +308,9 @@ pub fn dirty_text(state: &RepoState, repo_has_fetched: bool) -> String {
 }
 
 /// The detail sidebar's single state column: working-tree state without
-/// ahead/behind, since the sidebar already dropped the branch column, and
-/// showing `↑2 ↓3` with nothing to compare it against is more confusing
-/// than useful there (section 02, "the sidebar drops to the name and one
-/// state column").
+/// ahead/behind, since the sidebar has already dropped the branch column and
+/// `↑2 ↓3` with nothing to compare it against is more confusing than useful
+/// there.
 pub fn dirty_text_brief(state: &RepoState) -> String {
     if state.timed_out {
         return "timed out".into();
@@ -329,18 +322,16 @@ pub fn dirty_text_brief(state: &RepoState) -> String {
 }
 
 /// A probe result tagged with the generation it belongs to, so a receiver
-/// can tell a superseded probe's results from the current one's (section
-/// 07, "superseded, not queued").
+/// can tell a superseded probe's results from the current one's.
 pub struct Probed {
     pub generation: u64,
     pub state: RepoState,
 }
 
-/// A sender that tags every result with `generation` before forwarding it
-/// on `tx`; the forwarding task ends when either side closes. Shared by
-/// [`spawn_probe_generation`] and `poll`'s equivalent, so mashing `r` or
-/// switching sets twice quickly can't leave one cycle's results painted on
-/// top of a newer one's.
+/// A sender that tags every result with `generation` before forwarding it on
+/// `tx`; the forwarding task ends when either side closes. Shared with
+/// `poll`, so mashing `r` or switching sets twice quickly can't leave one
+/// cycle's results painted on top of a newer one's.
 pub(super) fn generation_tagged(
     generation: u64,
     tx: mpsc::UnboundedSender<Probed>,
@@ -490,8 +481,7 @@ mod tests {
         assert_eq!(dirty_text_brief(&state), "1 modified");
     }
 
-    /// The two forms of one real repo (a deletion, an edit, a rename, a
-    /// staged add and an untracked file), captured from git itself. The STATE
+    /// The two forms of one real repo, captured from git itself. The STATE
     /// column reads the v2 form and an `s` run's RESULT reads the short one,
     /// so the point of the fixture is that they still say the same sentence.
     #[test]

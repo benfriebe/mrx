@@ -1,8 +1,6 @@
-//! Layout for the resident app: header, repo table, status bar, and the
-//! detail view's split and full-screen forms. Branch and working-tree state
-//! come from the background probe, the result column from the executor, and
-//! which of these three overlays draws (palette, confirmation, detail) comes
-//! straight off `App`, not a separate render-time mode.
+//! Layout for ui mode: header, repo table, status bar, and the detail view's
+//! split and full-screen forms. Which overlays draw comes straight off `App`,
+//! not a separate render-time mode.
 
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
@@ -38,12 +36,9 @@ const BRANCH_LABEL: &str = "BRANCH";
 /// what the last run reported.
 const STATE_LABEL: &str = "STATE";
 const RESULT_LABEL: &str = "RESULT";
-/// Title line, a blank one, a line of labels, and the rule under them: the
-/// chrome above the body of every pane, list and detail alike, so their
-/// rules meet across a split. The blank row is what stops the app's own
-/// title reading as part of the table it sits above. Click resolution
-/// derives its row offset from this, so a click's row and the row the table
-/// actually painted never disagree.
+/// Title, a blank row, the column labels, and the rule under them: the chrome
+/// above the body of every pane, list and detail alike, so their rules meet
+/// across a split. Click resolution derives its row offset from this.
 pub(crate) const LIST_HEADER_ROWS: usize = 4;
 /// The rule and key line under the body, drawn once per frame: by the pane
 /// itself when it owns the whole width, by the split when it doesn't.
@@ -78,10 +73,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
-/// The split: the list narrowed to a sidebar, a rule down the middle, and
-/// one footer under both. Two panes that merely abut read as two windows,
-/// so the chrome is drawn as one frame divided rather than as two frames
-/// side by side.
+/// The split: the list narrowed to a sidebar, a rule down the middle, and one
+/// footer under both, so the chrome reads as one frame divided rather than as
+/// two windows side by side.
 fn draw_split(frame: &mut Frame, app: &App, area: Rect) {
     let [panes, footer] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(FOOTER_ROWS)]).areas(area);
@@ -117,10 +111,8 @@ fn draw_split_rule(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// The split's shared footer, spanning both panes. One line of keys under
-/// the whole frame, not one per pane: with the split open every keystroke
-/// reaches the same handler whichever side the pointer is on, so two
-/// different key lines would be claiming otherwise.
+/// The split's shared footer: one key line under the whole frame, since every
+/// keystroke reaches the same handler whichever side the pointer is on.
 fn draw_split_footer(frame: &mut Frame, app: &App, area: Rect, rule_col: usize) {
     let width = area.width as usize;
     let lines = vec![joined_separator(width, rule_col), status_line(app, width)];
@@ -158,10 +150,9 @@ fn header_line(app: &App, width: usize, split: bool) -> Line<'static> {
     )
 }
 
-/// Whether this pane has the keys, said twice over: a bar in the margin
-/// where the other pane has blank indent, and the title's own colour. One
-/// cue is easy to miss on a dark theme, and the bar alone is easy to read
-/// as decoration.
+/// Whether this pane has the keys: a bar in the margin where the other pane
+/// has blank indent. [`title_style`] says the same in colour, since one cue
+/// alone is easy to miss on a dark theme.
 fn focus_marker(app: &App, pane: Pane, split: bool) -> &'static str {
     if split && app.focus == pane {
         "▌ "
@@ -179,8 +170,6 @@ fn title_style(app: &App, pane: Pane, split: bool) -> Style {
 }
 
 /// `left` at the table's indent and `right` against the far edge, dimmed.
-/// A line too narrow for both keeps the left half and drops the right,
-/// rather than letting them collide or spill past the pane.
 fn two_column_line(left: &str, right: &str, width: usize) -> Line<'static> {
     styled_two_column_line(
         &format!("{LEAD_IN}{left}"),
@@ -190,8 +179,9 @@ fn two_column_line(left: &str, right: &str, width: usize) -> Line<'static> {
     )
 }
 
-/// `left` is already indented by its caller, since the margin is where the
-/// split's focus marker goes.
+/// `left` arrives already indented, since the margin is where the split's
+/// focus marker goes. A width too narrow for both halves keeps `left` and
+/// drops `right`, rather than letting them collide or spill past the pane.
 fn styled_two_column_line(
     left: &str,
     right: &str,
@@ -250,8 +240,7 @@ mod tests {
     }
 
     /// The split's two panes are drawn as separate widgets, so nothing but
-    /// this makes their rules meet: both put a title, a labels line, and a
-    /// rule above the body, and the vertical rule notches at the same row.
+    /// this test makes their header rules meet.
     #[test]
     fn both_panes_of_the_split_rule_off_their_header_on_the_same_row() {
         let mut a = app(vec![repo("bill-api"), repo("crew")]);
@@ -322,9 +311,8 @@ mod tests {
         assert!(output[0].starts_with('▌'), "got {:?}", output[0]);
     }
 
-    /// Nothing has focus when only one pane is on screen, so nothing should
-    /// claim it: a marker there would point at a distinction that isn't
-    /// being made.
+    /// Nothing has focus when only one pane is on screen, so a marker would
+    /// point at a distinction that isn't being made.
     #[test]
     fn the_full_width_list_wears_no_focus_marker() {
         let a = app(vec![repo("bill-api")]);

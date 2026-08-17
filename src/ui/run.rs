@@ -1,5 +1,4 @@
-//! The one-shot progress view: plan, execute, watch, quit. This is `mrx`'s
-//! existing TUI, unchanged in behaviour after moving out of `tui/`.
+//! The one-shot progress view: plan, execute, watch, quit.
 
 use crossterm::event::KeyCode;
 use std::collections::BTreeMap;
@@ -29,9 +28,9 @@ pub fn run(
 ) -> io::Result<bool> {
     super::install_panic_hook();
     let mut terminal = super::setup_terminal()?;
-    // The explicit `teardown_terminal()` call below covers the normal quit
-    // path; this guard is what restores the terminal on every early `?`
-    // return from the loop instead, most notably a failed `terminal.draw`.
+    // `teardown_terminal()` below covers the normal quit path; this guard
+    // covers every early `?` return from the loop, most notably a failed
+    // `terminal.draw`.
     let _terminal_guard = super::TerminalGuard;
 
     let action = command.display_name().to_string();
@@ -42,7 +41,6 @@ pub fn run(
     spawn_probe_for_all(&mut state, jobs, &probe_tx);
 
     loop {
-        // Drain pending events from executor
         while let Ok(evt) = rx.try_recv() {
             apply_event(&mut state, &evt);
         }
@@ -50,23 +48,19 @@ pub fn run(
             state.on_probe(probed.generation, probed.state);
         }
 
-        // Check if all done
         state.all_done = state.done_count() == state.total();
 
-        // Render
         terminal.draw(|frame| render::draw(frame, &state))?;
 
-        // Sticking around after the work finishes is the point of the TUI, so this
-        // is opt-in; without the flag the loop still waits for `q`.
+        // Sticking around after the work finishes is the point of the TUI, so
+        // leaving early is opt-in; otherwise the loop still waits for `q`.
         if state.all_done && exit_on_done {
             break;
         }
 
-        // Handle input
         if let Some(app_event) = event::poll(Duration::from_millis(80)) {
             match app_event {
                 event::AppEvent::Key(code, modifiers) => {
-                    // Ctrl+C always quits
                     if modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                         && code == KeyCode::Char('c')
                     {
@@ -74,7 +68,6 @@ pub fn run(
                     }
 
                     if state.expanded.is_some() {
-                        // Expanded mode keys
                         match code {
                             KeyCode::Esc | KeyCode::Enter => state.collapse(),
                             KeyCode::Up | KeyCode::Char('k') => state.scroll_up(),
@@ -89,7 +82,6 @@ pub fn run(
                             _ => {}
                         }
                     } else {
-                        // Normal mode keys
                         match code {
                             KeyCode::Char('q') => break,
                             KeyCode::Up | KeyCode::Char('k') => state.move_up(),
@@ -99,7 +91,6 @@ pub fn run(
                             KeyCode::End | KeyCode::Char('G') => {
                                 state.selected = state.total().saturating_sub(1)
                             }
-                            // Re-run the current command once the previous run finished.
                             KeyCode::Char('r') if state.all_done => {
                                 let ops = state
                                     .repos
@@ -126,10 +117,8 @@ pub fn run(
         }
     }
 
-    // Cleanup
     super::teardown_terminal()?;
 
-    // Print final summary
     let failed = state.failed_count();
     let done = state.done_count();
     let total = state.total();
@@ -170,9 +159,7 @@ fn apply_event(state: &mut AppState, event: &TaskEvent) {
             exit_code,
         } => {
             let summary = summarize::summarize_steps(steps, *exit_code);
-            // Stripped here, once: this view has no ANSI-aware renderer, and
-            // `RepoStatus::Done`'s stdout/stderr are relied on as plain text by
-            // every width and truncation call downstream (see its doc comment).
+            // Stripped once here: `RepoStatus::Done` holds plain text.
             let stdout: String = steps
                 .iter()
                 .map(|s| crate::ansi::strip(&s.stdout))

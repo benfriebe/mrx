@@ -1,9 +1,8 @@
-//! The freshness poll (`F`) and auto-update (`Ctrl-A`), section 02 and
-//! section 07. A poll cycle is `git fetch --quiet` followed by the same
-//! porcelain parse the probe uses, so its results land through the existing
-//! `RepoState` path and generation counter; auto-update is a narrow
-//! `git merge --ff-only` layered on top, run only where [`can_fast_forward`]
-//! says it is safe, and only ever reported when it is not.
+//! The freshness poll (`F`) and auto-update (`Ctrl-A`). A poll cycle is
+//! `git fetch --quiet` followed by the same porcelain parse the probe uses,
+//! so its results land through the existing `RepoState` path and generation
+//! counter; auto-update is a narrow `git merge --ff-only` layered on top,
+//! run only where [`can_fast_forward`] says it is safe.
 
 use super::probe::{self, generation_tagged, Probed, RepoState};
 use crate::config::Repo;
@@ -14,30 +13,27 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Semaphore};
 
-/// How often `F` fetches, unless a persisted session says otherwise
-/// (section 09); the interval itself lives on `App`, not as a constant
-/// baked into the timer, so it can vary per session (section 07).
+/// How often `F` fetches, unless a persisted session says otherwise; the
+/// interval lives on `App` rather than in the timer, so it can vary per
+/// session.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(300);
 
 /// Upper bound on a poll interval from any external source (a hand-edited
-/// or corrupted `ui.json`, chiefly). Comfortably larger than anyone would
-/// actually want to wait between polls, but far enough below the range
-/// `Instant` can represent that `Instant::now() + interval` can never
-/// overflow: `tokio::time::Instant::now() + Duration::from_secs(u64::MAX)`
-/// panics outright, and that panic would otherwise crash the app at
-/// startup before a single frame draws.
+/// or corrupted `ui.json`, chiefly). Far enough below the range `Instant`
+/// can represent that `Instant::now() + interval` can never overflow;
+/// `Instant::now() + Duration::from_secs(u64::MAX)` panics outright, which
+/// would crash the app at startup before a single frame draws.
 pub const MAX_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
 
-/// Clamp `interval` into `[1s, MAX_POLL_INTERVAL]`, the last line of
-/// defense before it's used to build the poll timer, regardless of where it
-/// came from.
+/// Clamp `interval` into `[1s, MAX_POLL_INTERVAL]`, whatever its source,
+/// before it is used to build the poll timer.
 pub fn clamp_interval(interval: Duration) -> Duration {
     interval.clamp(Duration::from_secs(1), MAX_POLL_INTERVAL)
 }
 
 /// A fetch is a network round trip rather than a local status read, so it
-/// gets more slack than the probe's own five-second timeout before the poll
-/// gives up on one repo and leaves it for the next cycle.
+/// gets more slack than the probe's own timeout before the poll gives up on
+/// one repo and leaves it for the next cycle.
 const POLL_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// A repo is auto-updatable only if a fast-forward is guaranteed to be a
@@ -51,12 +47,11 @@ pub fn can_fast_forward(s: &RepoState) -> bool {
         && s.changed == 0 // dirty: even a clean ff can surprise you mid-edit
 }
 
-/// Fetch, then read state back exactly the way a plain probe would; a fetch
-/// that fails (offline, no remote, auth) leaves refs stale but must not stop
-/// the status read that follows, since a stale local view is still worth
-/// showing. The result carries whether the fetch actually succeeded, so a
-/// repo whose own fetch failed doesn't inherit another repo's freshness
-/// just because they polled in the same cycle.
+/// Fetch, then read state back exactly the way a plain probe would. A fetch
+/// that fails (offline, no remote, auth) must not stop the status read that
+/// follows, since a stale local view is still worth showing, and the result
+/// carries whether this repo's own fetch succeeded so it can't inherit the
+/// freshness of another repo polled in the same cycle.
 async fn poll_one(index: usize, path: &Path) -> RepoState {
     let fetched = if path.is_dir() {
         matches!(
@@ -80,7 +75,7 @@ async fn poll_one(index: usize, path: &Path) -> RepoState {
 
 /// Fetch then probe every repo in `which`, bounded by `max_jobs`: the same
 /// job limit a probe uses, so a poll can't compete with a live run for the
-/// network even once the run itself has stopped queueing new work.
+/// network.
 pub fn spawn_poll(
     repos: &[Repo],
     which: Vec<usize>,
@@ -107,8 +102,7 @@ pub fn spawn_poll(
 }
 
 /// Like [`spawn_poll`], tagged with a probe generation so its results share
-/// the probe's own staleness handling: "a poll is a probe with a fetch in
-/// front of it" (section 02).
+/// the probe's own staleness handling.
 pub fn spawn_poll_generation(
     repos: &[Repo],
     which: Vec<usize>,
@@ -120,9 +114,9 @@ pub fn spawn_poll_generation(
 }
 
 /// One repo's outcome from an auto-update pass, tagged with the cycle it
-/// belongs to so a result arriving after a later cycle has started gets
-/// dropped rather than corrupting that cycle's counters, the same
-/// generation scheme the probe already uses.
+/// belongs to so a result arriving after a later cycle has started is
+/// dropped rather than counted against it; the same generation scheme the
+/// probe uses.
 pub struct AutoUpdateResult {
     pub index: usize,
     pub generation: u64,
@@ -136,21 +130,17 @@ pub enum AutoUpdateOutcome {
 }
 
 /// `git merge --ff-only` on every repo in `which`, bounded by `max_jobs`.
-/// Callers are expected to have already filtered `which` through
-/// [`can_fast_forward`], but time passes between that filter running and a
-/// given repo's turn at the semaphore, and `merge --ff-only` succeeds even
-/// on a dirty tree when the incoming change doesn't conflict with it. So
-/// each task re-probes its repo immediately before merging and skips the
-/// merge if it no longer passes `can_fast_forward`, rather than trusting
-/// the snapshot the poll took.
+/// Callers filter `which` through [`can_fast_forward`] first, but time
+/// passes before a repo's turn at the semaphore and `merge --ff-only`
+/// succeeds even on a dirty tree when the incoming change doesn't conflict,
+/// so each task re-probes and re-checks immediately before merging rather
+/// than trusting the poll's snapshot.
 ///
-/// That re-probe narrows the window from minutes to milliseconds but cannot
-/// close it: the probe and the merge are two separate `git` invocations, and
-/// nothing stops an edit made outside mrx, in another terminal or an editor,
-/// from landing in the gap between them. Two external processes can't be
-/// made atomic against each other without a lock this app doesn't take. This
-/// is why auto-update only ever fast-forwards, never merges or rebases
-/// anything a conflict could touch, and stays off until turned on.
+/// That re-probe narrows the window to milliseconds but cannot close it: the
+/// probe and the merge are two `git` invocations, and an edit made outside
+/// mrx can still land between them. Hence auto-update only ever
+/// fast-forwards, never merges or rebases anything a conflict could touch,
+/// and stays off until turned on.
 pub fn spawn_auto_update(
     repos: &[Repo],
     which: Vec<usize>,
@@ -197,9 +187,9 @@ pub fn spawn_auto_update(
     }
 }
 
-/// The header's `poll 5m` / `poll 5m · auto` text: minutes when the
-/// interval divides evenly, seconds otherwise, so an unusual persisted
-/// value still reads exactly rather than rounding away.
+/// The header's `poll 5m` / `poll 5m · auto` text: minutes when the interval
+/// divides evenly, seconds otherwise, so an unusual persisted value reads
+/// exactly rather than rounding away.
 pub fn format_interval(interval: Duration) -> String {
     let secs = interval.as_secs();
     if secs > 0 && secs.is_multiple_of(60) {
@@ -309,13 +299,9 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// Eligibility for auto-update is decided from a probe
-    /// snapshot, but `git merge --ff-only` succeeds on a dirty tree whenever
-    /// the incoming commit doesn't touch the dirtied file, so trusting that
-    /// snapshot at merge time can fast-forward a repo the user has since
-    /// started editing. `spawn_auto_update` has to re-probe immediately
-    /// before merging and skip a repo that no longer passes
-    /// `can_fast_forward`.
+    /// `merge --ff-only` succeeds on a dirty tree whenever the incoming
+    /// commit doesn't touch the dirtied file, so eligibility decided from an
+    /// earlier probe snapshot has to be re-checked at merge time.
     #[tokio::test]
     async fn auto_update_skips_a_repo_that_went_dirty_after_it_was_marked_eligible() {
         let origin = tempfile::tempdir().unwrap();
@@ -346,9 +332,8 @@ mod tests {
         run_git(origin.path(), &["commit", "--quiet", "-am", "two"]);
         run_git(&clone_path, &["fetch", "--quiet"]);
 
-        // Between the poll that decided eligibility and this repo's turn to
-        // merge, an uncommitted edit lands on a file the incoming commit
-        // never touches, so a plain `merge --ff-only` would still succeed.
+        // An uncommitted edit on a file the incoming commit never touches,
+        // so a plain `merge --ff-only` would still succeed here.
         std::fs::write(clone_path.join("b.txt"), "local edit\n").unwrap();
 
         let repo = Repo {
@@ -371,10 +356,9 @@ mod tests {
         assert_ne!(clone_head, origin_head, "the merge must not have happened");
     }
 
-    /// A repo's own `git fetch` can fail against real state (offline, a
-    /// dead remote, auth); `poll_one` must carry that failure into the
-    /// resulting `RepoState.fetched` rather than reporting the local
-    /// status read that follows as if the fetch itself had succeeded.
+    /// `poll_one` must carry a failed fetch into `RepoState.fetched` rather
+    /// than reporting the status read that follows as if the fetch had
+    /// succeeded.
     #[tokio::test]
     async fn a_fetch_that_fails_leaves_fetched_false_on_the_resulting_repo_state() {
         let dir = tempfile::tempdir().unwrap();

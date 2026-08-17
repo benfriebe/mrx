@@ -20,10 +20,9 @@ pub(super) fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool)
     lines.push(Line::default());
 
     let visible = app.visible_indices();
-    // As a sidebar the pane's area already stops above the shared footer, so
-    // its body is simply what's left under the header. That lands on the
-    // same row count as the full-width list, which is what lets click
-    // resolution use one formula for both.
+    // As a sidebar the area already stops above the shared footer, so the body
+    // is just what's left under the header. Either way the row count matches,
+    // which is what lets click resolution use one formula for both.
     let lh = if sidebar {
         (area.height as usize).saturating_sub(LIST_HEADER_ROWS)
     } else {
@@ -122,9 +121,8 @@ fn repo_line(
     let name_padding = name_col.saturating_sub(display_width(&name)) + COL_GAP;
 
     let probe = app.probe_display(idx);
-    // Only BRANCH gives its cell up to the spinner. A row being re-probed
-    // keeps the working-tree text it already had rather than going blank for
-    // the duration; a row probing for the first time has none to keep.
+    // Only BRANCH gives its cell up to the spinner, so a row being re-probed
+    // keeps the working-tree text it already had rather than going blank.
     let branch_text = if probe.spinner {
         spinner_frame(app.tick).to_string()
     } else {
@@ -155,8 +153,8 @@ fn repo_line(
 }
 
 /// STATE's working-tree half and its trailing `↑n`/`↓n` counters, which
-/// [`super::probe::dirty_text`] appends after a gap. Splitting on the arrows
-/// is safe because nothing else the column can hold uses them.
+/// [`probe::dirty_text`] appends after a gap. Splitting on the arrows is safe
+/// because nothing else the column can hold uses them.
 fn split_counters(text: &str) -> (&str, &str) {
     match text.find(['↑', '↓']) {
         Some(at) => {
@@ -168,15 +166,13 @@ fn split_counters(text: &str) -> (&str, &str) {
 }
 
 /// STATE fitted to `max` cells with the ahead/behind counters kept, so the
-/// working-tree text absorbs the truncation instead. They sit at the end of
-/// the text and so are what a naive truncation drops first, but a missing
-/// `↓` is how the row says nothing has fetched this repo yet (the help
-/// overlay documents that), and dropping one silently makes the row lie.
+/// working-tree text absorbs the truncation instead. A missing `↓` is how the
+/// row says nothing has fetched this repo yet (the help notes say so), and a
+/// naive truncation, which drops the trailing counters first, makes it lie.
 fn fit_state(text: &str, max: usize) -> String {
     let (head, counters) = split_counters(text);
     match max.checked_sub(display_width(counters)) {
-        // No room to keep the counters and still say anything about the
-        // working tree, so fall back to truncating the whole string.
+        // No room for the counters and any working-tree text, so truncate both.
         None | Some(0) => truncate(text, max),
         Some(head_max) => format!("{}{}", truncate(head, head_max), counters),
     }
@@ -201,8 +197,7 @@ fn result_style(app: &App, idx: usize) -> Style {
 }
 
 /// The detail sidebar's row: name and one working-tree-state column, since
-/// branch and ahead/behind are detail about a repo you're no longer
-/// scanning (section 02).
+/// branch and ahead/behind are detail about a repo you're no longer scanning.
 fn sidebar_repo_line(app: &App, idx: usize, name_col: usize, state_col: usize) -> Line<'static> {
     let repo = &app.repos[idx];
     let is_cursor = idx == app.cursor;
@@ -288,8 +283,7 @@ mod tests {
     }
 
     /// The whole spinner contract in one pass, driven through the real probe
-    /// lifecycle rather than by planting `probing` and `probes` by hand:
-    /// state.rs decides the flag, render.rs decides which cell gives way.
+    /// lifecycle rather than by planting `probing` and `probes` by hand.
     #[test]
     fn the_spinner_contract_holds_from_begin_probe_through_to_the_drawn_row() {
         let mut a = app(vec![repo("alpha")]);
@@ -358,9 +352,8 @@ mod tests {
         );
     }
 
-    /// Keeping the counters must not buy them room the column does not have:
-    /// at narrow widths the STATE cell still has to fit inside `state_col`,
-    /// or every column after it shifts right.
+    /// Keeping the counters must not buy them room the column does not have,
+    /// or every column after STATE shifts right.
     #[test]
     fn a_row_with_counters_keeps_its_state_cell_inside_its_column() {
         let mut a = app(vec![repo("alpha")]);

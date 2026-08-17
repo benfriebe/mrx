@@ -28,9 +28,8 @@ impl LiveRun {
             shape: summarize::Shape::Generic,
             stdout: String::new(),
             stderr: String::new(),
-            // Nothing to report yet; the finished result carries the real
-            // code, and [`crate::ui::app::detail`] draws a live step's
-            // heading without one.
+            // Nothing to report yet: the finished result carries the real
+            // code, and a live step's heading is drawn without one.
             code: 0,
         });
     }
@@ -56,7 +55,7 @@ impl LiveRun {
 pub enum RunStatus {
     Running,
     /// The step currently in flight, named so a row reads "post_update"
-    /// instead of a fixed "running..." (section 06).
+    /// instead of a fixed "running...".
     Step {
         label: String,
     },
@@ -85,8 +84,7 @@ impl App {
     /// which [`cancel_counts`](Self::cancel_counts) would then count as
     /// neither queued nor finishing. Only the targets are cleared: a row this
     /// run is not acting on keeps its outcome until
-    /// [`expire_results`](Self::expire_results) retires it, which is the one
-    /// thing that decides when a result has stopped saying anything.
+    /// [`expire_results`](Self::expire_results) retires it.
     pub fn begin_named_run(&mut self, action: String, targets: Vec<usize>) -> u64 {
         let run_id = self.begin_run();
         self.run_action = Some(action);
@@ -136,8 +134,7 @@ impl App {
                 exit_code,
             } => {
                 // The finished steps supersede the partial ones, which are
-                // the same text either way; keeping both would only be a
-                // second answer to the same question.
+                // the same text either way.
                 self.live.remove(&index);
                 (index, RunStatus::Finished { steps, exit_code })
             }
@@ -173,7 +170,7 @@ impl App {
     /// Drop results older than [`result_ttl`](Self::result_ttl), so a row
     /// stops reporting an outcome from long enough ago that it says nothing
     /// about the repo now. Called on the tick; a run still in flight is
-    /// never touched, since it has not finished saying anything yet.
+    /// never touched.
     pub fn expire_results(&mut self) {
         let Some(ttl) = self.result_ttl else {
             return;
@@ -197,22 +194,17 @@ impl App {
         }
     }
 
-    /// Set by `on_task` once a run's last target reports in; consumed by
-    /// the run loop, the only thing with a runtime handle to spawn the
-    /// resulting probe with.
     pub fn take_post_run_targets(&mut self) -> Option<Vec<usize>> {
         self.post_run_targets.take()
     }
 
-    /// `Esc`: ask the live run to stop queueing new work, and say honestly
-    /// what that will and won't do (section 06). A no-op when nothing is
-    /// running, so it's safe to bind unconditionally.
+    /// `Esc`: ask the live run to stop queueing new work. A no-op when
+    /// nothing is running, so it's safe to bind unconditionally.
     ///
     /// `Command::output().await` has no kill, so a repo already past its
     /// semaphore permit keeps running to completion; only a repo still
-    /// waiting behind it turns into a skip. Both counts are a snapshot of
-    /// `run_results` as of the keypress, not a promise that stays accurate
-    /// as more events arrive.
+    /// waiting behind it turns into a skip. Both counts are a snapshot as of
+    /// the keypress, not a promise that stays accurate as events arrive.
     pub fn request_cancel(&mut self) {
         if self.run_action.is_none() {
             return;
@@ -240,17 +232,13 @@ impl App {
             })
     }
 
-    /// Set by [`request_cancel`](Self::request_cancel); consumed by the run
-    /// loop, the only thing holding the `RunHandle` that can actually flip
-    /// the executor's cancel flag.
     pub fn take_cancel_requested(&mut self) -> bool {
         std::mem::take(&mut self.cancel_requested)
     }
 
     /// `q`/`Ctrl-C`: quits immediately, unless a run is live, in which case
     /// it opens a confirmation first rather than losing sight of whether
-    /// anything was left running (section 03, "prompts if a run is live").
-    /// Returns whether the caller should quit right now.
+    /// anything was left running. Returns whether the caller should quit now.
     pub fn request_quit(&mut self) -> bool {
         if self.run_action.is_some() {
             self.quit_pending = true;
@@ -288,11 +276,10 @@ impl App {
     }
 
     /// The header's right-hand text: the live run's summary while one is
-    /// running (section 02, "the only place the run's global state
-    /// appears"), otherwise the selection count, with the poll's state and
-    /// a restored filter's match count layered on. A restored filter is
-    /// shown here, not only in the status bar, since "4 of 42 repos" with
-    /// no explanation otherwise looks like a broken config (section 09).
+    /// running, otherwise the selection count, with the poll's state and a
+    /// restored filter's match count layered on. A restored filter is shown
+    /// here, not only in the status bar, since "4 of 42 repos" with no
+    /// explanation otherwise looks like a broken config.
     pub fn header_right_text(&self) -> String {
         if let Some(run) = self.run_status_text() {
             return run;
@@ -306,10 +293,8 @@ impl App {
                 self.repos.len()
             )
         };
-        // Only ever a count of what was actually picked. An empty selection
-        // means every visible repo, and calling that "42 selected" would
-        // make the two states impossible to tell apart on the one line
-        // that is supposed to distinguish them.
+        // An empty selection already means every visible repo, and calling
+        // that "42 selected" would make the two states indistinguishable.
         if !self.selected.is_empty() {
             text.push_str(&format!(" · {} selected", self.selected.len()));
         }

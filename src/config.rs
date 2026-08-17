@@ -45,11 +45,9 @@ pub fn expand_tilde(s: &str) -> PathBuf {
 /// Read a config file into repos plus the `[DEFAULT]` fallbacks, exiting the
 /// process on an unreadable or unparseable file.
 ///
-/// A thin wrapper over [`try_load`] for the one-shot CLI paths, where there is
-/// no terminal state to protect and exiting with a message is the right
-/// behaviour. The resident app calls `try_load` directly instead: calling
-/// this from inside raw mode bypasses teardown and the panic hook,
-/// leaving the user's terminal wrecked.
+/// For the one-shot CLI paths, where there is no terminal state to protect.
+/// ui mode calls [`try_load`] directly instead: exiting from inside raw mode
+/// bypasses teardown and the panic hook, leaving the terminal wrecked.
 pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
     match try_load(config_path, dir_override) {
         Ok(config) => config,
@@ -66,9 +64,8 @@ pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
 /// come from the config itself: `dir_override` (`-d`) beats `[DEFAULT] base`, which
 /// beats the config file's own parent.
 ///
-/// A missing config file is not an error here: an empty `Config` is returned,
-/// matching `load`'s longstanding behaviour of falling back to an empty repo
-/// list. Only an unreadable or unparseable file yields `Err`.
+/// A missing config file is not an error: it yields an empty `Config`. Only
+/// an unreadable or unparseable file yields `Err`.
 pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Config, String> {
     let fallback_base = || {
         config_path
@@ -98,9 +95,9 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
     // lowercased by hand below so `Branch` and `branch` still mean the same thing.
     let mut ini = configparser::ini::Ini::new_cs();
     ini.set_multiline(true);
-    // Values are shell command bodies, where `;` and `#` are ordinary characters.
-    // Inline comment stripping would silently truncate `update = a; b` to `a`.
-    // An empty list disables it; whole-line `;` and `#` comments still work.
+    // Values are shell command bodies, so inline comment stripping would
+    // truncate `update = a; b` to `a`. An empty list disables it; whole-line
+    // `;` and `#` comments still work.
     ini.set_inline_comment_symbols(Some(&[]));
     if let Err(e) = ini.read(content) {
         return Err(format!("cannot parse {}: {}", config_path.display(), e));
@@ -161,7 +158,6 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
 
 fn extract_clone_url(checkout_cmd: &str) -> Option<String> {
     let tokens: Vec<&str> = checkout_cmd.split_whitespace().collect();
-    // find "clone" then take the next token as the URL
     for (i, tok) in tokens.iter().enumerate() {
         if *tok == "clone" {
             if let Some(url) = tokens.get(i + 1) {

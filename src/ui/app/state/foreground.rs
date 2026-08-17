@@ -38,23 +38,20 @@ impl App {
         });
     }
 
-    /// Set by `m`; consumed by the run loop, the only thing that can
-    /// actually write the terminal escape sequence.
     pub fn take_mouse_capture_dirty(&mut self) -> bool {
         std::mem::take(&mut self.mouse_capture_dirty)
     }
 
-    /// `o`: open `$EDITOR` on whatever the current view is about (section
-    /// 03, "o is worth including early"). In the list that is the cursor
-    /// row's repo; in the detail view it is the transcript on screen, since
-    /// that is what you are looking at and the repo is one `esc` away.
+    /// `o`: open `$EDITOR` on whatever the current view is about. In the list
+    /// that is the cursor row's repo; in the detail view it is the transcript
+    /// on screen, since that is what you are looking at and the repo is one
+    /// `esc` away.
     ///
-    /// A no-op with a status message when the filter hides every row, for
-    /// the same reason [`open_detail`](Self::open_detail) is. Also refused
-    /// by [`mutation_blocker`](Self::mutation_blocker): a live run or
+    /// A no-op with a status message when the filter hides every row, the
+    /// same as [`open_detail`](Self::open_detail). Also refused by
+    /// [`mutation_blocker`](Self::mutation_blocker): a live run or
     /// auto-update pass keeps writing to repos in the background while the
-    /// editor has the terminal, and the user should not open one on a repo
-    /// something else is mid-write to.
+    /// editor has the terminal.
     pub fn request_open_editor(&mut self) {
         if self.detail_open {
             self.request_open_transcript();
@@ -105,9 +102,8 @@ impl App {
         self.foreground = Some(what);
     }
 
-    /// Set by the requests above; consumed by the run loop, the only thing
-    /// that can suspend and restore the terminal. Resolves against the
-    /// cursor at the moment it's taken rather than when it was requested.
+    /// Resolves against the cursor at the moment it's taken rather than when
+    /// it was requested.
     pub fn take_foreground(&mut self) -> Option<Suspend> {
         let repo = self.repos.get(self.cursor);
         match self.foreground.take()? {
@@ -134,9 +130,8 @@ mod tests {
         assert!(a.status_message.is_some());
     }
 
-    /// A live run keeps writing to repos in the background while the
-    /// editor has the terminal; opening one is refused rather than handing
-    /// the user an editor on a repo something else is mid-write to.
+    /// A live run keeps writing to repos in the background while the editor
+    /// has the terminal.
     #[test]
     fn requesting_the_editor_is_refused_while_a_run_is_live() {
         let mut a = app(&["foo"]);

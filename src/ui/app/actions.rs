@@ -1,6 +1,6 @@
 //! Discovering runnable actions from a config, so a palette can turn
 //! `.mrconfig` into a menu instead of the CLI's "only if you already know
-//! the name" (section 08).
+//! the name".
 
 use crate::cli::Command;
 use crate::config::Repo;
@@ -16,16 +16,15 @@ pub enum Source {
     /// A key defined on one or more repo sections but not `[DEFAULT]`.
     PerRepo,
     /// Not a runnable action at all: a palette entry that changes the
-    /// selection the next run will use. Listed alongside the rest so `:` is
-    /// a complete answer to "what can I do from here", not just "what can I
-    /// run", and never handed to the executor.
+    /// selection the next run will use, listed alongside the rest so `:`
+    /// answers "what can I do from here". Never handed to the executor.
     Selection,
 }
 
 /// One runnable action: its name, where it comes from, and how many repos in
-/// the current set actually define it. Showing `repos` alongside `source` is
-/// what makes an unfamiliar name trustworthy: "deploy, per-repo, 3 of 42"
-/// says up front that running it against the full selection skips 39 repos.
+/// the current set actually define it. `repos` alongside `source` is what
+/// makes an unfamiliar name trustworthy: "deploy, per-repo, 3 of 42" says up
+/// front that running it against the full selection skips 39 repos.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Action {
     pub name: String,
@@ -35,7 +34,7 @@ pub struct Action {
 
 /// mrx's own verbs, runnable against a selection the same way a custom
 /// action is. `checkout` is here rather than discovered from the config so a
-/// repo's own `checkout` key isn't listed twice (section 08).
+/// repo's own `checkout` key isn't listed twice.
 const BUILTIN_VERBS: &[&str] = &["update", "status", "diff", "push", "fetch", "checkout"];
 
 /// Every runnable action for a config: the built-in verbs, plus every key
@@ -83,8 +82,8 @@ pub fn discover(repos: &[Repo], defaults: &BTreeMap<String, String>) -> Vec<Acti
 }
 
 /// The `Command` `operations::plan` expects for a runnable action's name:
-/// mrx's own verbs get their matching variant, anything else is a custom
-/// action by name, exactly as if it had been typed on the command line.
+/// mrx's own verbs get their matching variant, anything else becomes a
+/// custom action by name, as if it had been typed on the command line.
 pub fn command_for(name: &str) -> Command {
     match name {
         "update" => Command::Update,

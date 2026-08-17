@@ -30,25 +30,16 @@ pub(super) enum EditorOutcome {
 }
 
 /// `o` and `!`: suspend the alternate screen, raw mode, mouse capture (if it
-/// was on), and the input thread (via `gate`, so it stops competing for
-/// stdin), run the program to completion, then restore all of it exactly as
-/// it was. A blocking wait is the point: there is nothing useful for the app
-/// to do while something else has the terminal, and any probe or run events
-/// that arrive in the meantime just sit in their channels until the next
-/// draw picks them up, the same eventually-consistent handling every other
-/// background result gets.
+/// was on), and the input thread (via [`InputGate::park`], so it stops
+/// competing for stdin), run the program to completion, then restore all of
+/// it exactly as it was. The wait blocks: probe and run events that arrive
+/// meanwhile sit in their channels until the next draw, the same handling
+/// every other background result gets.
 ///
-/// `gate.park()` blocks until the input thread confirms it has actually
-/// stopped touching stdin before this goes on to tear down the terminal and
-/// launch anything: closing the gate and immediately proceeding isn't
-/// enough, since the thread can already be mid `poll` or `read` when the
-/// gate closes, and a keystroke meant for the editor would otherwise be won
-/// by mrx's own reader instead.
-///
-/// An `Err` return means re-entering raw mode or the alternate screen
-/// failed and the real terminal is left in whatever state that partial
-/// attempt produced; callers must not keep drawing against `terminal` as
-/// though nothing happened; see [`run`]'s call site.
+/// An `Err` return means re-entering raw mode or the alternate screen failed
+/// and the real terminal is left in whatever state that partial attempt
+/// produced; callers must not keep drawing against `terminal`. See [`run`]'s
+/// call site.
 pub(super) fn suspend_for(
     terminal: &mut Term,
     what: &state::Suspend,

@@ -54,10 +54,9 @@ pub async fn run(
                         "{:width$} | FAILED ({}): {}",
                         repos[index].name, exit_code, summary
                     );
-                    // A summary is enough to spot the failure; the log needs enough
-                    // to diagnose it without re-running, stripped because this path
-                    // is routinely redirected to a file. One-line failures are
-                    // already fully described by the summary above.
+                    // Enough detail to diagnose without re-running, stripped
+                    // because this path is routinely redirected to a file. A
+                    // one-line failure adds nothing over the summary above.
                     let detail: Vec<String> = steps
                         .iter()
                         .flat_map(|s| s.stdout.lines().chain(s.stderr.lines()))

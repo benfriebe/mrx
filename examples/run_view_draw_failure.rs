@@ -1,17 +1,10 @@
-//! Standalone fixture, not part of the CLI: runs `ui::run::run` (the
-//! one-shot progress view) against one repo left permanently "running", so
-//! its spinner keeps every frame different and each `terminal.draw` keeps
-//! actually writing, then repoints stdout at a pipe with its read end
-//! already closed, from a background thread, once the terminal is known to
-//! be up. The next `terminal.draw` inside the loop then fails with a broken
-//! pipe, well after `setup_terminal` itself succeeded (a separate fixture
-//! covers that failure). Exercises `run`'s own terminal guard, not
-//! `setup_terminal`'s rollback: without the guard, this `Err` return would
-//! leave raw mode and the alternate screen still active.
+//! Fixture for `tests/ui_pty.rs`: runs `ui::run::run` (the one-shot progress
+//! view), then breaks stdout from a background thread once the terminal is
+//! up, so a `terminal.draw` well after `setup_terminal` succeeded fails with
+//! a broken pipe and `run` returns `Err` from inside its draw loop.
 //!
-//! A pipe with no reader, rather than simply closing fd 1: see
-//! `setup_terminal_partial_failure.rs` for why a bare `close` isn't
-//! dependable here.
+//! A pipe with no reader rather than a bare `close` on fd 1: see
+//! `setup_terminal_partial_failure.rs`.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -20,8 +13,6 @@ use std::time::Duration;
 use mrx::config::Repo;
 use mrx::executor::TaskEvent;
 
-// FFI straight to the platform's C library, already linked by std on every
-// Unix target; not a new crate dependency.
 extern "C" {
     fn pipe(fds: *mut i32) -> i32;
     fn close(fd: i32) -> i32;
@@ -62,9 +53,8 @@ fn break_stdout() {
     }
 }
 
-// `ui::run::run` is itself synchronous, but spawns the background repo
-// probe onto a Tokio runtime internally; it needs one already running in
-// the background, the same as it has under the real `mrx` binary.
+// `ui::run::run` is synchronous but spawns its repo probe onto an ambient
+// Tokio runtime, so one has to already be running.
 #[tokio::main]
 async fn main() {
     std::thread::spawn(|| {
@@ -79,9 +69,8 @@ async fn main() {
         keys: BTreeMap::new(),
     }];
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    // Left "running" and never finished, so the row's spinner keeps
-    // changing every tick and `terminal.draw` has something new to write
-    // on every frame, including the one after stdout breaks below.
+    // Never finished, so the spinner keeps every frame different and
+    // `terminal.draw` still has something to write once stdout breaks.
     tx.send(TaskEvent::Started { index: 0 })
         .expect("send on a freshly created channel");
 

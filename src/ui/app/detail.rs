@@ -1,6 +1,6 @@
 //! The detail view: a repo's run output, opened with Enter on the cursor row
 //! and closed with Esc. Steps come from `StepResult` as separately labelled
-//! sections rather than one concatenated scrollback (section 02).
+//! sections rather than one concatenated scrollback.
 
 use crate::ansi;
 use crate::executor::StepResult;
@@ -9,9 +9,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 /// Below this width the detail view takes the whole screen instead of
-/// splitting beside the list (section 02): the split stops being readable
-/// once the sidebar has nowhere left to shrink. Both layouts read the same
-/// `App` state; this is the one branch that decides which to draw.
+/// splitting beside the list: the split stops being readable once the
+/// sidebar has nowhere left to shrink.
 pub const WIDTH_BREAKPOINT: u16 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,10 +32,9 @@ pub fn layout_for_width(width: u16) -> DetailLayout {
 
 /// Sidebar width in a split layout: only as wide as the list's own content
 /// needs (`content`, from `render::sidebar_natural_width`), so the columns
-/// aren't followed by a field of empty cells the output pane could have
-/// used. Capped at the third of the frame the mockup gives it, so a long
-/// repo name can't crowd out the output that is the reason the split is
-/// open.
+/// aren't followed by empty cells the output pane could have used. Capped at
+/// a third of the frame, so a long repo name can't crowd out the output that
+/// is the reason the split is open.
 pub fn sidebar_width(width: u16, content: u16) -> u16 {
     content.min(width / 3)
 }
@@ -68,11 +66,9 @@ pub enum DetailLine {
 }
 
 impl DetailLine {
-    /// The line as text worth putting on a clipboard: what's on screen
-    /// without the tick, cross or ellipsis a step header is drawn with
-    /// (those are status, not output), and without the ANSI escapes a
-    /// captured line carries, since whatever receives this is rarely a
-    /// terminal.
+    /// The line as text worth putting on a clipboard: no step-header tick,
+    /// cross or ellipsis (those are status, not output), and no ANSI
+    /// escapes, since whatever receives this is rarely a terminal.
     pub fn text(&self) -> String {
         match self {
             DetailLine::StepHeader { label, .. } => format!("$ {label}"),
@@ -177,8 +173,7 @@ pub fn clamp_scroll(offset: usize, total_lines: usize, viewport: usize) -> usize
 
 /// Copy `text` to the system clipboard via `pbcopy`, `xclip`, or `wl-copy`,
 /// whichever is on `PATH`, falling back to a temp file when none is: a
-/// clipboard crate is more than one key needs (section 03, "y copies the
-/// visible step's output").
+/// clipboard crate is more than one key needs.
 pub fn copy_or_save(text: &str, repo: &str, step_label: &str) -> String {
     for (bin, args) in [
         ("pbcopy", &[][..]),
@@ -221,8 +216,8 @@ fn save_to_file(text: &str, repo: &str, step_label: &str) -> String {
 
 /// How loudly a stderr line should be drawn. stderr is the "not the data"
 /// channel, not an error channel: git's fetch progress and npm's warnings
-/// both arrive there, so painting the whole stream red says every run
-/// failed. Tools that mean something urgent say so in the text.
+/// both arrive there, so painting the whole stream red would say every run
+/// failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Plain,
@@ -307,8 +302,6 @@ mod tests {
 
     #[test]
     fn a_marker_word_further_in_does_not_colour_the_line() {
-        // Only the lead words are inspected, so prose and paths that happen
-        // to contain a marker stay plain.
         for line in [
             "Compiling the error-handling crate",
             "wrote report to /tmp/build/error.log",

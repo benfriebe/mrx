@@ -1,9 +1,8 @@
 //! The keys each mode binds, in one place, so the footer hint and the `?`
 //! overlay cannot describe different keymaps.
 //!
-//! The footer shows only what fits and only whole bindings, so the set it
-//! advertises is the handful worth the room. Everything else is bound and
-//! documented, just left to the overlay.
+//! The footer shows only whole bindings, and only what fits; everything else
+//! is bound and documented, just left to the overlay.
 
 use super::state::App;
 
@@ -12,8 +11,8 @@ pub struct Binding {
     /// As the footer prints them, several alternatives separated by `/`.
     pub keys: &'static str,
     pub label: &'static str,
-    /// Whether the footer budgets room for this one, as opposed to a binding
-    /// only the `?` overlay lists.
+    /// Whether the footer budgets room for this one, or it is left to the
+    /// `?` overlay.
     pub hinted: bool,
 }
 
@@ -26,8 +25,7 @@ impl Binding {
         }
     }
 
-    /// Bound and listed under `?`, but never given footer room: a key that
-    /// would spend more of a narrow line than it earns there.
+    /// Bound and listed under `?`, but never given footer room.
     const fn overlay_only(keys: &'static str, label: &'static str) -> Self {
         Self {
             keys,
@@ -97,10 +95,10 @@ pub const NOTES: &[&str] = &[
     "     selection away; hold option/shift, or m, for it back.",
 ];
 
-/// What the footer should offer right now. There is one footer under the
-/// detail split rather than one per pane, and its keys are the detail
-/// view's: with the split open, those are what every keystroke reaches,
-/// whichever pane the pointer happens to be over.
+/// What the footer should offer right now. The detail split has one footer
+/// rather than one per pane, and it shows the detail view's keys: with the
+/// split open, those are what every keystroke reaches, whichever pane the
+/// pointer happens to be over.
 pub fn bindings_for(app: &App) -> Vec<Binding> {
     if app.filtering {
         return FILTER_KEYS.to_vec();

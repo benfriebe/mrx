@@ -6,8 +6,7 @@ use std::process::Command;
 
 #[test]
 fn ui_with_stdout_not_a_tty_exits_2_with_a_usable_message() {
-    // `Command::output` captures stdout/stderr, so the child never sees a tty,
-    // the same condition as `mrx ui > /dev/null`.
+    // `Command::output` gives the child no tty, the same as `mrx ui > /dev/null`.
     let output = Command::new(env!("CARGO_BIN_EXE_mrx"))
         .arg("ui")
         .output()

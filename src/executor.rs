@@ -20,10 +20,8 @@ pub enum TaskEvent {
         index: usize,
         label: String,
     },
-    /// One line of a step's output, as it arrives. `Finished` still carries
-    /// the whole transcript and remains the record of what a step produced;
-    /// this only exists so a long run can be read while it runs instead of
-    /// waited out.
+    /// One line of a step's output, as it arrives, so a long run can be read
+    /// while it runs. `Finished` remains the record of what a step produced.
     Output {
         index: usize,
         /// Position in the step chain, so a line lands under the right
@@ -43,9 +41,7 @@ pub enum TaskEvent {
     },
 }
 
-/// One step's output, labelled and shaped by `operations::plan`, the only
-/// place that knows whether it was a built-in git call, a config-defined
-/// body, or a `post_` hook.
+/// One step's output, labelled and shaped by `operations::plan`.
 #[derive(Debug, Clone)]
 pub struct StepResult {
     pub label: String,
@@ -62,15 +58,15 @@ pub struct RunHandle {
 
 impl RunHandle {
     /// Stop every repo still queued from starting. Repos already past their
-    /// semaphore permit keep running to completion; see `spawn_run`.
+    /// semaphore permit keep running to completion.
     pub fn request_cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 }
 
 /// One executor event, tagged with the run it belongs to so a receiver can
-/// drop events from a run that has since been cancelled and superseded
-/// rather than painting them over a newer run's results.
+/// drop a superseded run's in-flight events rather than painting them over a
+/// newer run's results.
 pub struct RunEvent {
     pub run_id: u64,
     pub kind: TaskEvent,
@@ -89,9 +85,8 @@ struct StepOutput {
     code: i32,
 }
 
-/// Where a step's output goes line by line while it is still running.
-/// `None` for the one-shot CLI path, which prints once at the end and has
-/// nothing to do with a line until then.
+/// Where a step's output goes line by line while it is still running. `None`
+/// for the one-shot CLI path, which only prints at the end.
 struct StepSink {
     tx: mpsc::UnboundedSender<RunEvent>,
     run_id: u64,
@@ -118,10 +113,9 @@ impl StepSink {
 /// output to the right repo, and are tagged with `run_id` so a cancelled
 /// run's in-flight events don't paint over a newer one's.
 ///
-/// `stream` adds a [`TaskEvent::Output`] per line as it is produced, for a
-/// caller that shows a run while it runs. A caller that only prints at the
-/// end passes `false` rather than filtering thousands of events it will
-/// never look at.
+/// `stream` adds a [`TaskEvent::Output`] per line as it is produced. A caller
+/// that only prints at the end passes `false` rather than filtering thousands
+/// of events it will never look at.
 pub fn spawn_run(
     repos: &[Repo],
     targets: Vec<(usize, Operation)>,
@@ -160,10 +154,9 @@ pub fn spawn_run(
                     reason: "not checked out".into(),
                 }),
                 runnable => {
-                    // Stage A queue cancellation: checked once before queuing and
-                    // again once the permit is granted, since the permit is where
-                    // the waiting happens. A repo already past this point runs to
-                    // completion; killing it is stage B (section 06).
+                    // Checked twice because the permit is where the waiting
+                    // happens. A repo already past this point runs to
+                    // completion; there is no kill.
                     if cancel.load(Ordering::Relaxed) {
                         send(TaskEvent::Skipped {
                             index,
@@ -212,7 +205,6 @@ pub fn spawn_run(
                             code: out.code,
                         });
                         if out.code != 0 {
-                            // Keep the steps collected so far; stop the chain.
                             break;
                         }
                     }
@@ -230,13 +222,11 @@ pub fn spawn_run(
     RunHandle { cancel }
 }
 
-/// The one-shot CLI path keeps its old shape: make a channel, run
-/// everything, and hand back a receiver that closes once the run is done.
+/// Run everything and hand back a receiver that closes once the run is done.
 ///
-/// It must not share `spawn_run`'s channel design with the resident app:
-/// `render_plain.rs` loops until the channel closes, which only happens
-/// once every sender has dropped, and the app holds a sender for its whole
-/// life.
+/// It cannot share ui mode's sender: `render_plain.rs` loops until the channel
+/// closes, which needs every sender dropped, and ui mode holds one for its
+/// whole life.
 pub fn execute_all(
     repos: &[Repo],
     operations: Vec<Operation>,
@@ -300,10 +290,9 @@ async fn run_step(op: Operation, ctx: &StepContext, sink: Option<&StepSink>) -> 
             // sh -e -c '<body>' mrx <arg1> <arg2> ...
             // exposes the args as $1, $2 inside the body, and $0 as "mrx".
             //
-            // `-e` because a body is usually a list of commands, and without it only
-            // the last one's exit code survives: a body that fails to pull and then
-            // succeeds at building reports success. `||` still tolerates a failure
-            // for the commands that are meant to be allowed to fail.
+            // `-e` because without it only the last command's exit code
+            // survives: a body that fails to pull then succeeds at building
+            // reports success. `||` still tolerates a failure on purpose.
             let mut sh_args: Vec<String> =
                 vec!["-e".into(), "-c".into(), cmd.clone(), "mrx".into()];
             sh_args.extend(args.iter().cloned());
@@ -329,18 +318,16 @@ async fn run_step(op: Operation, ctx: &StepContext, sink: Option<&StepSink>) -> 
         }
     };
 
-    // A pipe makes most tools turn colour off, but the resident app now shows
-    // full transcripts, so it's worth forcing it back on: CLICOLOR_FORCE and
-    // FORCE_COLOR cover most modern CLIs, and git needs its own config-through-
-    // environment protocol since `-c color.ui=always` would have to be threaded
-    // through every args branch above instead of set once here.
+    // A pipe makes most tools turn colour off, but ui mode shows full
+    // transcripts, so force it back on. CLICOLOR_FORCE and FORCE_COLOR cover
+    // most modern CLIs; git needs its config-through-environment protocol
+    // because `-c color.ui=always` would have to be threaded through every
+    // args branch above instead of set once here.
     //
-    // git resolves later-indexed GIT_CONFIG_* slots over earlier ones for the
-    // same key, so appending after the user's slots also means our forced
-    // `always` wins if they set color.ui themselves: the ANSI rendering this
-    // exists for depends on git actually emitting colour.
-    // A config-supplied count is what the child actually ends up seeing, so it
-    // shadows the ambient one rather than the other way round.
+    // git resolves later-indexed GIT_CONFIG_* slots over earlier ones, so
+    // appending after the user's slots also beats a color.ui they set
+    // themselves. A config-supplied count is what the child actually sees, so
+    // it shadows the ambient one rather than the other way round.
     let from_config = match &op {
         Operation::Shell { env, .. } => env_value(env, "GIT_CONFIG_COUNT").map(str::to_string),
         _ => None,
@@ -441,8 +428,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_command_ends_the_body() {
-        // The shape that started this: pull, install, build. Without `-e` the failed
-        // pull is masked by the build that follows it and the repo reports success.
+        // pull, install, build: without `-e` the failed pull is masked by the
+        // build that follows it and the repo reports success.
         let out = run_body("echo 'error: cannot pull' >&2; false\necho built").await;
         assert_ne!(out.code, 0, "a failed line has to fail the body");
         assert!(!out.stdout.contains("built"), "got {:?}", out.stdout);
@@ -629,9 +616,6 @@ mod tests {
         }
     }
 
-    /// Both pipes are read concurrently, so a step that fills one while
-    /// writing nothing to the other still completes rather than blocking on
-    /// a full pipe buffer.
     #[tokio::test]
     async fn a_step_that_floods_one_pipe_still_finishes() {
         let dir = tempfile::tempdir().unwrap();
@@ -669,9 +653,9 @@ mod tests {
         }
     }
 
-    /// Stage A (section 06): cancelling a run stops everything still queued
-    /// behind the job limit, but a repo already past its semaphore permit
-    /// runs to completion, since `Command::output().await` has no kill.
+    /// Cancelling stops everything still queued behind the job limit, but a
+    /// repo already past its semaphore permit runs to completion: there is no
+    /// kill.
     #[tokio::test]
     async fn cancelling_a_run_skips_queued_targets_but_finishes_the_one_already_running() {
         let dir = tempfile::tempdir().unwrap();
@@ -687,9 +671,8 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_run(&repos, targets, 1, PathBuf::from("/dev/null"), tx, 1, false);
 
-        // Whichever target wins the single permit first; the test doesn't
-        // care which index that is, only that cancelling now must let it
-        // finish while the still-queued other two are skipped.
+        // Which target wins the single permit is not fixed; only that
+        // cancelling now lets it finish while the other two are skipped.
         let mut winner = None;
         while let Some(evt) = rx.recv().await {
             if let TaskEvent::Started { index } = evt.kind {

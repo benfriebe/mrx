@@ -1,16 +1,12 @@
-//! Persisted UI state (section 09): the last set, filter, selection,
-//! cursor, and the freshness poll's own settings, written on change and
-//! read at startup so reopening the app puts you back where you left off.
+//! Persisted UI state: the last set, filter, selection, cursor, and the
+//! freshness poll's own settings, written on change and read at startup so
+//! reopening the app puts you back where you left off.
 //!
-//! No serde: the shape is five scalars, two string lists, and an optional
-//! number, and a hand-written reader and writer is smaller than the
-//! dependency would be. Three rules hold regardless of what is on disk: a
-//! name the current set no longer has is dropped silently, since a config
-//! edit is not an error; a missing or unparseable file reads exactly like
-//! no file at all, so deleting it is a supported reset and a crash
-//! mid-write can never lock the app out; and `-s` on the command line
-//! always wins over whatever set was stored (enforced by the caller in
-//! `main.rs`, not here).
+//! No serde: the shape is a handful of scalars and two string lists, so a
+//! hand-written reader and writer is smaller than the dependency would be.
+//! Nothing on disk is ever fatal: a missing or unparseable file reads
+//! exactly like no file at all, so deleting it is a supported reset and a
+//! crash mid-write can never lock the app out.
 
 use super::poll;
 use super::state::App;
@@ -20,9 +16,9 @@ use std::time::Duration;
 /// `$XDG_STATE_HOME/mrx/ui.json`, falling back to `~/.local/state/mrx/ui.json`.
 ///
 /// Deliberately not `dirs::state_dir()`, which is `None` on macOS and
-/// Windows; the plan calls for this exact XDG-style path on every platform,
-/// so `dirs::home_dir()` supplies the fallback home and the env var is read
-/// directly (the same shape `sets::config_dir` uses for `XDG_CONFIG_HOME`).
+/// Windows; this XDG-style path is wanted on every platform, so the env var
+/// is read directly and `dirs::home_dir()` only supplies the fallback home
+/// (the same shape `sets::config_dir` uses for `XDG_CONFIG_HOME`).
 fn session_path() -> Option<PathBuf> {
     let base = match std::env::var_os("XDG_STATE_HOME") {
         Some(x) if !x.is_empty() => PathBuf::from(x),
@@ -31,26 +27,22 @@ fn session_path() -> Option<PathBuf> {
     Some(base.join("mrx").join("ui.json"))
 }
 
-/// The persisted shape itself. Every field is independently optional in
-/// spirit even though some are non-`Option` types: an absent or malformed
-/// value just falls back to that field's default.
+/// The persisted shape. An absent or malformed value falls back to that
+/// field's default, whether or not the field is an `Option`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Session {
     pub set: Option<String>,
     pub filter: String,
     pub selected: Vec<String>,
     pub cursor: Option<String>,
-    /// Repos known to have fetched, by name. Kept across restarts because a
-    /// fetch is a fact about the repo rather than about the process that
-    /// watched it happen, and `FETCH_HEAD` alone cannot be re-derived: a new
-    /// process reads it for the first time and has nothing to compare it
-    /// against, so without this the behind count a previous session settled
-    /// would go back to reading as unknown.
+    /// Repos known to have fetched, by name. `FETCH_HEAD` alone cannot
+    /// re-derive this: a new process reads it for the first time with nothing
+    /// to compare it against, so without this the behind count a previous
+    /// session settled would go back to reading as unknown.
     pub fetched: Vec<String>,
     /// `Some` means the poll was on, at this interval; `None` means it was
-    /// off. This one field is both the poll's setting and its on/off state,
-    /// matching the plan's own on-disk shape (a bare `"poll": 300` rather
-    /// than a separate enabled flag).
+    /// off. One field is both the setting and the on/off state, matching the
+    /// on-disk shape (a bare `"poll": 300`, no separate enabled flag).
     pub poll_interval: Option<Duration>,
     pub auto_update: bool,
 }
@@ -58,7 +50,7 @@ pub struct Session {
 impl Session {
     /// Snapshot the parts of `app` worth remembering across a restart.
     /// Visible to the rest of `app` so a restart can be exercised without
-    /// going near the real session file.
+    /// touching the real session file.
     pub(super) fn snapshot(app: &App) -> Self {
         Self {
             set: (app.set_label != "(unnamed)").then(|| app.set_label.clone()),
@@ -119,13 +111,10 @@ fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
                     .filter_map(json::Value::into_string)
                     .collect()
             }
-            // A value beyond `MAX_POLL_INTERVAL` is treated as if the field
-            // were absent (poll off) rather than clamped down to the max: a
-            // hand-edited or corrupted `ui.json` must degrade gracefully,
-            // not resurrect the poll at a value nobody asked for. Without
-            // this bound, a hostile or fat-fingered value here reaches
-            // `Instant::now() + poll_interval` unconditionally at startup
-            // and panics the whole app before the first frame draws.
+            // A value beyond `MAX_POLL_INTERVAL` reads as the field being
+            // absent (poll off) rather than clamped down to the max: a
+            // corrupted `ui.json` must not resurrect the poll at a value
+            // nobody asked for.
             "poll" => {
                 session.poll_interval = value
                     .into_u64()
@@ -139,10 +128,8 @@ fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
     session
 }
 
-/// Write the session file, replacing it atomically (write, then rename)
-/// so a crash mid-write can never leave a truncated file where a good one
-/// used to be; [`load`] tolerates a truncated file anyway, this just makes
-/// one less likely.
+/// Write the session file, replacing it atomically (write, then rename) so a
+/// crash mid-write can't leave a truncated file where a good one used to be.
 pub fn save(app: &App) -> std::io::Result<()> {
     let Some(path) = session_path() else {
         return Ok(());
@@ -187,9 +174,9 @@ fn to_json(s: &Session) -> String {
     out
 }
 
-/// A minimal, hand-rolled JSON reader for exactly the flat shape this file
-/// is written in: an object of strings, a number, a bool, and one
-/// string array. Not a general-purpose parser.
+/// A JSON reader for exactly the flat shape this file is written in: an
+/// object of strings, a number, a bool, and one string array. Not a
+/// general-purpose parser.
 mod json {
     #[derive(Debug, Clone, PartialEq)]
     pub enum Value {
@@ -439,9 +426,9 @@ mod tests {
         )
     }
 
-    /// Every session test points `XDG_STATE_HOME` at its own tempdir, but
-    /// the variable itself is process-global, so tests that touch it share
-    /// this lock rather than risk one clobbering another's.
+    /// Every session test points `XDG_STATE_HOME` at its own tempdir, but the
+    /// variable is process-global, so they share this lock rather than risk
+    /// one clobbering another's.
     fn with_state_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
         use std::sync::Mutex;
         static LOCK: Mutex<()> = Mutex::new(());
@@ -481,8 +468,6 @@ mod tests {
         });
     }
 
-    /// A fetch is a fact about the repo, not about the process that saw it,
-    /// so the behind count it settled has to survive a restart.
     #[test]
     fn a_repo_known_to_have_fetched_survives_a_save_and_a_load() {
         with_state_home(|_| {

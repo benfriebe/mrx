@@ -46,11 +46,9 @@ impl Operation {
         }
     }
 
-    /// How this step's output should be read. Decided here, not guessed later
-    /// from the action name, because `plan` is the only place that knows
-    /// whether a step is a built-in git call, a config-defined body, or a
-    /// `post_` hook: a config-defined body is always `Shape::Generic`, whatever
-    /// its action happens to be named.
+    /// How this step's output should be read; see [`Shape`] for why it is
+    /// decided here. A config-defined body is always `Shape::Generic`,
+    /// whatever its action happens to be named.
     pub fn shape(&self) -> Shape {
         match self {
             Operation::Git { args, .. } => match args.first().map(String::as_str) {
@@ -177,9 +175,8 @@ pub fn plan(command: &Command, repo: &Repo, defaults: &BTreeMap<String, String>)
                     Some(step) => steps.push(step),
                     None => return Operation::NotCheckedOut,
                 }
-                // A fresh clone still needs whatever the repo's update does, which is
-                // where install steps live. Without this, a newly cloned repo is the
-                // one repo in the set that never gets set up.
+                // A fresh clone still needs the repo's update, which is where
+                // install steps live, or it is the one repo never set up.
                 if let Some(body) = resolve_body(repo, defaults, "update") {
                     steps.push(shell(
                         body,
@@ -211,10 +208,9 @@ pub fn plan(command: &Command, repo: &Repo, defaults: &BTreeMap<String, String>)
         }
 
         // `--branch` for the `## main...origin/main [ahead 1, behind 2]`
-        // header: a status that only lists working-tree changes answers
-        // half the question, and the half it leaves out is the one that
-        // decides whether to push or pull. Counts are against the local
-        // remote-tracking ref, so they are as fresh as the last fetch.
+        // header: working-tree changes alone leave out the half that decides
+        // whether to push or pull. The counts are against the local
+        // remote-tracking ref, so they are only as fresh as the last fetch.
         Command::Status => builtin_or_shell(
             repo,
             defaults,

@@ -1,19 +1,11 @@
-//! Standalone fixture, not part of the CLI: runs the real resident
-//! `ui::app::run`, then repoints stdout at a pipe with its read end already
-//! closed from a background thread, once the app is up. `run`'s own
-//! 200ms ticker keeps a `terminal.draw` firing every iteration regardless
-//! of repo state, so the next one after stdout breaks fails with a broken
-//! pipe and `run` returns `Err` from inside its real select loop, exactly
-//! the shape every early `?` return in that loop takes.
+//! Fixture for `tests/ui_pty.rs`: runs the real `ui::app::run` (ui mode end
+//! to end, input thread included), then breaks stdout from a background
+//! thread once the app is up. `run`'s 200ms ticker keeps `terminal.draw`
+//! firing regardless of repo state, so the next one fails with a broken pipe
+//! and `run` returns `Err` from inside its select loop.
 //!
-//! Unlike `early_return_while_running`, this drives the actual resident
-//! app entry point end to end, including its real input reader thread
-//! (still polling the pty at the moment of failure) and `InputThreadGuard`,
-//! not a hand-built stand-in with no input thread at all.
-//!
-//! A pipe with no reader, rather than simply closing fd 1: see
-//! `setup_terminal_partial_failure.rs` for why a bare `close` isn't
-//! dependable here.
+//! A pipe with no reader rather than a bare `close` on fd 1: see
+//! `setup_terminal_partial_failure.rs`.
 
 use std::collections::BTreeMap;
 use std::io;
