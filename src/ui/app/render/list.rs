@@ -92,6 +92,26 @@ fn column_label_line(prefix_w: usize, columns: &[(&str, usize)]) -> Line<'static
     Line::from(spans)
 }
 
+/// The one-cell spinner column that sits between the markers and the repo
+/// name, matching where the one-shot progress view puts its status icon. It
+/// spins for anything the row is waiting on, a probe or a run alike, since
+/// from the outside both are just "this repo is busy". Blank otherwise, so
+/// the name column never moves.
+fn activity_cell(app: &App, idx: usize) -> Span<'static> {
+    let running = matches!(
+        app.run_results.get(idx).and_then(|r| r.as_ref()),
+        Some(RunStatus::Running | RunStatus::Step { .. })
+    );
+    if app.probing.contains(&idx) || running {
+        Span::styled(
+            format!("{} ", spinner_frame(app.tick)),
+            Style::default().fg(Color::Yellow),
+        )
+    } else {
+        Span::raw("  ")
+    }
+}
+
 fn repo_line(
     app: &App,
     idx: usize,
@@ -121,14 +141,7 @@ fn repo_line(
     let name_padding = name_col.saturating_sub(display_width(&name)) + COL_GAP;
 
     let probe = app.probe_display(idx);
-    // Only BRANCH gives its cell up to the spinner, so a row being re-probed
-    // keeps the working-tree text it already had rather than going blank.
-    let branch_text = if probe.spinner {
-        spinner_frame(app.tick).to_string()
-    } else {
-        probe.branch
-    };
-    let branch = truncate(&branch_text, branch_col);
+    let branch = truncate(&probe.branch, branch_col);
     let branch_padding = branch_col.saturating_sub(display_width(&branch)) + COL_GAP;
     let state = fit_state(&probe.state, state_col);
     let state_padding = state_col.saturating_sub(display_width(&state)) + COL_GAP;
@@ -142,6 +155,7 @@ fn repo_line(
             format!(" {} {} ", cursor_marker, select_marker),
             marker_style,
         ),
+        activity_cell(app, idx),
         Span::styled(name, name_style),
         Span::raw(" ".repeat(name_padding)),
         Span::styled(branch, Style::default().fg(Color::DarkGray)),
@@ -212,7 +226,6 @@ fn sidebar_repo_line(app: &App, idx: usize, name_col: usize, state_col: usize) -
 
     let state_text = match app.probes.get(idx).and_then(|p| p.as_ref()) {
         Some(state) => probe::dirty_text_brief(state),
-        None if app.probing.contains(&idx) => spinner_frame(app.tick).to_string(),
         None => String::new(),
     };
     let state = truncate(&state_text, state_col);
@@ -222,6 +235,7 @@ fn sidebar_repo_line(app: &App, idx: usize, name_col: usize, state_col: usize) -
             format!(" {} ", cursor_marker),
             Style::default().fg(Color::Cyan),
         ),
+        activity_cell(app, idx),
         Span::styled(name, name_style),
         Span::raw(" ".repeat(name_padding)),
         Span::styled(state, Style::default().fg(Color::DarkGray)),
@@ -252,34 +266,14 @@ mod tests {
         flatten(&repo_line_at(a, idx, width))
     }
 
-    #[test]
-    fn a_re_probed_row_shows_a_spinner_without_losing_its_working_tree_text() {
-        let mut a = app(vec![repo("alpha")]);
-        a.probes[0] = Some(probed(
-            "main",
-            probe::Changes {
-                modified: 2,
-                untracked: 0,
-                deleted: 0,
-            },
-            0,
-        ));
-        a.probing.insert(0);
+    /// Span offsets in a drawn row, so the assertions below name their cell
+    /// instead of indexing past the padding spans between them.
+    const ACTIVITY: usize = 1;
+    const BRANCH: usize = 4;
+    const STATE: usize = 6;
 
-        let (name, branch, state, result) = column_widths(&a, 155 - PREFIX_W);
-        let row = repo_line(&a, 0, name, branch, state, result);
-        assert_eq!(
-            row.spans[3].content.as_ref(),
-            spinner_frame(a.tick).to_string(),
-            "BRANCH should carry the spinner while the row is re-probing, got {:?}",
-            flatten(&row)
-        );
-        assert_eq!(
-            row.spans[5].content.as_ref(),
-            "2 modified",
-            "STATE should keep its working-tree text while re-probing, got {:?}",
-            flatten(&row)
-        );
+    fn spinner(a: &App) -> String {
+        format!("{} ", spinner_frame(a.tick))
     }
 
     /// The whole spinner contract in one pass, driven through the real probe
@@ -296,24 +290,26 @@ mod tests {
         let generation = a.begin_probe(&[0]);
         a.on_probe(generation, probed("main", changes, 0));
         let settled = repo_line_at(&a, 0, 155);
-        assert_eq!(settled.spans[3].content.as_ref(), "main");
-        assert_eq!(settled.spans[5].content.as_ref(), "2 modified");
+        assert_eq!(settled.spans[ACTIVITY].content.as_ref(), "  ");
+        assert_eq!(settled.spans[BRANCH].content.as_ref(), "main");
+        assert_eq!(settled.spans[STATE].content.as_ref(), "2 modified");
 
         let generation = a.begin_probe(&[0]);
-        let display = a.probe_display(0);
-        assert!(display.spinner, "a re-probe is a probe in flight");
-        assert_eq!(display.branch, "main", "state.rs still reports the branch");
-        assert_eq!(display.state, "2 modified");
-
         let reprobing = repo_line_at(&a, 0, 155);
         assert_eq!(
-            reprobing.spans[3].content.as_ref(),
-            spinner_frame(a.tick).to_string(),
-            "BRANCH takes the spinner, got {:?}",
+            reprobing.spans[ACTIVITY].content.as_ref(),
+            spinner(&a),
+            "the activity cell takes the spinner, got {:?}",
             flatten(&reprobing)
         );
         assert_eq!(
-            reprobing.spans[5].content.as_ref(),
+            reprobing.spans[BRANCH].content.as_ref(),
+            "main",
+            "BRANCH no longer gives its cell up, got {:?}",
+            flatten(&reprobing)
+        );
+        assert_eq!(
+            reprobing.spans[STATE].content.as_ref(),
             "2 modified",
             "STATE keeps the text state.rs handed it, got {:?}",
             flatten(&reprobing)
@@ -322,10 +318,50 @@ mod tests {
         a.on_probe(generation, probed("main", changes, 0));
         let done = repo_line_at(&a, 0, 155);
         assert_eq!(
-            done.spans[3].content.as_ref(),
-            "main",
-            "the branch comes back once the result lands"
+            done.spans[ACTIVITY].content.as_ref(),
+            "  ",
+            "the spinner stops once the result lands"
         );
+    }
+
+    /// The reason the cell exists: a run is the longer wait of the two, and
+    /// before this it was announced by static text alone.
+    #[test]
+    fn a_row_with_a_run_in_flight_spins_the_same_way_a_probe_does() {
+        let mut a = app(vec![repo("alpha")]);
+        a.run_results[0] = Some(RunStatus::Running);
+        assert_eq!(
+            repo_line_at(&a, 0, 155).spans[ACTIVITY].content.as_ref(),
+            spinner(&a)
+        );
+
+        a.run_results[0] = Some(RunStatus::Step {
+            label: "git pull".into(),
+        });
+        assert_eq!(
+            repo_line_at(&a, 0, 155).spans[ACTIVITY].content.as_ref(),
+            spinner(&a)
+        );
+
+        a.run_results[0] = Some(RunStatus::Finished {
+            steps: vec![],
+            exit_code: 0,
+        });
+        assert_eq!(
+            repo_line_at(&a, 0, 155).spans[ACTIVITY].content.as_ref(),
+            "  ",
+            "a finished run has nothing left to wait on"
+        );
+    }
+
+    /// The cell is the row's only moving part, so it has to be exactly as
+    /// wide when idle as when spinning or the name column jitters.
+    #[test]
+    fn the_activity_cell_is_the_same_width_spinning_or_idle() {
+        let mut a = app(vec![repo("alpha")]);
+        let idle = display_width(&flatten(&repo_line_at(&a, 0, 155)));
+        a.probing.insert(0);
+        assert_eq!(idle, display_width(&flatten(&repo_line_at(&a, 0, 155))));
     }
 
     #[test]
@@ -370,7 +406,7 @@ mod tests {
         for width in 10..=200 {
             let (name, branch, state_col, result) = column_widths(&a, width - PREFIX_W);
             let row = repo_line(&a, 0, name, branch, state_col, result);
-            let cell = row.spans[5].content.as_ref();
+            let cell = row.spans[STATE].content.as_ref();
             assert!(
                 display_width(cell) <= state_col,
                 "width {width}: STATE cell {cell:?} overflows its {state_col} cells"

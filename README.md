@@ -110,17 +110,18 @@ One command, one line per repo, with live spinners for whatever is still going. 
 ```
   mrx · work                                  update 1/2 · 1 failed
 
-     REPO               BRANCH  STATE       RESULT
+       REPO               BRANCH  STATE       RESULT
 ────────────────────────────────────────────────────────────────────────
- ▸ ● bill-api           main    clean       already up to date
-   ● crew-db-schema     main    2 modified  git pull
-     loyalty-db-schema  main    clean  ↓3   ·
+ ▸ ●   bill-api           main    clean       already up to date
+   ● ⠹ crew-db-schema     main    2 modified  git pull
+       loyalty-db-schema  main    clean  ↓3   ·
 ────────────────────────────────────────────────────────────────────────
   j/k move  space select  / filter  enter output  u update  …  ? help
 ```
 
 The footer shows as many keys as the terminal is wide enough for, whole ones only, with `…` standing in for the rest. `? help` is budgeted first and drawn last, so it survives every width, and `?` opens the full keymap.
 
+- **Watch.** A spinner sits between the markers and the repo name for as long as that row is waiting on something, a background probe or a running action alike, the same cue the run view puts beside each repo.
 - **Move.** `j`/`k` or the arrow keys walk the table, `Ctrl-D`/`Ctrl-U` move half a page, `g`/`G` jump to the first or last row.
 - **Select.** `space` toggles the cursor row and moves on, `a` takes every row the filter shows, `A` the whole set regardless, `c` clears, `i` inverts. **An empty selection means every repo on screen**, so `u` with nothing selected updates the lot; the header only ever counts a selection you actually made.
 - **Filter.** `/` starts an incremental filter on repo name and the table narrows as you type. `Esc` drops it, `Enter` keeps it, `/` again starts over from the full list. Filtering never touches the selection, so selecting, filtering, then selecting again adds to what was already picked.

@@ -65,33 +65,27 @@ impl App {
     }
 
     /// Branch and working-tree text for a row, resolved once so `render.rs`
-    /// only has to lay strings out. `spinner` is true while the row's probe
-    /// is in flight, whether or not it already has a result to show, and the
-    /// last known text is reported alongside it rather than blanked: how
-    /// much of the row the spinner takes over is render.rs's decision.
+    /// only has to lay strings out. A row being re-probed keeps reporting
+    /// what it last knew rather than blanking; the spinner announcing the
+    /// in-flight probe has a cell of its own.
     pub fn probe_display(&self, idx: usize) -> ProbeDisplay {
-        let spinner = self.probing.contains(&idx);
         match self.probes.get(idx).and_then(|p| p.as_ref()) {
             Some(state) => ProbeDisplay {
                 branch: probe::branch_text(state),
                 state: probe::dirty_text(state, self.fetched_repos.contains(&idx)),
-                spinner,
             },
             None => ProbeDisplay {
                 branch: String::new(),
                 state: String::new(),
-                spinner,
             },
         }
     }
 }
 
-/// Branch and working-tree text for one row, plus whether its probe is still
-/// in flight.
+/// Branch and working-tree text for one row.
 pub struct ProbeDisplay {
     pub branch: String,
     pub state: String,
-    pub spinner: bool,
 }
 
 #[cfg(test)]
@@ -239,21 +233,14 @@ mod tests {
     }
 
     #[test]
-    fn a_row_with_no_probe_result_yet_shows_a_spinner_while_in_flight() {
-        let mut a = app(&["foo"]);
-        a.begin_probe(&[0]);
-        assert!(a.probe_display(0).spinner);
-    }
-
-    #[test]
-    fn a_row_being_re_probed_shows_a_spinner_and_still_reports_what_it_knows() {
+    fn a_row_being_re_probed_still_reports_what_it_knows() {
         let mut a = app(&["foo"]);
         let generation = a.begin_probe(&[0]);
         a.on_probe(generation, probed(0, "main"));
 
         a.begin_probe(&[0]);
         let display = a.probe_display(0);
-        assert!(display.spinner, "a re-probe is still a probe in flight");
+        assert!(a.probing.contains(&0), "a re-probe is still in flight");
         assert_eq!(display.branch, "main");
         assert_eq!(
             display.state, "clean",

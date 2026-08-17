@@ -72,8 +72,8 @@ fn natural_name_width(app: &App) -> usize {
 }
 
 /// The widest state text any row could be showing, from the same source
-/// [`sidebar_repo_line`] draws from. A repo still being probed shows a
-/// one-column spinner, which never sets the width.
+/// [`sidebar_repo_line`] draws from. A repo still being probed has no state
+/// text yet, so it never sets the width.
 fn natural_state_width(app: &App) -> usize {
     app.probes
         .iter()
