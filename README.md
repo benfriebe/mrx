@@ -129,7 +129,9 @@ The footer shows as many keys as the terminal is wide enough for, whole ones onl
 - **Any action.** `:` opens the action palette, a filtered list of every runnable action for the set, each shown with where it is defined and how many repos actually have it: `deploy  per-repo, 3 of 42`. It also carries the selection commands, each showing how many repos it would leave selected.
 - **Confirm.** Running on a selection the last probe found dirty, or has not probed yet, asks first and says how many. `-f`/`--force` skips the prompt.
 - **Read output.** `Enter` opens the detail view for the cursor row, streaming each step's output as it is produced rather than at the end, so a long update can be read while it runs. `y` copies the visible step, `o` opens the whole transcript in `$EDITOR`.
-- **Re-probe.** `r` re-reads the selection's state (or everything, with nothing selected).
+- **Sort.** `S` opens a one-key menu of the columns: `r` REPO, `b` BRANCH, `s` STATE, `l` RESULT. The sorted column's header carries `↑` or `↓`, and choosing the same column again flips it, so `S s S s` goes from dirtiest-first to cleanest-first. STATE and RESULT open worst-first, which is the reason to order by them; unprobed rows stay at the end either way. The order is remembered across restarts.
+- **Run anything.** `r` opens a prompt for a command to run against the selection, `Ctrl-D` to run it. The body goes to `sh` whole, so it can be several lines.
+- **Re-probe.** `R` re-reads the selection's state (or everything, with nothing selected).
 - **Escape hatch.** `!` drops to `$SHELL` (`sh` if unset) in the cursor row's repo, for whatever no action covers. It is a key rather than an action because an action runs unattended across a selection, and a shell is the opposite of both.
 
 ```

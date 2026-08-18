@@ -7,7 +7,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 
-use super::state::{App, Pane};
+use super::state::{App, Pane, Sort};
 
 mod mouse;
 #[cfg(test)]
@@ -89,6 +89,10 @@ fn on_key(app: &mut App, key: KeyEvent) -> bool {
         on_run_command_key(app, key);
         return false;
     }
+    if app.sort_menu_open {
+        on_sort_menu_key(app, key);
+        return false;
+    }
     if app.filtering {
         on_filter_key(app, key);
         return false;
@@ -148,6 +152,7 @@ fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('m') => app.toggle_mouse_capture(),
         KeyCode::Char('?') => app.help_open = true,
         KeyCode::Char('F') => app.toggle_poll(),
+        KeyCode::Char('S') => app.sort_menu_open = true,
         KeyCode::Char('o') => app.request_open_editor(),
         KeyCode::Tab => app.open_set_picker(),
         KeyCode::Esc => app.request_cancel(),
@@ -172,6 +177,19 @@ fn on_quit_confirm_key(app: &mut App, key: KeyEvent) -> bool {
 /// Keys while the set picker is open: just navigation and the two exits. No
 /// text capture, unlike the palette, since the list of sets is short enough to
 /// scan without filtering it.
+/// Keys while the sort menu is open: one column key, or anything else to
+/// leave the order alone. It swallows every key it does not bind, since the
+/// menu covers the list it would otherwise reach: `s` behind it means "sort
+/// by STATE", never "run status".
+fn on_sort_menu_key(app: &mut App, key: KeyEvent) {
+    app.sort_menu_open = false;
+    if let KeyCode::Char(c) = key.code {
+        if let Some(sort) = Sort::from_key(c) {
+            app.choose_sort(sort);
+        }
+    }
+}
+
 fn on_set_picker_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.close_set_picker(),
@@ -301,6 +319,32 @@ mod tests {
         a.start_filter();
         assert!(!on_input(&mut a, press(KeyCode::Char('q'))));
         assert_eq!(a.filter, "q");
+    }
+
+    #[test]
+    fn shift_s_opens_the_sort_menu_and_a_column_key_orders_by_it() {
+        let mut a = app(&["foo", "bar"]);
+        on_input(&mut a, press(KeyCode::Char('S')));
+        assert!(a.sort_menu_open);
+
+        on_input(&mut a, press(KeyCode::Char(Sort::State.key())));
+        assert!(!a.sort_menu_open);
+        assert_eq!(a.sort, Sort::State);
+    }
+
+    /// The menu covers the list, so every key it does not bind has to stop
+    /// there: `s` behind it would otherwise start a status run at the same
+    /// time as ordering the table by STATE.
+    #[test]
+    fn the_sort_menu_swallows_the_keys_it_does_not_bind() {
+        let mut a = app(&["foo"]);
+        on_input(&mut a, press(KeyCode::Char('S')));
+        on_input(&mut a, press(KeyCode::Char('z')));
+
+        assert!(!a.sort_menu_open, "an unbound key closes it");
+        assert_eq!(a.sort, Sort::default(), "and leaves the order alone");
+        assert!(a.run_requested.is_none());
+        assert!(a.pending_run.is_none());
     }
 
     #[test]

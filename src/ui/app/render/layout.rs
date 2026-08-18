@@ -2,10 +2,10 @@
 //! far the list has scrolled, and how wide each column ends up.
 
 use super::footer::LEAD_IN;
-use super::{header_title, BRANCH_LABEL, COL_GAP, FOOTER_ROWS, LIST_HEADER_ROWS, PREFIX_W};
-use super::{REPO_LABEL, STATE_LABEL};
+use super::{column_header, header_title, BRANCH_LABEL, COL_GAP, FOOTER_ROWS};
+use super::{LIST_HEADER_ROWS, PREFIX_W, REPO_LABEL, STATE_LABEL};
 use crate::ui::app::probe;
-use crate::ui::app::state::App;
+use crate::ui::app::state::{App, Sort};
 use crate::ui::widgets::display_width;
 
 /// Total chrome rows above and below the table body: the header (fixed at
@@ -68,7 +68,12 @@ fn natural_name_width(app: &App) -> usize {
         .map(|r| display_width(&r.name))
         .max()
         .unwrap_or(0)
-        .max(display_width(REPO_LABEL))
+        .max(header_width(app, Sort::Repo, REPO_LABEL))
+}
+
+/// How wide a column's header needs the column to be, arrow included.
+fn header_width(app: &App, column: Sort, label: &str) -> usize {
+    display_width(&column_header(app, column, label))
 }
 
 /// The widest state text any row could be showing, from the same source
@@ -81,7 +86,7 @@ fn natural_state_width(app: &App) -> usize {
         .map(|state| display_width(&probe::dirty_text_brief(state)))
         .max()
         .unwrap_or(0)
-        .max(display_width(STATE_LABEL))
+        .max(header_width(app, Sort::State, STATE_LABEL))
 }
 
 /// Column widths for the four-column repo table: NAME, BRANCH and STATE each
@@ -94,17 +99,17 @@ pub(super) fn column_widths(app: &App, avail: usize) -> (usize, usize, usize, us
         .map(|r| display_width(&r.name))
         .max()
         .unwrap_or(0)
-        .max(display_width(REPO_LABEL));
+        .max(header_width(app, Sort::Repo, REPO_LABEL));
     let branch_nat = (0..app.repos.len())
         .map(|i| display_width(&app.probe_display(i).branch))
         .max()
         .unwrap_or(0)
-        .max(display_width(BRANCH_LABEL));
+        .max(header_width(app, Sort::Branch, BRANCH_LABEL));
     let state_nat = (0..app.repos.len())
         .map(|i| display_width(&app.probe_display(i).state))
         .max()
         .unwrap_or(0)
-        .max(display_width(STATE_LABEL));
+        .max(header_width(app, Sort::State, STATE_LABEL));
 
     let name = name_nat.min(avail / 4);
     let branch = branch_nat.min(avail / 6);

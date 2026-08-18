@@ -1,6 +1,6 @@
-//! Persisted UI state: the last set, filter, selection, cursor, and the
-//! freshness poll's own settings, written on change and read at startup so
-//! reopening the app puts you back where you left off.
+//! Persisted UI state: the last set, filter, selection, cursor, sort order,
+//! and the freshness poll's own settings, written on change and read at
+//! startup so reopening the app puts you back where you left off.
 //!
 //! No serde: the shape is a handful of scalars and two string lists, so a
 //! hand-written reader and writer is smaller than the dependency would be.
@@ -9,7 +9,7 @@
 //! crash mid-write can never lock the app out.
 
 use super::poll;
-use super::state::App;
+use super::state::{App, Direction, Sort};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -29,7 +29,7 @@ fn session_path() -> Option<PathBuf> {
 
 /// The persisted shape. An absent or malformed value falls back to that
 /// field's default, whether or not the field is an `Option`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub set: Option<String>,
     pub filter: String,
@@ -45,6 +45,29 @@ pub struct Session {
     /// on-disk shape (a bare `"poll": 300`, no separate enabled flag).
     pub poll_interval: Option<Duration>,
     pub auto_update: bool,
+    /// The order the table was left in. Column and direction are stored
+    /// separately because the pair is what was chosen: a column reversed in
+    /// place is not the same view as that column freshly picked.
+    pub sort: Sort,
+    pub sort_direction: Direction,
+}
+
+/// `Session::default` has to agree with `App::new` about the order a first
+/// run opens in, so both take it from here.
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            set: None,
+            filter: String::new(),
+            selected: Vec::new(),
+            cursor: None,
+            fetched: Vec::new(),
+            poll_interval: None,
+            auto_update: false,
+            sort: Sort::default(),
+            sort_direction: Sort::default().natural(),
+        }
+    }
 }
 
 impl Session {
@@ -68,6 +91,8 @@ impl Session {
                 .collect(),
             poll_interval: app.poll_enabled.then_some(app.poll_interval),
             auto_update: app.auto_update,
+            sort: app.sort,
+            sort_direction: app.sort_direction,
         }
     }
 }
@@ -90,6 +115,7 @@ pub fn load() -> Session {
 
 fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
     let mut session = Session::default();
+    let mut direction = None;
     for (key, value) in fields {
         match key.as_str() {
             "set" => session.set = value.into_string(),
@@ -122,9 +148,25 @@ fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
                     .map(Duration::from_secs)
             }
             "auto_update" => session.auto_update = value.into_bool().unwrap_or(false),
+            // A column mrx no longer has reads as the field being absent.
+            "sort" => {
+                if let Some(sort) = value.into_string().as_deref().and_then(Sort::from_name) {
+                    session.sort = sort;
+                }
+            }
+            "sort_direction" => {
+                direction = value
+                    .into_string()
+                    .as_deref()
+                    .and_then(Direction::from_name)
+            }
             _ => {}
         }
     }
+    // A direction the file does not have, or does not have usably, opens the
+    // column the way choosing it fresh would. Resolved after the loop so it
+    // cannot depend on which of the two keys the file lists first.
+    session.sort_direction = direction.unwrap_or_else(|| session.sort.natural());
     session
 }
 
@@ -169,7 +211,12 @@ fn to_json(s: &Session) -> String {
     if let Some(interval) = s.poll_interval {
         out.push_str(&format!("  \"poll\": {},\n", interval.as_secs()));
     }
-    out.push_str(&format!("  \"auto_update\": {}\n", s.auto_update));
+    out.push_str(&format!("  \"auto_update\": {},\n", s.auto_update));
+    out.push_str(&format!("  \"sort\": {},\n", json::string(s.sort.name())));
+    out.push_str(&format!(
+        "  \"sort_direction\": {}\n",
+        json::string(s.sort_direction.name())
+    ));
     out.push_str("}\n");
     out
 }
@@ -466,6 +513,51 @@ mod tests {
             assert_eq!(loaded.poll_interval, Some(Duration::from_secs(300)));
             assert!(loaded.auto_update);
         });
+    }
+
+    #[test]
+    fn the_order_the_table_was_left_in_survives_a_restart() {
+        with_state_home(|_| {
+            let mut app = app_with(&["alpha", "beta"]);
+            app.choose_sort(Sort::State);
+            app.choose_sort(Sort::State); // and reversed off its natural direction
+            save(&app).unwrap();
+
+            let mut restarted = app_with(&["alpha", "beta"]);
+            restarted.restore_session(&load());
+
+            assert_eq!(restarted.sort, Sort::State);
+            assert_eq!(restarted.sort_direction, Direction::Ascending);
+        });
+    }
+
+    /// A file written before mrx sorted anything has neither key, and must
+    /// open the way a first run does rather than on some half-set order.
+    #[test]
+    fn a_session_file_without_a_sort_opens_on_the_default_order() {
+        let session = from_fields(vec![("filter".into(), json::Value::Str("api".into()))]);
+        assert_eq!(session.sort, Sort::default());
+        assert_eq!(session.sort_direction, Sort::default().natural());
+    }
+
+    /// The two keys are read independently, so a file listing them the other
+    /// way round, or naming a column this build no longer has, still lands on
+    /// a usable pair.
+    #[test]
+    fn an_unusable_sort_falls_back_a_field_at_a_time() {
+        let named = |sort: &str, direction: &str| {
+            from_fields(vec![
+                ("sort_direction".into(), json::Value::Str(direction.into())),
+                ("sort".into(), json::Value::Str(sort.into())),
+            ])
+        };
+        let session = named("branch", "desc");
+        assert_eq!(session.sort, Sort::Branch);
+        assert_eq!(session.sort_direction, Direction::Descending);
+
+        let session = named("nonesuch", "sideways");
+        assert_eq!(session.sort, Sort::default());
+        assert_eq!(session.sort_direction, Sort::default().natural());
     }
 
     #[test]

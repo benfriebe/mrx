@@ -301,6 +301,9 @@ impl App {
         if let Some(poll) = self.poll_status_text() {
             text.push_str(&format!(" · {poll}"));
         }
+        if !self.sorted_by_default() {
+            text.push_str(&format!(" · {}", self.sort_label()));
+        }
         text
     }
 

@@ -56,6 +56,7 @@ pub const LIST_KEYS: &[Binding] = &[
     Binding::overlay_only("i", "invert selection"),
     Binding::overlay_only("s/f/d", "status/fetch/diff"),
     Binding::overlay_only("!", "shell in repo"),
+    Binding::overlay_only("S", "sort the table"),
     Binding::overlay_only("r", "run a command"),
     Binding::overlay_only("R", "re-probe"),
     Binding::overlay_only("o", "open in $EDITOR"),

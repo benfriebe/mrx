@@ -6,10 +6,11 @@ use ratatui::widgets::Paragraph;
 
 use super::footer::status_line;
 use super::layout::{column_widths, list_height, list_start, sidebar_column_widths};
-use super::{header_line, separator, BRANCH_LABEL, COL_GAP, LIST_HEADER_ROWS, PREFIX_W};
+use super::{column_header, header_line, separator, BRANCH_LABEL, COL_GAP};
+use super::{LIST_HEADER_ROWS, PREFIX_W};
 use super::{REPO_LABEL, RESULT_LABEL, SIDEBAR_PREFIX_W, STATE_LABEL};
 use crate::ui::app::probe;
-use crate::ui::app::state::{App, RunStatus};
+use crate::ui::app::state::{App, RunStatus, Sort};
 use crate::ui::widgets::{display_width, frame as spinner_frame, truncate};
 
 pub(super) fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
@@ -35,7 +36,10 @@ pub(super) fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool)
         let (name_col, state_col) = sidebar_column_widths(app, width.saturating_sub(PREFIX_W));
         lines.push(column_label_line(
             SIDEBAR_PREFIX_W,
-            &[(REPO_LABEL, name_col), (STATE_LABEL, state_col)],
+            &[
+                (column_header(app, Sort::Repo, REPO_LABEL), name_col),
+                (column_header(app, Sort::State, STATE_LABEL), state_col),
+            ],
         ));
         lines.push(separator(width));
         for &idx in &visible[start..end] {
@@ -47,10 +51,10 @@ pub(super) fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool)
         lines.push(column_label_line(
             PREFIX_W,
             &[
-                (REPO_LABEL, name_col),
-                (BRANCH_LABEL, branch_col),
-                (STATE_LABEL, state_col),
-                (RESULT_LABEL, result_col),
+                (column_header(app, Sort::Repo, REPO_LABEL), name_col),
+                (column_header(app, Sort::Branch, BRANCH_LABEL), branch_col),
+                (column_header(app, Sort::State, STATE_LABEL), state_col),
+                (column_header(app, Sort::Result, RESULT_LABEL), result_col),
             ],
         ));
         lines.push(separator(width));
@@ -75,7 +79,7 @@ pub(super) fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool)
 /// Column labels laid out on the same widths and gaps the data rows use, so
 /// a label sits over its own column at every terminal width. Labels truncate
 /// with their column rather than pushing the ones after them out of line.
-fn column_label_line(prefix_w: usize, columns: &[(&str, usize)]) -> Line<'static> {
+fn column_label_line(prefix_w: usize, columns: &[(String, usize)]) -> Line<'static> {
     let style = Style::default().fg(Color::DarkGray).bold();
     let mut spans = vec![Span::raw(" ".repeat(prefix_w))];
     for (i, (label, col)) in columns.iter().enumerate() {
@@ -467,10 +471,10 @@ mod tests {
         let labels = flatten(&column_label_line(
             PREFIX_W,
             &[
-                (REPO_LABEL, name),
-                (BRANCH_LABEL, branch),
-                (STATE_LABEL, state),
-                (RESULT_LABEL, result),
+                (REPO_LABEL.into(), name),
+                (BRANCH_LABEL.into(), branch),
+                (STATE_LABEL.into(), state),
+                (RESULT_LABEL.into(), result),
             ],
         ));
         let row = flatten(&repo_line(&a, 0, name, branch, state, result));
@@ -492,9 +496,28 @@ mod tests {
         );
     }
 
+    /// The header line that says which way the table reads, and the one
+    /// place a wrong answer is invisible: every other row looks the same
+    /// whatever the order is.
+    #[test]
+    fn the_sorted_columns_header_carries_the_arrow_and_no_other_does() {
+        let mut a = app(vec![repo("alpha")]);
+        a.choose_sort(Sort::Branch);
+        let header = frame_rows(&a, 100, 12)
+            .into_iter()
+            .find(|row| row.contains(REPO_LABEL))
+            .expect("the column labels are drawn");
+
+        assert!(header.contains("BRANCH ↑"), "got {header:?}");
+        for label in [REPO_LABEL, STATE_LABEL, RESULT_LABEL] {
+            assert!(!header.contains(&format!("{label} ↑")), "got {header:?}");
+            assert!(!header.contains(&format!("{label} ↓")), "got {header:?}");
+        }
+    }
+
     #[test]
     fn a_column_label_truncates_with_its_column_instead_of_shifting_the_next_one() {
-        let line = column_label_line(0, &[("BRANCH", 3), ("STATE", 5)]);
+        let line = column_label_line(0, &[("BRANCH".into(), 3), ("STATE".into(), 5)]);
         let text = flatten(&line);
         assert_eq!(
             display_width(&text[..text.find("  ").unwrap()]),

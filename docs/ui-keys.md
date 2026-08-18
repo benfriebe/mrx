@@ -36,7 +36,9 @@ The default mode: the table of repos, no overlay open.
 | `u` | Run `update` on the selection | hinted |
 | `s`/`f`/`d` | Run `status`, `fetch`, `diff` on the selection | overlay |
 | `:` | Open the action palette | hinted |
-| `r` | Re-probe the selection (or everything, with nothing selected) | overlay |
+| `r` | Open the run-command prompt | overlay |
+| `R` | Re-probe the selection (or everything, with nothing selected) | overlay |
+| `S` | Open the sort menu | overlay |
 | `!` | Open `$SHELL` (`sh` if unset) in the cursor row's repo | overlay |
 | `o` | Open the cursor row's repo in `$EDITOR` (`vi` if unset) | overlay |
 | `Enter` | Open the detail view for the cursor row | hinted |
@@ -123,6 +125,27 @@ Opened with `tab`. No text capture, since the list of sets is short enough to sc
 | `j`/`k`, `↓`/`↑` | Move the highlight |
 | `Enter` | Switch to the highlighted set |
 | `Esc` | Close without switching |
+
+## Sort menu
+
+Opened with `S`. One key deep: it takes a column and closes.
+
+| Keys | Action |
+|------|--------|
+| `r` | Order by REPO, the name order the table opens in |
+| `b` | Order by BRANCH |
+| `s` | Order by STATE, most changes first |
+| `l` | Order by RESULT, failures first |
+| anything else | Close without changing the order |
+
+Choosing the column already sorted flips its direction; choosing a different one opens
+it at its own natural direction rather than carrying the last column's over. The sorted
+column's header carries `↑` or `↓`, and the header line names the order (`sort STATE ↓`)
+whenever it is not the name order the table opens in, so a pane too narrow for the
+sorted column still says which way the rows are running.
+
+The menu swallows every key it does not bind, `s` included: behind the menu that means
+"order by STATE", never "run status".
 
 ## Confirmation prompts
 

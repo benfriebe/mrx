@@ -61,7 +61,7 @@ fn output_line_at(app: &App, column: u16, row: u16) -> Option<usize> {
 /// cursor to open its detail view. A click inside the detail pane itself, or
 /// while a modal overlay is up, has no target.
 fn on_click(app: &mut App, column: u16, row: u16) {
-    if app.pending_run.is_some() || app.palette_open || app.set_picker_open || app.quit_pending {
+    if app.pending_run.is_some() || app.quit_pending || app.any_overlay_open() {
         return;
     }
 
@@ -160,6 +160,32 @@ mod tests {
         });
         on_input(&mut a, ev);
         assert!(a.detail_open);
+    }
+
+    /// Every overlay covers the table, so none of them can let a click
+    /// through to the row it happens to be drawn over.
+    #[test]
+    fn a_click_behind_an_overlay_reaches_nothing() {
+        for open in [
+            |a: &mut App| a.palette_open = true,
+            |a: &mut App| a.set_picker_open = true,
+            |a: &mut App| a.run_command_open = true,
+            |a: &mut App| a.sort_menu_open = true,
+        ] {
+            let mut a = app(&["foo", "bar"]);
+            a.terminal_height = 24;
+            a.cursor = 0;
+            open(&mut a);
+            let ev = Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,
+                row: render::LIST_HEADER_ROWS as u16,
+                modifiers: KeyModifiers::NONE,
+            });
+            on_input(&mut a, ev);
+            assert!(!a.detail_open);
+            assert_eq!(a.cursor, 0);
+        }
     }
 
     #[test]

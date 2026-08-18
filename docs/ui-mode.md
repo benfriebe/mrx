@@ -116,8 +116,8 @@ the next probe.
 
 ## The persisted session
 
-The set, filter, selection, cursor, both poll settings, and which repos have been seen
-to fetch (so a `↓` count survives a restart) are written to `$XDG_STATE_HOME/mrx/ui.json`
+The set, filter, selection, cursor, sort order, both poll settings, and which repos have
+been seen to fetch (so a `↓` count survives a restart) are written to `$XDG_STATE_HOME/mrx/ui.json`
 (`~/.local/state/mrx/ui.json` by default) as they change, and restored the next time
 `mrx ui` opens.
 
@@ -127,6 +127,9 @@ to fetch (so a `↓` count survives a restart) are written to `$XDG_STATE_HOME/m
   that no longer resolves falls back to the ordinary default.
 - A name the file remembers that the set no longer has is dropped silently rather than
   treated as an error, because a config edit is not an error.
+- The sorted column and its direction are stored separately, since a column reversed in
+  place is not the same view as that column freshly chosen. A column this build no longer
+  has, or a direction it cannot read, falls back a field at a time rather than together.
 - A missing or unparseable file reads exactly like no file at all, so deleting it is a
   supported reset and a crash mid-write can never lock the app out.
 

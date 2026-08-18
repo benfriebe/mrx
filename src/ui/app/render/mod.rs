@@ -6,7 +6,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use super::detail::{self, DetailLayout};
-use super::state::{App, Pane};
+use super::state::{App, Pane, Sort};
 use crate::ui::widgets::{display_width, truncate};
 
 mod detail_pane;
@@ -24,6 +24,7 @@ pub(crate) use layout::*;
 use list::draw_list;
 use overlays::{
     draw_confirm, draw_help, draw_palette, draw_quit_confirm, draw_run_command, draw_set_picker,
+    draw_sort_menu,
 };
 
 const COL_GAP: usize = 2;
@@ -31,6 +32,17 @@ const COL_GAP: usize = 2;
 const PREFIX_W: usize = 5;
 /// The sidebar drops the selection marker, so its rows start " ▸ ".
 const SIDEBAR_PREFIX_W: usize = 3;
+
+/// A column's header as it is drawn: its label, carrying the direction arrow
+/// when the table is ordered by that column. The layout sizes columns from
+/// this and the table draws it, so a sorted column is never left too narrow
+/// for the arrow that is the whole point of it.
+pub(super) fn column_header(app: &App, column: Sort, label: &str) -> String {
+    match app.sort_arrow(column) {
+        Some(arrow) => format!("{label} {arrow}"),
+        None => label.to_string(),
+    }
+}
 
 const REPO_LABEL: &str = "REPO";
 const BRANCH_LABEL: &str = "BRANCH";
@@ -63,6 +75,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     if app.run_command_open {
         draw_run_command(frame, app, area);
+    }
+    if app.sort_menu_open {
+        draw_sort_menu(frame, app, area);
     }
     if app.set_picker_open {
         draw_set_picker(frame, app, area);

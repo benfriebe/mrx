@@ -22,6 +22,7 @@ mod run;
 mod run_command;
 mod run_request;
 mod set_picker;
+mod sort;
 #[cfg(test)]
 mod testkit;
 
@@ -31,6 +32,7 @@ pub use probing::ProbeDisplay;
 pub use run::{LiveRun, RunStatus, DEFAULT_RESULT_TTL};
 pub use run_request::{PendingRun, RunRequest};
 pub use set_picker::SetEntry;
+pub use sort::{Direction, Sort};
 
 /// Shown for a repo that has never taken part in a run this session, rather
 /// than a fake "pending".
@@ -61,6 +63,13 @@ pub struct App {
     pub filter: String,
     /// Whether `/` is currently capturing keystrokes into `filter`.
     pub filtering: bool,
+    /// The column the table is ordered by, and which way it reads. Chosen
+    /// together by [`choose_sort`](Self::choose_sort), which is the only
+    /// thing that flips a direction.
+    pub sort: Sort,
+    pub sort_direction: Direction,
+    /// Whether `S` is waiting on the column key that picks an order.
+    pub sort_menu_open: bool,
     pub tick: usize,
     /// Latest known probe result per repo, `None` until the first one for
     /// that repo arrives.
@@ -269,6 +278,9 @@ impl App {
             selected: BTreeSet::new(),
             filter: String::new(),
             filtering: false,
+            sort: Sort::default(),
+            sort_direction: Sort::default().natural(),
+            sort_menu_open: false,
             tick: 0,
             probes: vec![None; n],
             probing: BTreeSet::new(),
@@ -354,8 +366,16 @@ impl App {
     /// have is dropped silently: a config edit is not an error. `set_label`
     /// is left untouched, since `main.rs` already decided which config to
     /// load before this ever runs.
+    /// Whether an overlay is covering the table, so a click behind it lands
+    /// on nothing rather than on the row it happens to sit over.
+    pub fn any_overlay_open(&self) -> bool {
+        self.palette_open || self.set_picker_open || self.run_command_open || self.sort_menu_open
+    }
+
     pub fn restore_session(&mut self, session: &Session) {
         self.filter = session.filter.clone();
+        self.sort = session.sort;
+        self.sort_direction = session.sort_direction;
 
         self.selected = self.indices_matching(|n| session.selected.iter().any(|s| s == n));
 

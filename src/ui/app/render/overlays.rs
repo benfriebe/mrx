@@ -8,7 +8,7 @@ use super::footer::LEAD_IN;
 use super::COL_GAP;
 use crate::ui::app::actions::Source;
 use crate::ui::app::keymap;
-use crate::ui::app::state::{App, PendingRun};
+use crate::ui::app::state::{App, PendingRun, Sort};
 use crate::ui::widgets::display_width;
 
 /// The full keymap, centred over the table rather than replacing it. It lists
@@ -291,6 +291,31 @@ pub(super) fn draw_set_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items).block(block), popup);
 }
 
+/// The sort menu (`S`): one row per column, each with the key that orders the
+/// table by it. The active column carries its arrow, so the menu also says
+/// which way pressing that key again would flip it.
+pub(super) fn draw_sort_menu(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = u16::try_from(Sort::ALL.len()).unwrap_or(u16::MAX);
+    let popup = centred(area, 24, rows + 2);
+    frame.render_widget(Clear, popup);
+
+    let items: Vec<ListItem> = Sort::ALL
+        .iter()
+        .map(|&column| {
+            let arrow = app.sort_arrow(column).unwrap_or(" ");
+            let style = if app.sort == column {
+                Style::default().fg(Color::Cyan).bold()
+            } else {
+                Style::default()
+            };
+            ListItem::new(format!(" {}  {:7} {arrow}", column.key(), column.header())).style(style)
+        })
+        .collect();
+
+    let block = Block::default().borders(Borders::ALL).title(" sort by ");
+    frame.render_widget(List::new(items).block(block), popup);
+}
+
 /// Shown when `q`/`Ctrl-C` is pressed while a run is still live.
 pub(super) fn draw_quit_confirm(frame: &mut Frame, area: Rect) {
     let popup = centered_rect(50, 20, area);
@@ -375,6 +400,28 @@ mod tests {
         assert!(
             rows.iter().any(|line| line.contains(last)),
             "the last note was cropped off the bottom: {rows:#?}"
+        );
+    }
+
+    /// The menu is the only place the column keys are written down, so a
+    /// column missing from it is a column nothing can reach.
+    #[test]
+    fn the_sort_menu_lists_every_column_and_marks_the_active_one() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.choose_sort(Sort::State);
+        a.sort_menu_open = true;
+        let rows = frame_rows(&a, 100, 30);
+        let shown = |needle: &str| rows.iter().any(|line| line.contains(needle));
+
+        for &column in Sort::ALL {
+            assert!(
+                shown(&format!("{}  {}", column.key(), column.header())),
+                "{column:?} is not offered with its key: {rows:#?}"
+            );
+        }
+        assert!(
+            shown(&format!("{} ↓", Sort::State.header())),
+            "the active column carries its arrow: {rows:#?}"
         );
     }
 

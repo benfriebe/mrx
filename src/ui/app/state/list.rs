@@ -13,19 +13,23 @@ impl App {
         self.visible_indices().get(scroll_offset + row).copied()
     }
 
-    /// Global indices of repos matching the current filter, in list order.
-    /// An empty filter matches everything.
+    /// Global indices of the repos on screen, in the order the table lists
+    /// them: whatever the filter matches, ordered by the active sort. An
+    /// empty filter matches everything.
     pub fn visible_indices(&self) -> Vec<usize> {
-        if self.filter.is_empty() {
-            return (0..self.repos.len()).collect();
-        }
-        let needle = self.filter.to_lowercase();
-        self.repos
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.name.to_lowercase().contains(&needle))
-            .map(|(i, _)| i)
-            .collect()
+        let mut rows: Vec<usize> = if self.filter.is_empty() {
+            (0..self.repos.len()).collect()
+        } else {
+            let needle = self.filter.to_lowercase();
+            self.repos
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.name.to_lowercase().contains(&needle))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        self.apply_sort(&mut rows);
+        rows
     }
 
     /// The repos a run would target: the explicit selection, or every
