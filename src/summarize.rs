@@ -64,6 +64,21 @@ pub fn summarize_steps(steps: &[StepResult], exit_code: i32) -> String {
     )
 }
 
+/// Whether a finished run left everything as it found it, read from the
+/// literals the summarisers below return for exactly that case. It lives beside
+/// them because it is the only thing that has to stay in step with their
+/// wording: RESULT sorts on it, and a phrase reworded above would otherwise
+/// quietly stop being recognised here.
+pub fn changed_nothing(steps: &[StepResult], exit_code: i32) -> bool {
+    let Some(last) = steps.last() else {
+        return true;
+    };
+    matches!(
+        summarize(last.shape, &last.stdout, &last.stderr, exit_code).as_str(),
+        "already up to date" | "clean" | "no changes" | "up to date" | "done"
+    )
+}
+
 fn summarize_pull(stdout: &str, stderr: &str) -> String {
     let combined = format!("{}\n{}", stdout, stderr);
     if combined.contains("Already up to date") || combined.contains("Already up-to-date") {
@@ -386,6 +401,37 @@ mod tests {
             stderr: String::new(),
             code,
         }
+    }
+
+    /// The RESULT column sorts on this, so each summariser's own "nothing
+    /// happened" wording has to keep being recognised. A phrase reworded above
+    /// without this list following it fails here rather than quietly ranking
+    /// every repo as having changed.
+    #[test]
+    fn a_run_that_left_everything_alone_is_recognised_whatever_shape_said_so() {
+        let quiet = [
+            (Shape::Pull, "Already up to date.\n"),
+            (Shape::Status, ""),
+            (Shape::Diff, ""),
+            (Shape::Fetch, ""),
+            (Shape::Generic, ""),
+        ];
+        for (shape, stdout) in quiet {
+            let steps = vec![step("git", shape, stdout, 0)];
+            assert!(
+                changed_nothing(&steps, 0),
+                "{shape:?} summarised as {:?}",
+                summarize_steps(&steps, 0)
+            );
+        }
+
+        assert!(
+            changed_nothing(&[], 0),
+            "a run with no steps did nothing by definition"
+        );
+
+        let moved = vec![step("git", Shape::Status, " M src/main.rs\n", 0)];
+        assert!(!changed_nothing(&moved, 0));
     }
 
     #[test]

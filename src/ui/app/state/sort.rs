@@ -2,6 +2,7 @@
 //! "in order" means for each column's contents.
 
 use super::{App, RunStatus};
+use crate::summarize;
 use crate::ui::app::probe::{self, RepoState};
 use std::cmp::Ordering;
 
@@ -201,13 +202,24 @@ impl App {
 
     /// RESULT ranked by how much the row is asking for attention, so
     /// descending brings the failures to the top.
+    ///
+    /// A run that succeeded is split by whether it did anything, since a set
+    /// where nothing failed is the ordinary case and "up to date" everywhere
+    /// would otherwise be one flat tie: the repos that moved are what is worth
+    /// reading, and they are what [`summarize::changed_nothing`] separates out.
     fn result_rank(&self, idx: usize) -> u8 {
         match self.run_results.get(idx).and_then(|r| r.as_ref()) {
             None => 0,
             Some(RunStatus::Skipped { .. }) => 1,
             Some(RunStatus::Running | RunStatus::Step { .. }) => 2,
-            Some(RunStatus::Finished { exit_code, .. }) if *exit_code == 0 => 3,
-            Some(RunStatus::Finished { .. }) => 4,
+            Some(RunStatus::Finished { steps, exit_code }) if *exit_code == 0 => {
+                if summarize::changed_nothing(steps, *exit_code) {
+                    3
+                } else {
+                    4
+                }
+            }
+            Some(RunStatus::Finished { .. }) => 5,
         }
     }
 }
@@ -221,13 +233,19 @@ fn sort_unknown_last<K: Ord>(
     descending: bool,
     key: impl Fn(usize) -> Option<K>,
 ) {
-    rows.sort_by(|&a, &b| match (key(a), key(b)) {
-        (Some(a), Some(b)) if descending => b.cmp(&a),
-        (Some(a), Some(b)) => a.cmp(&b),
+    // Each key is read once rather than on every comparison: RESULT's walks the
+    // run's output to decide whether anything changed, and this runs per frame.
+    let mut keyed: Vec<(Option<K>, usize)> = rows.iter().map(|&i| (key(i), i)).collect();
+    keyed.sort_by(|(a, _), (b, _)| match (a, b) {
+        (Some(a), Some(b)) if descending => b.cmp(a),
+        (Some(a), Some(b)) => a.cmp(b),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     });
+    for (slot, (_, idx)) in rows.iter_mut().zip(keyed) {
+        *slot = idx;
+    }
 }
 
 #[cfg(test)]
@@ -235,6 +253,7 @@ mod tests {
     use super::super::testkit::{app, probed};
     use super::*;
     use crate::executor::StepResult;
+    use crate::summarize::Shape;
 
     /// The repo names in the order the table would list them.
     fn shown(a: &App) -> Vec<&str> {
@@ -358,6 +377,40 @@ mod tests {
         assert_eq!(
             sorted_by(&mut a, Sort::Result),
             vec!["never", "skipped", "passed", "failed"]
+        );
+    }
+
+    /// The everyday case: a whole set updates, nothing fails, and the only
+    /// rows worth reading are the handful that actually moved.
+    #[test]
+    fn result_order_separates_the_repos_that_moved_from_the_ones_that_did_not() {
+        let mut a = app(&["a-fetched", "b-quiet", "c-fetched", "d-quiet"]);
+        let fetch = |stderr: &str| RunStatus::Finished {
+            steps: vec![StepResult {
+                label: "fetch".into(),
+                shape: Shape::Fetch,
+                stdout: String::new(),
+                stderr: stderr.into(),
+                code: 0,
+            }],
+            exit_code: 0,
+        };
+        a.run_results[0] = Some(fetch("   abc..def  main -> origin/main\n"));
+        a.run_results[1] = Some(fetch(""));
+        a.run_results[2] = Some(fetch("   123..456  main -> origin/main\n"));
+        a.run_results[3] = Some(fetch(""));
+
+        assert_eq!(a.result_text(0), "1 updated refs");
+        assert_eq!(a.result_text(1), "up to date");
+
+        assert_eq!(
+            sorted_by(&mut a, Sort::Result),
+            vec!["a-fetched", "c-fetched", "b-quiet", "d-quiet"],
+            "the rows that changed something come up, in name order among themselves"
+        );
+        assert_eq!(
+            sorted_by(&mut a, Sort::Result),
+            vec!["b-quiet", "d-quiet", "a-fetched", "c-fetched"]
         );
     }
 

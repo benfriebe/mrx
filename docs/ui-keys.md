@@ -135,7 +135,7 @@ Opened with `S`. One key deep: it takes a column and closes.
 | `r` | Order by REPO, the name order the table opens in |
 | `b` | Order by BRANCH |
 | `s` | Order by STATE, most changes first |
-| `l` | Order by RESULT, failures first |
+| `l` | Order by RESULT, failures first, then the repos that changed |
 | anything else | Close without changing the order |
 
 Choosing the column already sorted flips its direction; choosing a different one opens
@@ -146,6 +146,12 @@ sorted column still says which way the rows are running.
 
 The menu swallows every key it does not bind, `s` included: behind the menu that means
 "order by STATE", never "run status".
+
+RESULT orders by how much a row is asking for attention rather than by its text:
+failed, then succeeded having changed something, then succeeded having changed nothing,
+then still running, skipped, and never run. The split matters in the ordinary case where
+nothing failed, since a whole set reading `up to date` would otherwise be one flat tie
+with the handful that actually moved scattered through it in name order.
 
 ## Confirmation prompts
 
