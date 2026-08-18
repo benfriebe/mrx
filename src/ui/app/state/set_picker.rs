@@ -81,10 +81,13 @@ impl App {
         }
         match config::try_load(&entry.path, self.dir_override.as_deref()) {
             Ok(config::Config {
-                repos, defaults, ..
+                repos,
+                defaults,
+                jobs,
+                ..
             }) => {
                 self.set_label = entry.name;
-                self.reconcile_repos(repos, defaults, entry.path);
+                self.reconcile_repos(repos, defaults, jobs, entry.path);
             }
             Err(e) => {
                 self.status_message = Some(format!("could not switch sets: {e}"));
@@ -103,10 +106,13 @@ impl App {
         }
         match config::try_load(&self.config_path, self.dir_override.as_deref()) {
             Ok(config::Config {
-                repos, defaults, ..
+                repos,
+                defaults,
+                jobs,
+                ..
             }) => {
                 let config_path = self.config_path.clone();
-                self.reconcile_repos(repos, defaults, config_path);
+                self.reconcile_repos(repos, defaults, jobs, config_path);
             }
             Err(e) => {
                 self.status_message = Some(format!("could not reload config: {e}"));
@@ -120,11 +126,13 @@ impl App {
     /// selection onto its neighbour, and a name the edit removed just drops
     /// out. Every index-keyed piece of state (probes, run results, detail
     /// scroll) starts over, since none of it means anything against a
-    /// different repo list.
+    /// different repo list. `jobs` is re-resolved here too, since the config
+    /// just read is entitled to its own answer.
     fn reconcile_repos(
         &mut self,
         repos: Vec<Repo>,
         defaults: BTreeMap<String, String>,
+        jobs: Option<usize>,
         config_path: PathBuf,
     ) {
         let cursor_name = self.repos.get(self.cursor).map(|r| r.name.clone());
@@ -139,6 +147,7 @@ impl App {
         self.repos = repos;
         self.defaults = defaults;
         self.config_path = config_path;
+        self.jobs = config::max_jobs(self.jobs_flag, jobs);
 
         self.probes = vec![None; n];
         self.probing.clear();
@@ -211,6 +220,44 @@ mod tests {
             "the cursor follows foo by name even though a repo was added above it"
         );
         assert!(a.full_reprobe_requested);
+    }
+
+    /// A set switch reads a different config, so its `jobs` has to take
+    /// effect without a restart; `-j` given on the command line still wins.
+    #[test]
+    fn a_reload_picks_up_the_configs_jobs_unless_the_flag_set_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".mrconfig");
+        write_config(&cfg, "[DEFAULT]\njobs = 4\n\n[foo]\n");
+        let config::Config {
+            repos, defaults, ..
+        } = config::load(&cfg, None);
+        let mut a = App::new(repos, "work".into(), 4, defaults, cfg.clone(), false, None);
+
+        write_config(&cfg, "[DEFAULT]\njobs = 10\n\n[foo]\n");
+        a.reload_config();
+        assert_eq!(a.jobs, 10);
+
+        a.jobs_flag = Some(2);
+        a.reload_config();
+        assert_eq!(a.jobs, 2, "-j outranks the config it just re-read");
+    }
+
+    /// The reload has to fall back the same way startup does, or dropping the
+    /// key would leave the old value in place with nothing saying so.
+    #[test]
+    fn removing_the_jobs_key_returns_to_the_cpu_default_on_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".mrconfig");
+        write_config(&cfg, "[DEFAULT]\njobs = 10\n\n[foo]\n");
+        let config::Config {
+            repos, defaults, ..
+        } = config::load(&cfg, None);
+        let mut a = App::new(repos, "work".into(), 10, defaults, cfg.clone(), false, None);
+
+        write_config(&cfg, "[foo]\n");
+        a.reload_config();
+        assert_eq!(a.jobs, config::max_jobs(None, None));
     }
 
     #[test]

@@ -93,6 +93,9 @@ pub struct RunOptions {
     pub repos: Vec<Repo>,
     pub set_label: String,
     pub jobs: usize,
+    /// `-j`, if it was given, so a reload can re-resolve `jobs` without
+    /// losing it.
+    pub jobs_flag: Option<usize>,
     pub defaults: BTreeMap<String, String>,
     pub config_path: PathBuf,
     pub force: bool,
@@ -112,6 +115,7 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
         repos,
         set_label,
         jobs,
+        jobs_flag,
         defaults,
         config_path,
         force,
@@ -138,6 +142,7 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
         dir_override,
     );
     app.result_ttl = result_ttl;
+    app.jobs_flag = jobs_flag;
     app.restore_session(&session);
     // `session::from_fields` already rejects an out-of-range interval; this
     // is belt and braces, so no path into `poll_interval` can reach the

@@ -58,7 +58,7 @@ mrx <command> [options]
 
 | Flag | Description |
 |------|-------------|
-| `-j <N>` | Max parallel jobs (default: min(cpus, 8)) |
+| `-j <N>` | Max parallel jobs (default: `[DEFAULT] jobs`, else min(cpus, 8)) |
 | `-c <file>` | Config file. Overrides `-s` |
 | `-s <name>` | Named repo set (see [Repo sets](#repo-sets)) |
 | `-d <dir>` | Working directory (default: `[DEFAULT] base`, else config file's parent) |
@@ -176,6 +176,7 @@ checkout = git clone 'git@github.com:my-account/another-repo.git' 'cli'
 |-----|-------|---------|
 | `checkout` | section | Clone command. The URL is parsed out of it for the built-in clone |
 | `base` | `[DEFAULT]` | Directory section paths resolve against. Supports `~`. Default: the config file's parent |
+| `jobs` | `[DEFAULT]` | Max parallel jobs for this set, overridden by `-j`. Must be at least 1; anything else is a config error |
 | `skip` | section | `true`, `yes` or `1` leaves the section in the file but out of every operation. `false`, `no` and `0` are the default; anything else also reads as the default |
 | `<action>` | both | Shell body replacing a built-in (`update`, `status`, `diff`, `push`, `fetch`, `checkout`), or defining a new one |
 | `post_<action>` | both | Shell body appended after a successful `<action>` |

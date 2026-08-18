@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 /// Keys mrx consumes itself. They are removed from the key maps after parsing so
 /// they can never be resolved as an action body.
-const RESERVED_KEYS: &[&str] = &["base", "skip"];
+const RESERVED_KEYS: &[&str] = &["base", "skip", "jobs"];
 
 #[derive(Debug, Clone)]
 pub struct Repo {
@@ -29,6 +29,36 @@ pub struct Config {
     pub defaults: BTreeMap<String, String>,
     /// Directory that section paths resolve against.
     pub base: PathBuf,
+    /// `[DEFAULT] jobs`, if the config sets one. Resolved against `-j` by
+    /// [`max_jobs`].
+    pub jobs: Option<usize>,
+}
+
+/// How many jobs to run at once: `-j` beats `[DEFAULT] jobs`, which beats one
+/// per CPU capped at 8, since these are git processes spending most of their
+/// time on the network rather than the CPU.
+pub fn max_jobs(flag: Option<usize>, from_config: Option<usize>) -> usize {
+    flag.or(from_config)
+        .unwrap_or_else(|| num_cpus::get().min(8))
+}
+
+/// `[DEFAULT] jobs`, the config's own answer to `-j`. Rejected rather than
+/// ignored when unusable, and zero for the reason `cli::parse_jobs` gives.
+fn parse_jobs(
+    defaults: &BTreeMap<String, String>,
+    config_path: &Path,
+) -> Result<Option<usize>, String> {
+    let Some(raw) = defaults.get("jobs") else {
+        return Ok(None);
+    };
+    match raw.trim().parse::<usize>() {
+        Ok(n) if n >= 1 => Ok(Some(n)),
+        _ => Err(format!(
+            "{}: jobs must be a whole number of at least 1, got '{}'",
+            config_path.display(),
+            raw.trim()
+        )),
+    }
 }
 
 /// Expand a leading `~` against the home directory.
@@ -83,6 +113,7 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
                 base: dir_override
                     .map(Path::to_path_buf)
                     .unwrap_or_else(fallback_base),
+                jobs: None,
             });
         }
         Err(e) => {
@@ -123,6 +154,8 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
         }
     }
 
+    let jobs = parse_jobs(&defaults, config_path)?;
+
     let base = dir_override
         .map(Path::to_path_buf)
         .or_else(|| defaults.get("base").map(|b| expand_tilde(b)))
@@ -153,6 +186,7 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
         repos,
         defaults,
         base,
+        jobs,
     })
 }
 
@@ -308,11 +342,46 @@ mod tests {
     #[test]
     fn reserved_keys_are_not_resolvable_actions() {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = write_config(dir.path(), "[DEFAULT]\nbase = /srv\n\n[a]\nskip = false\n");
+        let cfg = write_config(
+            dir.path(),
+            "[DEFAULT]\nbase = /srv\njobs = 4\n\n[a]\nskip = false\n",
+        );
 
         let config = load(&cfg, None);
         assert!(!config.defaults.contains_key("base"));
+        assert!(!config.defaults.contains_key("jobs"));
         assert!(!config.repos[0].keys.contains_key("skip"));
+    }
+
+    #[test]
+    fn a_default_jobs_key_is_read_off_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = write_config(dir.path(), "[DEFAULT]\njobs = 10\n\n[a]\n");
+        assert_eq!(load(&cfg, None).jobs, Some(10));
+
+        let bare = write_config(dir.path(), "[a]\n");
+        assert_eq!(load(&bare, None).jobs, None);
+    }
+
+    #[test]
+    fn an_unusable_jobs_value_is_an_error_rather_than_a_silent_default() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["0", "-2", "lots", ""] {
+            let cfg = write_config(dir.path(), &format!("[DEFAULT]\njobs = {bad}\n\n[a]\n"));
+            let err = match try_load(&cfg, None) {
+                Err(e) => e,
+                Ok(c) => panic!("jobs = {bad:?} should not load, got {:?}", c.jobs),
+            };
+            assert!(err.contains("jobs"), "error should name the key: {err}");
+        }
+    }
+
+    #[test]
+    fn the_jobs_flag_beats_the_config_which_beats_the_cpu_default() {
+        assert_eq!(max_jobs(Some(2), Some(10)), 2);
+        assert_eq!(max_jobs(None, Some(10)), 10);
+        let fallback = max_jobs(None, None);
+        assert!((1..=8).contains(&fallback), "got {fallback}");
     }
 
     #[test]

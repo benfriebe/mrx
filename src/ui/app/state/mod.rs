@@ -48,6 +48,9 @@ pub struct App {
     pub set_label: String,
     /// Default parallelism for the probes, polls and runs ui mode spawns.
     pub jobs: usize,
+    /// `-j`, kept so that a reload or a set switch, which re-resolves `jobs`
+    /// against the config it just read, still lets the flag win.
+    pub jobs_flag: Option<usize>,
     /// Global index into `repos`, always pointing at a visible row.
     pub cursor: usize,
     /// First visible-list position drawn at the top of the table. Kept as
@@ -260,6 +263,7 @@ impl App {
             repos,
             set_label,
             jobs,
+            jobs_flag: None,
             cursor: 0,
             list_scroll: 0,
             selected: BTreeSet::new(),

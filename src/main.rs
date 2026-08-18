@@ -84,10 +84,6 @@ fn missing_note(exists: bool) -> &'static str {
     }
 }
 
-fn max_jobs(cli: &Cli) -> usize {
-    cli.jobs.unwrap_or_else(|| num_cpus::get().min(8))
-}
-
 /// Label shown in ui mode's header: the named set if `-s` or `$MRX_SET` gave
 /// one, the persisted session's set if `restored` named one, otherwise
 /// `(unnamed)` for the bare config file, the same label `print_sets` uses.
@@ -173,6 +169,7 @@ async fn main() {
         repos,
         defaults,
         base,
+        jobs: config_jobs,
     } = config::load(&config_path, dir_override.as_deref());
 
     if cli.command.is_register() {
@@ -190,12 +187,12 @@ async fn main() {
     }
 
     if matches!(cli.command, Command::Ui) {
-        let jobs = max_jobs(&cli);
         let label = ui_set_label(&cli, ui_restored_set.as_deref());
         ui::app::run(ui::app::RunOptions {
             repos,
             set_label: label,
-            jobs,
+            jobs: config::max_jobs(cli.jobs, config_jobs),
+            jobs_flag: cli.jobs,
             defaults,
             config_path: config_path.clone(),
             force: cli.force,
@@ -233,7 +230,7 @@ async fn main() {
         .map(|r| operations::plan(&cli.command, r, &defaults))
         .collect();
 
-    let jobs = max_jobs(&cli);
+    let jobs = config::max_jobs(cli.jobs, config_jobs);
     let rx = executor::execute_all(&repos, ops, jobs, config_path.clone());
 
     let success = if stdout().is_terminal() && !cli.plain {
