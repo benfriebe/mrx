@@ -71,7 +71,7 @@ pub struct Cli {
 /// `off` parses to [`Duration::ZERO`], not `None`: clap reads `None` as "the
 /// flag was not passed", which falls back to the default instead of turning
 /// expiry off. `main.rs` maps the zero back to "never expire".
-fn parse_duration(s: &str) -> Result<Duration, String> {
+pub(crate) fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
     if s.eq_ignore_ascii_case("off") {
         return Ok(Duration::ZERO);

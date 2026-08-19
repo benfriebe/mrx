@@ -220,8 +220,15 @@ pub struct App {
     /// since freshness is an opt-in loop.
     pub poll_enabled: bool,
     /// How often the poll fires when it's on; a value on `App` rather than a
-    /// hardcoded constant, so a persisted session can change it.
+    /// hardcoded constant, so a config or a persisted session can change it.
     pub poll_interval: Duration,
+    /// When the last freshness cycle was dispatched, for the header's
+    /// "checked N ago". A cycle still fetching already counts: the header
+    /// answers when mrx last asked, not when every answer came back.
+    pub last_poll_at: Option<Instant>,
+    /// Whether the opening fetch is still owed. See
+    /// [`arm_boot_fetch`](Self::arm_boot_fetch).
+    pub boot_fetch_pending: bool,
     /// `Ctrl-A`: whether a completed poll cycle is allowed to fast-forward
     /// what it finds behind. Off by default; never true while `poll_enabled`
     /// is false, since it has nothing to act on without one.
@@ -331,6 +338,8 @@ impl App {
             output_selection: None,
             poll_enabled: false,
             poll_interval: poll::DEFAULT_POLL_INTERVAL,
+            last_poll_at: None,
+            boot_fetch_pending: false,
             auto_update: false,
             poll_targets_requested: None,
             poll_generation: None,

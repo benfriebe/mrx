@@ -108,7 +108,7 @@ Anything that fetches counts, not just mrx. The probe reads `FETCH_HEAD`'s times
 so running `update` on a repo, or pulling it in another terminal, settles its count on
 the next probe.
 
-- `F` toggles a freshness poll: `git fetch --quiet` across the set on an interval, five
+- `F` toggles a freshness poll: `git fetch --quiet` across the set on an interval, six
   minutes by default, suspended rather than queued while a run is live.
 - `Ctrl-A` layers a narrow, opt-in auto-update on top, fast-forwarding what a poll
   finds behind. It acts only on a repo that is checked out, tracks an upstream, is
@@ -117,8 +117,30 @@ the next probe.
 - `Ctrl-A` refuses to turn on while the poll itself is off, since it has nothing to
   act on without one.
 - Both are off by default, and both show in the header the moment either is on
-  (`poll 5m`, `poll 5m · auto`). A mode that touches working trees on a timer has no
+  (`poll 6m`, `poll 6m · auto`). A mode that touches working trees on a timer has no
   business being invisible.
+- Once a cycle has gone out the header also says when, as `checked 40s ago`, rolled up
+  to minutes and then hours as it ages. The unit on screen is the rate the number moves
+  at, so a figure that has not changed is still true rather than stuck. It reports when
+  mrx last asked, not when every answer came back: a cycle still fetching already counts.
+
+### Asking for the poll from the config
+
+`[DEFAULT] auto_fetch` turns the poll on for a set without the keystroke: `on` for the
+six-minute default, an interval (`90s`, `10m`, `1h`) for anything else, or `off`. An
+unusable value is a config error rather than a silent `off`, which would look exactly
+like a working config.
+
+- A set that says nothing leaves the poll alone, so `F` still decides. `off` is a value
+  and does turn it off, taking auto-update with it.
+- A session restored on top outranks the config, since it is the more specific record of
+  what was last chosen. A set switch re-reads the config instead, the session having
+  belonged to the set being left behind.
+- A set opened with auto-fetch on and nothing fetched yet runs one cycle immediately
+  rather than waiting out the first interval, which would leave every `↓` blank for six
+  minutes and read as "up to date". It waits for the opening probe to land first, so the
+  table fills from the fast local read before the network one starts.
+- Changing sets to one with a different interval re-phases the timer onto it.
 
 ## The persisted session
 

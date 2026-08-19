@@ -3,6 +3,7 @@
 
 use super::App;
 use crate::ui::app::poll::{self, AutoUpdateOutcome, AutoUpdateResult};
+use std::time::{Duration, Instant};
 
 impl App {
     /// The tick loop's poll `Interval` arm always fires; this is what decides
@@ -17,6 +18,50 @@ impl App {
         let generation = self.begin_probe(&targets);
         self.poll_generation = Some(generation);
         self.poll_targets_requested = Some(targets);
+        self.last_poll_at = Some(Instant::now());
+    }
+
+    /// Apply a set's `[DEFAULT] auto_fetch`. A config that says nothing leaves
+    /// the poll alone rather than turning it off, so `F` still decides for a
+    /// set with no opinion, and a session restored afterwards still overrides
+    /// what this sets.
+    pub fn apply_auto_fetch(&mut self, configured: Option<Duration>) {
+        let Some(interval) = configured else {
+            return;
+        };
+        self.poll_enabled = !interval.is_zero();
+        if self.poll_enabled {
+            self.poll_interval = poll::clamp_interval(interval);
+        } else {
+            self.auto_update = false;
+        }
+    }
+
+    /// Owe an opening fetch when the poll is on and nothing on screen has a
+    /// sync answer yet: without it a first run leaves every ↓ blank for a
+    /// whole interval, which reads as "up to date" rather than "not asked".
+    /// Called once the poll's settings have settled, config and session both.
+    pub fn arm_boot_fetch(&mut self) {
+        self.boot_fetch_pending = self.poll_enabled && self.fetched_repos.is_empty();
+    }
+
+    /// Whether the opening fetch should go now, claimed once. Held back until
+    /// the opening probe has finished, so the table fills from the fast local
+    /// read before a cycle of network calls supersedes its generation.
+    pub fn take_boot_fetch(&mut self) -> bool {
+        if !self.boot_fetch_pending || !self.probing.is_empty() {
+            return false;
+        }
+        self.boot_fetch_pending = false;
+        true
+    }
+
+    /// The header's "checked 12s ago", once a cycle has run this session.
+    /// Absent rather than "never": a session that has not polled has nothing
+    /// to report, and saying so takes header room from what does.
+    pub fn last_check_text(&self) -> Option<String> {
+        self.last_poll_at
+            .map(|at| format!("checked {}", poll::format_ago(at.elapsed())))
     }
 
     pub fn take_poll_requested(&mut self) -> Option<Vec<usize>> {
@@ -186,6 +231,102 @@ mod tests {
     use crate::executor::TaskEvent;
     use crate::ui::app::probe::RepoState;
     use std::time::Duration;
+
+    #[test]
+    fn a_configured_auto_fetch_turns_the_poll_on_at_its_own_interval() {
+        let mut a = app(&["foo"]);
+        assert!(!a.poll_enabled, "off unless something says otherwise");
+
+        a.apply_auto_fetch(Some(Duration::from_secs(120)));
+        assert!(a.poll_enabled);
+        assert_eq!(a.poll_interval, Duration::from_secs(120));
+
+        a.apply_auto_fetch(Some(Duration::ZERO));
+        assert!(!a.poll_enabled, "off is a value, not an absence");
+    }
+
+    /// A set with no opinion must not overrule `F`, or switching into one
+    /// would silently stop a poll the user turned on.
+    #[test]
+    fn a_config_that_says_nothing_leaves_the_poll_alone() {
+        let mut a = app(&["foo"]);
+        a.poll_enabled = true;
+        a.poll_interval = Duration::from_secs(90);
+
+        a.apply_auto_fetch(None);
+        assert!(a.poll_enabled);
+        assert_eq!(a.poll_interval, Duration::from_secs(90));
+    }
+
+    #[test]
+    fn turning_auto_fetch_off_takes_auto_update_with_it() {
+        let mut a = app(&["foo"]);
+        a.apply_auto_fetch(Some(Duration::from_secs(120)));
+        a.auto_update = true;
+
+        a.apply_auto_fetch(Some(Duration::ZERO));
+        assert!(!a.auto_update, "auto-update has nothing to act on");
+    }
+
+    /// The opening fetch waits for the opening probe: firing it first bumps
+    /// the generation the probe's own results are tagged with, so the table
+    /// would sit blank through a set's worth of network calls.
+    #[test]
+    fn the_opening_fetch_waits_for_the_opening_probe_to_land() {
+        let mut a = app(&["foo", "bar"]);
+        a.apply_auto_fetch(Some(Duration::from_secs(360)));
+        a.arm_boot_fetch();
+
+        let generation = a.begin_probe(&[0, 1]);
+        assert!(!a.take_boot_fetch(), "a probe is still in flight");
+
+        a.on_probe(generation, probed(0, "main"));
+        assert!(!a.take_boot_fetch(), "one of two is not the set");
+
+        a.on_probe(generation, probed(1, "main"));
+        assert!(a.take_boot_fetch());
+        assert!(!a.take_boot_fetch(), "claimed once, not every frame");
+    }
+
+    #[test]
+    fn a_set_that_already_has_sync_answers_waits_for_its_first_interval() {
+        let mut a = app(&["foo"]);
+        a.apply_auto_fetch(Some(Duration::from_secs(360)));
+        a.fetched_repos.insert(0);
+        a.arm_boot_fetch();
+
+        assert!(
+            !a.take_boot_fetch(),
+            "something has already fetched, so there is nothing to catch up on"
+        );
+    }
+
+    #[test]
+    fn the_header_reports_when_the_last_cycle_went_out() {
+        let mut a = app(&["foo"]);
+        assert_eq!(a.last_check_text(), None, "nothing has been checked yet");
+
+        a.poll_enabled = true;
+        a.on_poll_due();
+        assert_eq!(a.last_check_text().as_deref(), Some("checked 0s ago"));
+
+        a.last_poll_at = Some(Instant::now() - Duration::from_secs(150));
+        assert_eq!(a.last_check_text().as_deref(), Some("checked 2m ago"));
+    }
+
+    /// A cycle that never started is not a check, so the clock must not move.
+    #[test]
+    fn a_suppressed_cycle_does_not_count_as_a_check() {
+        let mut a = app(&["foo"]);
+        a.on_poll_due();
+        assert_eq!(a.last_poll_at, None, "the poll is off");
+
+        a.poll_enabled = true;
+        a.begin_named_run("update".into(), vec![0]);
+        a.on_task(1, TaskEvent::Started { index: 0 });
+        a.on_poll_due();
+        assert_eq!(a.last_poll_at, None, "a live run suspends the poll");
+    }
 
     #[test]
     fn a_due_poll_while_a_run_is_live_is_a_no_op_and_the_next_one_after_it_finishes_is_not() {

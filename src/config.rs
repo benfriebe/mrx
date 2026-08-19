@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Keys mrx consumes itself. They are removed from the key maps after parsing so
 /// they can never be resolved as an action body.
-const RESERVED_KEYS: &[&str] = &["base", "skip", "jobs"];
+const RESERVED_KEYS: &[&str] = &["base", "skip", "jobs", "auto_fetch"];
 
 #[derive(Debug, Clone)]
 pub struct Repo {
@@ -32,7 +33,16 @@ pub struct Config {
     /// `[DEFAULT] jobs`, if the config sets one. Resolved against `-j` by
     /// [`max_jobs`].
     pub jobs: Option<usize>,
+    /// `[DEFAULT] auto_fetch`: how often ui mode should fetch this set on its
+    /// own. `None` is a config that says nothing, `Some(ZERO)` one that says
+    /// `off`; the two differ only to a caller that has its own default.
+    pub auto_fetch: Option<Duration>,
 }
+
+/// The interval `auto_fetch = on` means, and the one ui mode's own `F` starts
+/// at, so a set that asks for auto-fetch without saying how often and a
+/// session that turns it on by hand agree.
+pub const DEFAULT_AUTO_FETCH: Duration = Duration::from_secs(360);
 
 /// How many jobs to run at once: `-j` beats `[DEFAULT] jobs`, which beats one
 /// per CPU capped at 8, since these are git processes spending most of their
@@ -59,6 +69,30 @@ fn parse_jobs(
             raw.trim()
         )),
     }
+}
+
+/// `[DEFAULT] auto_fetch`: `on`, `off`, or how often, as `90s`, `6m`, `1h`.
+/// Rejected rather than ignored when unusable, since a misspelt interval that
+/// silently meant "never fetch" would look exactly like a working config.
+fn parse_auto_fetch(
+    defaults: &BTreeMap<String, String>,
+    config_path: &Path,
+) -> Result<Option<Duration>, String> {
+    let Some(raw) = defaults.get("auto_fetch") else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    if raw.eq_ignore_ascii_case("on") {
+        return Ok(Some(DEFAULT_AUTO_FETCH));
+    }
+    let interval = crate::cli::parse_duration(raw).map_err(|e| {
+        format!(
+            "{}: auto_fetch must be on, off, or an interval like 6m; {}",
+            config_path.display(),
+            e
+        )
+    })?;
+    Ok(Some(interval))
 }
 
 /// Expand a leading `~` against the home directory.
@@ -114,6 +148,7 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
                     .map(Path::to_path_buf)
                     .unwrap_or_else(fallback_base),
                 jobs: None,
+                auto_fetch: None,
             });
         }
         Err(e) => {
@@ -155,6 +190,7 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
     }
 
     let jobs = parse_jobs(&defaults, config_path)?;
+    let auto_fetch = parse_auto_fetch(&defaults, config_path)?;
 
     let base = dir_override
         .map(Path::to_path_buf)
@@ -187,6 +223,7 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
         defaults,
         base,
         jobs,
+        auto_fetch,
     })
 }
 
@@ -344,12 +381,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = write_config(
             dir.path(),
-            "[DEFAULT]\nbase = /srv\njobs = 4\n\n[a]\nskip = false\n",
+            "[DEFAULT]\nbase = /srv\njobs = 4\nauto_fetch = 6m\n\n[a]\nskip = false\n",
         );
 
         let config = load(&cfg, None);
         assert!(!config.defaults.contains_key("base"));
         assert!(!config.defaults.contains_key("jobs"));
+        assert!(!config.defaults.contains_key("auto_fetch"));
         assert!(!config.repos[0].keys.contains_key("skip"));
     }
 
@@ -361,6 +399,44 @@ mod tests {
 
         let bare = write_config(dir.path(), "[a]\n");
         assert_eq!(load(&bare, None).jobs, None);
+    }
+
+    #[test]
+    fn a_default_auto_fetch_key_says_whether_and_how_often() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            ("on", Some(DEFAULT_AUTO_FETCH)),
+            ("6m", Some(Duration::from_secs(360))),
+            ("90s", Some(Duration::from_secs(90))),
+            ("1h", Some(Duration::from_secs(3600))),
+            ("OFF", Some(Duration::ZERO)),
+        ];
+        for (raw, expected) in cases {
+            let cfg = write_config(
+                dir.path(),
+                &format!("[DEFAULT]\nauto_fetch = {raw}\n\n[a]\n"),
+            );
+            assert_eq!(load(&cfg, None).auto_fetch, expected, "auto_fetch = {raw}");
+        }
+
+        let bare = write_config(dir.path(), "[a]\n");
+        assert_eq!(
+            load(&bare, None).auto_fetch,
+            None,
+            "a config that says nothing is not a config that says off"
+        );
+    }
+
+    /// A misspelt interval silently meaning "never fetch" looks exactly like a
+    /// working config, so it is rejected where it can still be reported.
+    #[test]
+    fn an_unusable_auto_fetch_is_an_error_rather_than_a_silent_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = write_config(dir.path(), "[DEFAULT]\nauto_fetch = sometimes\n\n[a]\n");
+        let Err(error) = try_load(&cfg, None) else {
+            panic!("an unusable interval is refused");
+        };
+        assert!(error.contains("auto_fetch"), "got {error:?}");
     }
 
     #[test]

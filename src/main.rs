@@ -170,6 +170,7 @@ async fn main() {
         defaults,
         base,
         jobs: config_jobs,
+        auto_fetch,
     } = config::load(&config_path, dir_override.as_deref());
 
     if cli.command.is_register() {
@@ -198,6 +199,7 @@ async fn main() {
             force: cli.force,
             dir_override: dir_override.clone(),
             session: ui_session.unwrap_or_default(),
+            auto_fetch,
             // `--result-ttl off` arrives as zero; see `cli::parse_duration`.
             result_ttl: match cli.result_ttl {
                 None => Some(ui::app::state::DEFAULT_RESULT_TTL),

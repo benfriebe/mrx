@@ -7,6 +7,7 @@ use crate::sets;
 use crate::ui::app::actions;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// One row in the set picker: a discovered set's name and the config path
 /// it resolves to.
@@ -84,10 +85,11 @@ impl App {
                 repos,
                 defaults,
                 jobs,
+                auto_fetch,
                 ..
             }) => {
                 self.set_label = entry.name;
-                self.reconcile_repos(repos, defaults, jobs, entry.path);
+                self.reconcile_repos(repos, defaults, (jobs, auto_fetch), entry.path);
             }
             Err(e) => {
                 self.status_message = Some(format!("could not switch sets: {e}"));
@@ -109,10 +111,11 @@ impl App {
                 repos,
                 defaults,
                 jobs,
+                auto_fetch,
                 ..
             }) => {
                 let config_path = self.config_path.clone();
-                self.reconcile_repos(repos, defaults, jobs, config_path);
+                self.reconcile_repos(repos, defaults, (jobs, auto_fetch), config_path);
             }
             Err(e) => {
                 self.status_message = Some(format!("could not reload config: {e}"));
@@ -132,7 +135,7 @@ impl App {
         &mut self,
         repos: Vec<Repo>,
         defaults: BTreeMap<String, String>,
-        jobs: Option<usize>,
+        (jobs, auto_fetch): (Option<usize>, Option<Duration>),
         config_path: PathBuf,
     ) {
         let cursor_name = self.repos.get(self.cursor).map(|r| r.name.clone());
@@ -162,6 +165,11 @@ impl App {
             .and_then(|name| self.index_of_name(&name))
             .unwrap_or(0);
         self.clamp_cursor_to_visible();
+
+        // The config just read is entitled to its own answer, and the session
+        // that could outrank it belongs to the set being left behind.
+        self.apply_auto_fetch(auto_fetch);
+        self.arm_boot_fetch();
 
         self.full_reprobe_requested = true;
     }

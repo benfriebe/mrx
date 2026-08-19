@@ -73,6 +73,7 @@ async fn main() {
         set_label: "fixture".into(),
         jobs: 1,
         jobs_flag: None,
+        auto_fetch: None,
         defaults: BTreeMap::new(),
         config_path: std::env::temp_dir().join("app_run_draw_failure.mrconfig"),
         force: false,

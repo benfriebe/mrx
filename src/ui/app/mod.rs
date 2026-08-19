@@ -36,6 +36,22 @@ fn spawn_probe_over(app: &mut App, tx: &mpsc::UnboundedSender<Probed>, targets: 
     probe::spawn_probe_generation(&app.repos, targets, app.jobs, generation, tx.clone());
 }
 
+/// Start a freshness cycle if one is due, the single path both the interval
+/// tick and the opening fetch take. `on_poll_due` is what decides whether the
+/// cycle actually runs, so calling this when it should not is a no-op.
+fn spawn_poll_cycle(app: &mut App, tx: &mpsc::UnboundedSender<Probed>) {
+    app.on_poll_due();
+    if let Some(targets) = app.take_poll_requested() {
+        poll::spawn_poll_generation(
+            &app.repos,
+            targets,
+            app.jobs,
+            app.probe_generation,
+            tx.clone(),
+        );
+    }
+}
+
 /// Plan and spawn a run over `req`'s targets, tagging the app with the run
 /// id incoming `RunEvent`s are attributed by. Returns the handle so the
 /// caller can cancel it later.
@@ -76,15 +92,24 @@ fn spawn_action_run(
 /// collapses to one cycle instead of a fetch per press.
 const POLL_RESET_GRACE: Duration = Duration::from_millis(250);
 
-/// How long the poll ticker's next tick should be pushed out to, given
-/// `poll_enabled` on the previous loop iteration and its value now, or
-/// `None` to leave the running ticker alone.
+/// How long the poll ticker's next tick should be pushed out to, given the
+/// poll's state on the previous loop iteration and its state now, or `None`
+/// to leave the running ticker alone.
 ///
-/// Only the off-to-on transition re-phases the ticker, so the startup delay
-/// [`run`] builds it with survives and a poll that stays on keeps firing on
-/// schedule.
-fn poll_ticker_restart_delay(was_enabled: bool, is_enabled: bool) -> Option<Duration> {
-    (!was_enabled && is_enabled).then_some(POLL_RESET_GRACE)
+/// Switching on re-phases, so the first cycle after `F` is prompt. So does a
+/// new interval, which a set switch can hand over: the running ticker holds
+/// the period it was built with and would otherwise keep the old set's
+/// cadence for the rest of the session. A poll that stays on unchanged is
+/// left alone, so the startup delay [`run`] builds it with survives.
+fn poll_ticker_restart_delay(was: (bool, Duration), now: (bool, Duration)) -> Option<Duration> {
+    let ((was_enabled, was_interval), (is_enabled, interval)) = (was, now);
+    if !is_enabled {
+        return None;
+    }
+    if !was_enabled {
+        return Some(POLL_RESET_GRACE);
+    }
+    (was_interval != interval).then_some(interval)
 }
 
 /// Everything [`run`] needs to open ui mode, bundled to satisfy clippy's
@@ -103,6 +128,9 @@ pub struct RunOptions {
     /// Loaded by `main.rs` before the repo list exists, since the stored set
     /// decides which repos to resolve; applied once, after `App::new`.
     pub session: session::Session,
+    /// `[DEFAULT] auto_fetch` from the set being opened, if it sets one.
+    /// Seeds the poll before the session gets its say.
+    pub auto_fetch: Option<Duration>,
     /// `--result-ttl`: how long a run's result stays on its row. `None` was
     /// asked for explicitly (`off`); an absent flag arrives here as the
     /// default, resolved by `main.rs`.
@@ -121,6 +149,7 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
         force,
         dir_override,
         session,
+        auto_fetch,
         result_ttl,
     } = options;
 
@@ -143,7 +172,11 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
     );
     app.result_ttl = result_ttl;
     app.jobs_flag = jobs_flag;
+    // Before the session, which is the more specific record: the config says
+    // what this set does by default, the session what was last chosen in it.
+    app.apply_auto_fetch(auto_fetch);
     app.restore_session(&session);
+    app.arm_boot_fetch();
     // `session::from_fields` already rejects an out-of-range interval; this
     // is belt and braces, so no path into `poll_interval` can reach the
     // `Instant` arithmetic below unclamped.
@@ -164,9 +197,9 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
         tokio::time::Instant::now() + app.poll_interval,
         app.poll_interval,
     );
-    // `poll_enabled` as of the previous iteration, so the loop can spot `F`
-    // turning the poll on without `toggle_poll` recording anything for it.
-    let mut poll_was_enabled = app.poll_enabled;
+    // The poll's settings as of the previous iteration, so the loop can spot
+    // `F` or a set switch changing them without either recording anything.
+    let mut poll_was = (app.poll_enabled, app.poll_interval);
     let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
     let (run_tx, mut run_rx) = mpsc::unbounded_channel::<RunEvent>();
     let (auto_tx, mut auto_rx) = mpsc::unbounded_channel::<poll::AutoUpdateResult>();
@@ -272,17 +305,19 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
                 app.expire_results();
             }
             _ = poll_ticker.tick() => {
-                app.on_poll_due();
-                if let Some(targets) = app.take_poll_requested() {
-                    poll::spawn_poll_generation(&app.repos, targets, app.jobs, app.probe_generation, probe_tx.clone());
-                }
+                spawn_poll_cycle(&mut app, &probe_tx);
             }
         }
-        if let Some(delay) = poll_ticker_restart_delay(poll_was_enabled, app.poll_enabled) {
-            poll_ticker =
-                tokio::time::interval_at(tokio::time::Instant::now() + delay, app.poll_interval);
+        // Owed from startup, and held until the opening probe has landed so
+        // the table is filled in before a cycle of fetches replaces it.
+        if app.take_boot_fetch() {
+            spawn_poll_cycle(&mut app, &probe_tx);
         }
-        poll_was_enabled = app.poll_enabled;
+        let poll_now = (app.poll_enabled, poll::clamp_interval(app.poll_interval));
+        if let Some(delay) = poll_ticker_restart_delay(poll_was, poll_now) {
+            poll_ticker = tokio::time::interval_at(tokio::time::Instant::now() + delay, poll_now.1);
+        }
+        poll_was = poll_now;
 
         let completed = terminal.draw(|frame| render::draw(frame, &app))?;
         app.terminal_width = completed.area.width;
@@ -313,14 +348,35 @@ mod tests {
     const TEST_INTERVAL: Duration = Duration::from_secs(4);
 
     #[test]
-    fn only_switching_the_poll_on_restarts_its_ticker() {
+    fn only_a_change_to_the_polls_settings_restarts_its_ticker() {
+        let off = (false, TEST_INTERVAL);
+        let on = (true, TEST_INTERVAL);
+        assert_eq!(poll_ticker_restart_delay(off, on), Some(POLL_RESET_GRACE));
+        assert_eq!(poll_ticker_restart_delay(on, on), None);
+        assert_eq!(poll_ticker_restart_delay(on, off), None);
+        assert_eq!(poll_ticker_restart_delay(off, off), None);
+    }
+
+    /// A set switch can hand over a different interval with the poll on
+    /// either side of it, and the ticker holds the period it was built with.
+    #[test]
+    fn a_new_interval_rephases_the_ticker_onto_it() {
+        let slower = Duration::from_secs(600);
         assert_eq!(
-            poll_ticker_restart_delay(false, true),
-            Some(POLL_RESET_GRACE)
+            poll_ticker_restart_delay((true, TEST_INTERVAL), (true, slower)),
+            Some(slower),
+            "the next cycle is a full interval of the new length away"
         );
-        assert_eq!(poll_ticker_restart_delay(true, true), None);
-        assert_eq!(poll_ticker_restart_delay(true, false), None);
-        assert_eq!(poll_ticker_restart_delay(false, false), None);
+        assert_eq!(
+            poll_ticker_restart_delay((false, TEST_INTERVAL), (true, slower)),
+            Some(POLL_RESET_GRACE),
+            "switching on is still prompt, whatever the interval changed to"
+        );
+        assert_eq!(
+            poll_ticker_restart_delay((true, TEST_INTERVAL), (false, slower)),
+            None,
+            "an interval nothing is going to fire on needs no ticker"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -330,7 +386,9 @@ mod tests {
         // The poll starts off, so the ticker is running but every tick is
         // declined; `F` arrives partway through the current interval.
         let pressed = tokio::time::Instant::now();
-        if let Some(delay) = poll_ticker_restart_delay(false, true) {
+        if let Some(delay) =
+            poll_ticker_restart_delay((false, TEST_INTERVAL), (true, TEST_INTERVAL))
+        {
             ticker = tokio::time::interval_at(tokio::time::Instant::now() + delay, TEST_INTERVAL);
         }
 
@@ -349,7 +407,9 @@ mod tests {
         // Iterations of the run loop with the poll on throughout: restarting
         // on any of them would push the next cycle out indefinitely.
         for _ in 0..20 {
-            if let Some(delay) = poll_ticker_restart_delay(true, true) {
+            if let Some(delay) =
+                poll_ticker_restart_delay((true, TEST_INTERVAL), (true, TEST_INTERVAL))
+            {
                 ticker =
                     tokio::time::interval_at(tokio::time::Instant::now() + delay, TEST_INTERVAL);
             }

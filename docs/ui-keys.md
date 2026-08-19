@@ -43,7 +43,7 @@ The default mode: the table of repos, no overlay open.
 | `o` | Open the cursor row's repo in `$EDITOR` (`vi` if unset) | overlay |
 | `Enter` | Open the detail view for the cursor row | hinted |
 | `tab` | Open the set picker | hinted |
-| `F` | Toggle the freshness poll | overlay |
+| `F` | Toggle the freshness poll, overriding `[DEFAULT] auto_fetch` for the session | overlay |
 | `Ctrl-A` | Toggle auto-update | overlay |
 | `Ctrl-R` | Reload the active config in place | overlay |
 | `m` | Toggle mouse capture | overlay |

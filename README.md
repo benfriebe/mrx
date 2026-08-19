@@ -152,7 +152,9 @@ SYNC carries a row's distance from its upstream, `↑` unpushed and `↓` unpull
 
 `Esc` cancels a live run, but only as far as it honestly can. Everything still queued behind the job limit is skipped; a repo already past its slot keeps running to completion, because `Command::output` has no kill. The status line says exactly that: `cancelled, 2 queued skipped, 1 still finishing`.
 
-`F` toggles a freshness poll and `Ctrl-A` layers a narrow auto-update on top of it. Both are off by default, and both show in the header the moment either is on (`poll 5m`, `poll 5m · auto`), since a mode that touches working trees on a timer has no business being invisible.
+`F` toggles a freshness poll and `Ctrl-A` layers a narrow auto-update on top of it. Both are off by default, and both show in the header the moment either is on (`poll 6m`, `poll 6m · auto`), since a mode that touches working trees on a timer has no business being invisible. Once a cycle has run, the header also says when: `checked 40s ago`, rolling up to minutes and then hours as it ages.
+
+A set can ask for the poll itself with `[DEFAULT] auto_fetch`, so opening it never needs the keystroke. A set opened with auto-fetch on and no sync answers yet fetches once as soon as the opening probe lands, rather than leaving every `↓` blank until the first interval elapses. `F` still overrides it for the session, and a set switch re-reads whatever the set being opened asks for.
 
 See [docs/ui-keys.md](docs/ui-keys.md) for every binding, by input mode. See [docs/ui-mode.md](docs/ui-mode.md) for colour handling, result lifetime, set switching, cancellation, freshness polling, and the persisted session.
 
@@ -179,6 +181,7 @@ checkout = git clone 'git@github.com:my-account/another-repo.git' 'cli'
 | `checkout` | section | Clone command. The URL is parsed out of it for the built-in clone |
 | `base` | `[DEFAULT]` | Directory section paths resolve against. Supports `~`. Default: the config file's parent |
 | `jobs` | `[DEFAULT]` | Max parallel jobs for this set, overridden by `-j`. Must be at least 1; anything else is a config error |
+| `auto_fetch` | `[DEFAULT]` | Fetch this set on a timer in ui mode: `on` (every 6m), an interval (`90s`, `10m`, `1h`), or `off`. Anything else is a config error |
 | `skip` | section | `true`, `yes` or `1` leaves the section in the file but out of every operation. `false`, `no` and `0` are the default; anything else also reads as the default |
 | `<action>` | both | Shell body replacing a built-in (`update`, `status`, `diff`, `push`, `fetch`, `checkout`), or defining a new one |
 | `post_<action>` | both | Shell body appended after a successful `<action>` |

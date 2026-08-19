@@ -13,10 +13,11 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Semaphore};
 
-/// How often `F` fetches, unless a persisted session says otherwise; the
-/// interval lives on `App` rather than in the timer, so it can vary per
-/// session.
-pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(300);
+/// How often `F` fetches, unless a config or a persisted session says
+/// otherwise; the interval lives on `App` rather than in the timer, so it can
+/// vary per session. Shared with `[DEFAULT] auto_fetch = on` so both routes
+/// into the poll start at the same cadence.
+pub const DEFAULT_POLL_INTERVAL: Duration = crate::config::DEFAULT_AUTO_FETCH;
 
 /// Upper bound on a poll interval from any external source (a hand-edited
 /// or corrupted `ui.json`, chiefly). Far enough below the range `Instant`
@@ -199,6 +200,19 @@ pub fn format_interval(interval: Duration) -> String {
     }
 }
 
+/// How long ago something happened, rolled up to the largest unit that fits:
+/// seconds under a minute, minutes under an hour, hours beyond. The unit on
+/// screen is also the rate the number moves at, so a figure that has not
+/// changed since the last frame is one that is still true.
+pub fn format_ago(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    match secs {
+        0..60 => format!("{secs}s ago"),
+        60..3600 => format!("{}m ago", secs / 60),
+        _ => format!("{}h ago", secs / 3600),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,6 +261,17 @@ mod tests {
     #[test]
     fn a_repo_not_checked_out_is_left_alone() {
         assert!(!can_fast_forward(&state(true, 0, 3, 0, false)));
+    }
+
+    #[test]
+    fn ago_rolls_up_to_the_largest_unit_that_fits() {
+        let ago = |secs| format_ago(Duration::from_secs(secs));
+        assert_eq!(ago(0), "0s ago");
+        assert_eq!(ago(59), "59s ago");
+        assert_eq!(ago(60), "1m ago");
+        assert_eq!(ago(3599), "59m ago");
+        assert_eq!(ago(3600), "1h ago");
+        assert_eq!(ago(60 * 60 * 26), "26h ago");
     }
 
     #[test]
