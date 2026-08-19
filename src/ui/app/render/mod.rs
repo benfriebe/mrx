@@ -49,6 +49,7 @@ const BRANCH_LABEL: &str = "BRANCH";
 /// Working-tree and upstream state, distinct from [`RESULT_LABEL`], which is
 /// what the last run reported.
 const STATE_LABEL: &str = "STATE";
+const SYNC_LABEL: &str = "SYNC";
 const RESULT_LABEL: &str = "RESULT";
 /// Title, a blank row, the column labels, and the rule under them: the chrome
 /// above the body of every pane, list and detail alike, so their rules meet

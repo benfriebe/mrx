@@ -8,7 +8,7 @@ use super::footer::status_line;
 use super::layout::{column_widths, list_height, list_start, sidebar_column_widths};
 use super::{column_header, header_line, separator, BRANCH_LABEL, COL_GAP};
 use super::{LIST_HEADER_ROWS, PREFIX_W};
-use super::{REPO_LABEL, RESULT_LABEL, SIDEBAR_PREFIX_W, STATE_LABEL};
+use super::{REPO_LABEL, RESULT_LABEL, SIDEBAR_PREFIX_W, STATE_LABEL, SYNC_LABEL};
 use crate::ui::app::probe;
 use crate::ui::app::state::{App, RunStatus, Sort};
 use crate::ui::widgets::{display_width, frame as spinner_frame, truncate};
@@ -46,21 +46,33 @@ pub(super) fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool)
             lines.push(sidebar_repo_line(app, idx, name_col, state_col));
         }
     } else {
-        let (name_col, branch_col, state_col, result_col) =
+        let (name_col, branch_col, state_col, sync_col, result_col) =
             column_widths(app, width.saturating_sub(PREFIX_W));
-        lines.push(column_label_line(
-            PREFIX_W,
-            &[
-                (column_header(app, Sort::Repo, REPO_LABEL), name_col),
-                (column_header(app, Sort::Branch, BRANCH_LABEL), branch_col),
-                (column_header(app, Sort::State, STATE_LABEL), state_col),
-                (column_header(app, Sort::Result, RESULT_LABEL), result_col),
-            ],
-        ));
+        let mut columns = vec![
+            (column_header(app, Sort::Repo, REPO_LABEL), name_col),
+            (column_header(app, Sort::Branch, BRANCH_LABEL), branch_col),
+            (column_header(app, Sort::State, STATE_LABEL), state_col),
+        ];
+        // A zero-width SYNC is one no row has a count for, and a header with
+        // nothing under it reads as a claim that every repo is level.
+        if sync_col > 0 {
+            columns.push((column_header(app, Sort::Sync, SYNC_LABEL), sync_col));
+        }
+        columns.push((column_header(app, Sort::Result, RESULT_LABEL), result_col));
+        lines.push(column_label_line(PREFIX_W, &columns));
         lines.push(separator(width));
+        // Sized once for the whole table: the fields are what align the arrows
+        // between rows, so they cannot be decided a row at a time.
+        let sync_fields = app.sync_widths();
         for &idx in &visible[start..end] {
             lines.push(repo_line(
-                app, idx, name_col, branch_col, state_col, result_col,
+                app,
+                idx,
+                name_col,
+                branch_col,
+                state_col,
+                (sync_col, sync_fields),
+                result_col,
             ));
         }
     }
@@ -130,6 +142,7 @@ fn repo_line(
     name_col: usize,
     branch_col: usize,
     state_col: usize,
+    (sync_col, sync_fields): (usize, (usize, usize)),
     result_col: usize,
 ) -> Line<'static> {
     let repo = &app.repos[idx];
@@ -148,8 +161,19 @@ fn repo_line(
     let probe = app.probe_display(idx);
     let branch = truncate(&probe.branch, branch_col);
     let branch_padding = branch_col.saturating_sub(display_width(&branch)) + COL_GAP;
-    let state = fit_state(&probe.state, state_col);
+    let state = truncate(&probe.state, state_col);
     let state_padding = state_col.saturating_sub(display_width(&state)) + COL_GAP;
+
+    // A column the header does not draw contributes no gap either, or every
+    // row's RESULT sits two cells right of the label over it.
+    let (sync, sync_padding) = match sync_col {
+        0 => (String::new(), 0),
+        col => {
+            let text = app.sync_text(idx, sync_fields);
+            let padding = col.saturating_sub(display_width(&text)) + COL_GAP;
+            (text, padding)
+        }
+    };
 
     let result_text = app.result_text(idx);
     let result_style = result_style(app, idx);
@@ -167,34 +191,10 @@ fn repo_line(
         Span::raw(" ".repeat(branch_padding)),
         Span::styled(state, Style::default().fg(Color::DarkGray)),
         Span::raw(" ".repeat(state_padding)),
+        Span::styled(sync, Style::default().fg(Color::DarkGray)),
+        Span::raw(" ".repeat(sync_padding)),
         Span::styled(result, result_style),
     ])
-}
-
-/// STATE's working-tree half and its trailing `↑n`/`↓n` counters, which
-/// [`probe::dirty_text`] appends after a gap. Splitting on the arrows is safe
-/// because nothing else the column can hold uses them.
-fn split_counters(text: &str) -> (&str, &str) {
-    match text.find(['↑', '↓']) {
-        Some(at) => {
-            let head = text[..at].trim_end();
-            (head, &text[head.len()..])
-        }
-        None => (text, ""),
-    }
-}
-
-/// STATE fitted to `max` cells with the ahead/behind counters kept, so the
-/// working-tree text absorbs the truncation instead. A missing `↓` is how the
-/// row says nothing has fetched this repo yet (the help notes say so), and a
-/// naive truncation, which drops the trailing counters first, makes it lie.
-fn fit_state(text: &str, max: usize) -> String {
-    let (head, counters) = split_counters(text);
-    match max.checked_sub(display_width(counters)) {
-        // No room for the counters and any working-tree text, so truncate both.
-        None | Some(0) => truncate(text, max),
-        Some(head_max) => format!("{}{}", truncate(head, head_max), counters),
-    }
 }
 
 /// The result column's colour: green/red once a run has finished, yellow
@@ -233,7 +233,7 @@ fn sidebar_repo_line(app: &App, idx: usize, name_col: usize, state_col: usize) -
     // cell instead, which a row this pane can only reach through the cursor
     // has usually already filled in.
     let state_text = match app.probes.get(idx).and_then(|p| p.as_ref()) {
-        Some(state) => probe::dirty_text_brief(state),
+        Some(state) => probe::dirty_text(state),
         None if is_busy(app, idx) => spinner_frame(app.tick).to_string(),
         None => String::new(),
     };
@@ -266,8 +266,8 @@ mod tests {
     /// The row as it is drawn at `width`, at the same column widths `draw`
     /// would hand it.
     fn repo_line_at(a: &App, idx: usize, width: usize) -> Line<'static> {
-        let (name, branch, state, result) = column_widths(a, width - PREFIX_W);
-        repo_line(a, idx, name, branch, state, result)
+        let (name, branch, state, sync, result) = column_widths(a, width - PREFIX_W);
+        repo_line(a, idx, name, branch, state, (sync, a.sync_widths()), result)
     }
 
     fn row_at(a: &App, idx: usize, width: usize) -> String {
@@ -279,6 +279,7 @@ mod tests {
     const MARKER: usize = 1;
     const BRANCH: usize = 4;
     const STATE: usize = 6;
+    const SYNC: usize = 8;
 
     fn spinner(a: &App) -> String {
         format!("{} ", spinner_frame(a.tick))
@@ -425,10 +426,10 @@ mod tests {
         );
     }
 
-    /// Keeping the counters must not buy them room the column does not have,
+    /// A long state text must not buy itself room the column does not have,
     /// or every column after STATE shifts right.
     #[test]
-    fn a_row_with_counters_keeps_its_state_cell_inside_its_column() {
+    fn a_row_keeps_its_state_and_sync_cells_inside_their_columns() {
         let mut a = app(vec![repo("alpha")]);
         a.probes[0] = Some(probed(
             "main",
@@ -441,13 +442,23 @@ mod tests {
         ));
 
         for width in 10..=200 {
-            let (name, branch, state_col, result) = column_widths(&a, width - PREFIX_W);
-            let row = repo_line(&a, 0, name, branch, state_col, result);
-            let cell = row.spans[STATE].content.as_ref();
-            assert!(
-                display_width(cell) <= state_col,
-                "width {width}: STATE cell {cell:?} overflows its {state_col} cells"
+            let (name, branch, state_col, sync_col, result) = column_widths(&a, width - PREFIX_W);
+            let row = repo_line(
+                &a,
+                0,
+                name,
+                branch,
+                state_col,
+                (sync_col, a.sync_widths()),
+                result,
             );
+            for (label, at, col) in [("STATE", STATE, state_col), ("SYNC", SYNC, sync_col)] {
+                let cell = row.spans[at].content.as_ref();
+                assert!(
+                    display_width(cell) <= col,
+                    "width {width}: {label} cell {cell:?} overflows its {col} cells"
+                );
+            }
         }
     }
 
@@ -458,8 +469,8 @@ mod tests {
             index: 0,
             branch: Some("master".into()),
             upstream: Some("origin/master".into()),
-            ahead: 0,
-            behind: 0,
+            ahead: 2,
+            behind: 3,
             changed: 0,
             changes: Default::default(),
             present: true,
@@ -467,17 +478,27 @@ mod tests {
             fetched: true,
             fetch_head: None,
         });
-        let (name, branch, state, result) = column_widths(&a, 80 - PREFIX_W);
+        a.fetched_repos.insert(0);
+        let (name, branch, state, sync, result) = column_widths(&a, 80 - PREFIX_W);
         let labels = flatten(&column_label_line(
             PREFIX_W,
             &[
                 (REPO_LABEL.into(), name),
                 (BRANCH_LABEL.into(), branch),
                 (STATE_LABEL.into(), state),
+                (SYNC_LABEL.into(), sync),
                 (RESULT_LABEL.into(), result),
             ],
         ));
-        let row = flatten(&repo_line(&a, 0, name, branch, state, result));
+        let row = flatten(&repo_line(
+            &a,
+            0,
+            name,
+            branch,
+            state,
+            (sync, a.sync_widths()),
+            result,
+        ));
 
         assert_eq!(
             col_of(&labels, REPO_LABEL),
@@ -493,6 +514,37 @@ mod tests {
             col_of(&labels, STATE_LABEL),
             col_of(&row, "clean"),
             "STATE sits over the working-tree state"
+        );
+        assert_eq!(
+            col_of(&labels, SYNC_LABEL),
+            col_of(&row, "↑2"),
+            "SYNC sits over the distance from upstream"
+        );
+    }
+
+    /// A set where nothing is ahead or behind draws no SYNC column at all, and
+    /// the row has to drop the gap with it or every RESULT lands two cells
+    /// right of the label over it.
+    #[test]
+    fn a_set_with_no_distance_to_report_draws_neither_the_column_nor_its_gap() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.probes[0] = Some(probed("main", probe::Changes::default(), 0));
+
+        let rows = frame_rows(&a, 80, 10);
+        let labels = rows
+            .iter()
+            .find(|row| row.contains(REPO_LABEL))
+            .expect("the column labels are drawn");
+        let row = rows
+            .iter()
+            .find(|row| row.contains("bill-api"))
+            .expect("the repo is drawn");
+
+        assert!(!labels.contains(SYNC_LABEL), "got {labels:?}");
+        assert_eq!(
+            col_of(labels, RESULT_LABEL),
+            col_of(row, "·"),
+            "RESULT still sits over its own column, got {row:?}"
         );
     }
 

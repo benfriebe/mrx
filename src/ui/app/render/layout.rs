@@ -3,9 +3,9 @@
 
 use super::footer::LEAD_IN;
 use super::{column_header, header_title, BRANCH_LABEL, COL_GAP, FOOTER_ROWS};
-use super::{LIST_HEADER_ROWS, PREFIX_W, REPO_LABEL, STATE_LABEL};
+use super::{LIST_HEADER_ROWS, PREFIX_W, REPO_LABEL, STATE_LABEL, SYNC_LABEL};
 use crate::ui::app::probe;
-use crate::ui::app::state::{App, Sort};
+use crate::ui::app::state::{sync_width, App, Sort};
 use crate::ui::widgets::display_width;
 
 /// Total chrome rows above and below the table body: the header (fixed at
@@ -83,16 +83,19 @@ fn natural_state_width(app: &App) -> usize {
     app.probes
         .iter()
         .flatten()
-        .map(|state| display_width(&probe::dirty_text_brief(state)))
+        .map(|state| display_width(&probe::dirty_text(state)))
         .max()
         .unwrap_or(0)
         .max(header_width(app, Sort::State, STATE_LABEL))
 }
 
-/// Column widths for the four-column repo table: NAME, BRANCH and STATE each
-/// get their natural width up to a share of `avail`; RESULT takes the rest,
-/// being the column whose text is usually worth reading in full.
-pub(super) fn column_widths(app: &App, avail: usize) -> (usize, usize, usize, usize) {
+/// Column widths for the repo table: NAME, BRANCH, STATE and SYNC each get
+/// their natural width up to a share of `avail`; RESULT takes the rest, being
+/// the column whose text is usually worth reading in full.
+///
+/// SYNC is never capped. It is already as narrow as the counts on screen allow,
+/// and squeezing it would truncate a number into a different number.
+pub(super) fn column_widths(app: &App, avail: usize) -> (usize, usize, usize, usize, usize) {
     let name_nat = app
         .repos
         .iter()
@@ -111,11 +114,23 @@ pub(super) fn column_widths(app: &App, avail: usize) -> (usize, usize, usize, us
         .unwrap_or(0)
         .max(header_width(app, Sort::State, STATE_LABEL));
 
+    let sync = sync_nat(app);
+
     let name = name_nat.min(avail / 4);
     let branch = branch_nat.min(avail / 6);
     let state = state_nat.min(avail / 4);
-    let result = avail.saturating_sub(name + branch + state + 3 * COL_GAP);
-    (name, branch, state, result)
+    let result = avail.saturating_sub(name + branch + state + sync + 4 * COL_GAP);
+    (name, branch, state, sync, result)
+}
+
+/// SYNC's width: its counts, or the header's, unless no row has a count at
+/// all. An empty column still drawn as `SYNC` is four cells claiming a
+/// distance nothing has measured, so it is dropped entirely instead.
+fn sync_nat(app: &App) -> usize {
+    match sync_width(app.sync_widths()) {
+        0 => 0,
+        counts => counts.max(header_width(app, Sort::Sync, SYNC_LABEL)),
+    }
 }
 
 /// First visible-list index to draw: `prev` where it still shows the cursor,
@@ -177,9 +192,9 @@ mod tests {
     fn name_column_never_exceeds_a_quarter_of_the_available_width() {
         let long_name = "a-name-that-is-extremely-long-past-any-reasonable-column-width";
         let a = app(vec![repo(long_name)]);
-        let (name, branch, state, result) = column_widths(&a, 80);
+        let (name, branch, state, sync, result) = column_widths(&a, 80);
         assert!(name <= 20, "got name width {name}");
-        assert_eq!(name + branch + state + result + 3 * COL_GAP, 80);
+        assert_eq!(name + branch + state + sync + result + 4 * COL_GAP, 80);
     }
 
     #[test]

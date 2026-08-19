@@ -72,13 +72,68 @@ impl App {
         match self.probes.get(idx).and_then(|p| p.as_ref()) {
             Some(state) => ProbeDisplay {
                 branch: probe::branch_text(state),
-                state: probe::dirty_text(state, self.fetched_repos.contains(&idx)),
+                state: probe::dirty_text(state),
             },
             None => ProbeDisplay {
                 branch: String::new(),
                 state: String::new(),
             },
         }
+    }
+
+    /// A row's distance from its upstream, `(ahead, behind)`.
+    pub fn sync_counts(&self, idx: usize) -> Option<(u32, u32)> {
+        let state = self.probes.get(idx).and_then(|p| p.as_ref())?;
+        probe::sync_counts(state, self.fetched_repos.contains(&idx))
+    }
+
+    /// The width of the SYNC column's two fields, each sized to the widest
+    /// count any row carries. Fixed fields are the whole point of the column:
+    /// they are what puts every ↓ at the same offset, however many digits the
+    /// ↑ beside it needs. A field no row uses is zero wide, so a set with
+    /// nothing ahead of its upstream spends no cells saying so.
+    pub fn sync_widths(&self) -> (usize, usize) {
+        let field = |count: u32| {
+            if count == 0 {
+                0
+            } else {
+                count.to_string().len() + 1
+            }
+        };
+        (0..self.repos.len())
+            .filter_map(|i| self.sync_counts(i))
+            .fold((0, 0), |(aw, bw), (ahead, behind)| {
+                (aw.max(field(ahead)), bw.max(field(behind)))
+            })
+    }
+
+    /// One row's SYNC cell, laid into the fields [`sync_widths`](Self::sync_widths)
+    /// sized. Trailing padding is left on so the cell's own width is the
+    /// column's, whichever of the two counts the row happens to have.
+    pub fn sync_text(&self, idx: usize, (ahead_w, behind_w): (usize, usize)) -> String {
+        let arrow = |arrow: char, count: u32, width: usize| match count {
+            0 => " ".repeat(width),
+            n => format!("{:<width$}", format!("{arrow}{n}")),
+        };
+        let Some((ahead, behind)) = self.sync_counts(idx) else {
+            return " ".repeat(sync_width((ahead_w, behind_w)));
+        };
+        let gap = if ahead_w > 0 && behind_w > 0 { " " } else { "" };
+        format!(
+            "{}{gap}{}",
+            arrow('↑', ahead, ahead_w),
+            arrow('↓', behind, behind_w)
+        )
+    }
+}
+
+/// How wide the SYNC column is overall: both fields plus the space between
+/// them, and nothing at all when neither field is in use.
+pub fn sync_width((ahead_w, behind_w): (usize, usize)) -> usize {
+    match (ahead_w, behind_w) {
+        (0, 0) => 0,
+        (a, 0) | (0, a) => a,
+        (a, b) => a + 1 + b,
     }
 }
 
@@ -107,7 +162,7 @@ mod tests {
         );
     }
 
-    /// A repo behind its upstream, so `dirty_text` has a number to either
+    /// A repo behind its upstream, so the SYNC column has a number to either
     /// print or withhold.
     fn behind_by(index: usize, behind: u32, fetch_head: Option<SystemTime>) -> RepoState {
         RepoState {
@@ -127,7 +182,7 @@ mod tests {
             !a.fetched_repos.contains(&0),
             "mrx has no idea how old a timestamp it has only just read is"
         );
-        assert!(!a.probe_display(0).state.contains('↓'));
+        assert_eq!(a.sync_counts(0), Some((0, 0)));
     }
 
     /// The case that makes an update look broken: `u` runs `git pull`, the
@@ -149,6 +204,7 @@ mod tests {
 
         assert!(a.fetched_repos.contains(&0));
         assert_eq!(a.probe_display(0).state, "clean");
+        assert_eq!(a.sync_counts(0), Some((0, 0)));
     }
 
     #[test]
@@ -164,7 +220,7 @@ mod tests {
             a.fetched_repos.contains(&0),
             "a FETCH_HEAD appearing where there was none is a first fetch"
         );
-        assert!(a.probe_display(0).state.contains("↓3"));
+        assert_eq!(a.sync_counts(0), Some((0, 3)));
     }
 
     /// A fetch mrx watched happen does not stop having happened when the
@@ -181,17 +237,17 @@ mod tests {
         );
         let generation = before.begin_probe(&[0]);
         before.on_probe(generation, behind_by(0, 1, Some(stamp)));
-        assert!(before.probe_display(0).state.contains("↓1"));
+        assert_eq!(before.sync_counts(0), Some((0, 1)));
 
         let mut after = app(&["foo"]);
         after.restore_session(&Session::snapshot(&before));
         let generation = after.begin_probe(&[0]);
         after.on_probe(generation, behind_by(0, 1, Some(stamp)));
 
-        assert!(
-            after.probe_display(0).state.contains("↓1"),
-            "an unchanged FETCH_HEAD after a restart is the same fetch, got {:?}",
-            after.probe_display(0).state
+        assert_eq!(
+            after.sync_counts(0),
+            Some((0, 1)),
+            "an unchanged FETCH_HEAD after a restart is the same fetch"
         );
     }
 
@@ -204,7 +260,7 @@ mod tests {
             a.on_probe(generation, behind_by(0, 3, stamp));
         }
         assert!(!a.fetched_repos.contains(&0));
-        assert!(!a.probe_display(0).state.contains('↓'));
+        assert_eq!(a.sync_counts(0), Some((0, 0)));
     }
 
     #[test]
@@ -273,15 +329,15 @@ mod tests {
         a.on_probe(generation, fetch_ok);
         a.on_probe(generation, fetch_failed);
 
-        assert!(
-            a.probe_display(targets[0]).state.contains("↓2"),
-            "the repo whose own fetch succeeded shows a real behind count, got {:?}",
-            a.probe_display(targets[0]).state
+        assert_eq!(
+            a.sync_counts(targets[0]),
+            Some((0, 2)),
+            "the repo whose own fetch succeeded shows a real behind count"
         );
-        assert!(
-            !a.probe_display(targets[1]).state.contains('↓'),
-            "the repo whose own fetch failed must not borrow the other one's freshness, got {:?}",
-            a.probe_display(targets[1]).state
+        assert_eq!(
+            a.sync_counts(targets[1]),
+            Some((0, 0)),
+            "the repo whose own fetch failed must not borrow the other one's freshness"
         );
 
         // A later fetch-less reprobe of the repo that did succeed must not
@@ -293,8 +349,9 @@ mod tests {
         later.fetched = false;
         let g2 = a.begin_probe(&[targets[0]]);
         a.on_probe(g2, later);
-        assert!(
-            a.probe_display(targets[0]).state.contains("↓2"),
+        assert_eq!(
+            a.sync_counts(targets[0]),
+            Some((0, 2)),
             "a repo that has already fetched successfully stays known"
         );
     }

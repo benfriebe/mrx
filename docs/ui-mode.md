@@ -94,9 +94,15 @@ first, since losing sight of an in-flight action is not something to do by refle
 
 ## Freshness and auto-update
 
-The ahead/behind counts only ever reflect the last fetch, so a repo that is ↓3 behind
-shows no ↓ at all until something updates the remote-tracking ref. An absent count is
-"nobody has asked", which is a different claim from ↓0 and so is never drawn as one.
+The SYNC column carries the ahead/behind counts, `↑` unpushed and `↓` unpulled, in
+fixed fields so both arrows line up down the table. STATE is the working tree alone, so
+neither column's width depends on what the other happens to be showing. A set with
+nothing to report on either arrow drops SYNC entirely rather than heading an empty
+column.
+
+The counts only ever reflect the last fetch, so a repo that is ↓3 behind shows no ↓ at
+all until something updates the remote-tracking ref. An absent count is "nobody has
+asked", which is a different claim from ↓0 and so is never drawn as one.
 
 Anything that fetches counts, not just mrx. The probe reads `FETCH_HEAD`'s timestamp,
 so running `update` on a repo, or pulling it in another terminal, settles its count on

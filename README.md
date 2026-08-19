@@ -110,11 +110,11 @@ One command, one line per repo, with live spinners for whatever is still going. 
 ```
   mrx · work                                  update 1/2 · 1 failed
 
-     REPO               BRANCH  STATE       RESULT
+     REPO               BRANCH  STATE       SYNC     RESULT
 ────────────────────────────────────────────────────────────────────────
- ▸ ● bill-api           main    clean       already up to date
-   ⠹ crew-db-schema     main    2 modified  git pull
-     loyalty-db-schema  main    clean  ↓3   ·
+ ▸ ● bill-api           main    clean                already up to date
+   ⠹ crew-db-schema     main    2 modified  ↑2       git pull
+     loyalty-db-schema  main    clean           ↓3   ·
 ────────────────────────────────────────────────────────────────────────
   j/k move  space select  / filter  enter output  u update  …  ? help
 ```
@@ -129,7 +129,7 @@ The footer shows as many keys as the terminal is wide enough for, whole ones onl
 - **Any action.** `:` opens the action palette, a filtered list of every runnable action for the set, each shown with where it is defined and how many repos actually have it: `deploy  per-repo, 3 of 42`. It also carries the selection commands, each showing how many repos it would leave selected.
 - **Confirm.** Running on a selection the last probe found dirty, or has not probed yet, asks first and says how many. `-f`/`--force` skips the prompt.
 - **Read output.** `Enter` opens the detail view for the cursor row, streaming each step's output as it is produced rather than at the end, so a long update can be read while it runs. `y` copies the visible step, `o` opens the whole transcript in `$EDITOR`.
-- **Sort.** `S` opens a one-key menu of the columns: `r` REPO, `b` BRANCH, `s` STATE, `l` RESULT. The sorted column's header carries `↑` or `↓`, and choosing the same column again flips it, so `S s S s` goes from dirtiest-first to cleanest-first. STATE and RESULT open worst-first, which is the reason to order by them: RESULT leads with anything that failed, then the repos a run actually changed, so a set where everything reads `up to date` still brings the handful that moved to the top. Unprobed rows stay at the end either way. The order is remembered across restarts.
+- **Sort.** `S` opens a one-key menu of the columns: `r` REPO, `b` BRANCH, `s` STATE, `u` SYNC, `l` RESULT. The sorted column's header carries `↑` or `↓`, and choosing the same column again flips it, so `S s S s` goes from dirtiest-first to cleanest-first. STATE, SYNC and RESULT open worst-first, which is the reason to order by them: RESULT leads with anything that failed, then the repos a run actually changed, so a set where everything reads `up to date` still brings the handful that moved to the top; SYNC leads with the repos furthest behind. Unprobed rows stay at the end either way. The order is remembered across restarts.
 - **Run anything.** `r` opens a prompt for a command to run against the selection, `Ctrl-D` to run it. The body goes to `sh` whole, so it can be several lines.
 - **Re-probe.** `R` re-reads the selection's state (or everything, with nothing selected).
 - **Escape hatch.** `!` drops to `$SHELL` (`sh` if unset) in the cursor row's repo, for whatever no action covers. It is a key rather than an action because an action runs unattended across a selection, and a shell is the opposite of both.
@@ -148,7 +148,7 @@ The footer shows as many keys as the terminal is wide enough for, whole ones onl
 
 The split is one frame divided, not two windows: the panes rule off their headers on the same row, a rule runs between them, and one key line sits under both. `tab` hands the keys from one pane to the other, marked by the `▌` in the margin and the brighter title, so `j`/`k` either walk the repo list with the output following or scroll the output with the cursor staying put.
 
-The ahead/behind counts only ever reflect the last fetch, so a repo that is ↓3 behind shows no ↓ at all until something updates the remote-tracking ref. An absent count is "nobody has asked", which is not the same claim as ↓0 and so is never drawn as one. Anything that fetches counts, not just mrx: the probe reads `FETCH_HEAD`'s timestamp, so pulling a repo in another terminal settles its count on the next probe.
+SYNC carries a row's distance from its upstream, `↑` unpushed and `↓` unpulled, each arrow in a fixed field so the counts line up down the table however many digits the row beside it needs. A set with nothing to report drops the column entirely. The counts only ever reflect the last fetch, so a repo that is ↓3 behind shows no ↓ at all until something updates the remote-tracking ref. An absent count is "nobody has asked", which is not the same claim as ↓0 and so is never drawn as one. Anything that fetches counts, not just mrx: the probe reads `FETCH_HEAD`'s timestamp, so pulling a repo in another terminal settles its count on the next probe.
 
 `Esc` cancels a live run, but only as far as it honestly can. Everything still queued behind the job limit is skipped; a repo already past its slot keeps running to completion, because `Command::output` has no kill. The status line says exactly that: `cancelled, 2 queued skipped, 1 still finishing`.
 

@@ -13,13 +13,20 @@ pub enum Sort {
     Repo,
     Branch,
     State,
+    Sync,
     Result,
 }
 
 impl Sort {
     /// Every column, in the order the sort menu offers them, which is the
     /// order they are drawn in.
-    pub const ALL: &'static [Sort] = &[Sort::Repo, Sort::Branch, Sort::State, Sort::Result];
+    pub const ALL: &'static [Sort] = &[
+        Sort::Repo,
+        Sort::Branch,
+        Sort::State,
+        Sort::Sync,
+        Sort::Result,
+    ];
 
     /// The column header this order's arrow is drawn on.
     pub fn header(self) -> &'static str {
@@ -27,17 +34,20 @@ impl Sort {
             Sort::Repo => "REPO",
             Sort::Branch => "BRANCH",
             Sort::State => "STATE",
+            Sort::Sync => "SYNC",
             Sort::Result => "RESULT",
         }
     }
 
-    /// The key the sort menu binds it to, each column's own initial except
-    /// RESULT, whose `r` is spent on the column above it.
+    /// The key the sort menu binds it to, each column's own initial where it
+    /// is free: RESULT's `r` is spent on the column above it, and SYNC is
+    /// bound to what it measures against rather than to `s`.
     pub fn key(self) -> char {
         match self {
             Sort::Repo => 'r',
             Sort::Branch => 'b',
             Sort::State => 's',
+            Sort::Sync => 'u',
             Sort::Result => 'l',
         }
     }
@@ -48,7 +58,7 @@ impl Sort {
     pub fn natural(self) -> Direction {
         match self {
             Sort::Repo | Sort::Branch => Direction::Ascending,
-            Sort::State | Sort::Result => Direction::Descending,
+            Sort::State | Sort::Sync | Sort::Result => Direction::Descending,
         }
     }
 
@@ -64,6 +74,7 @@ impl Sort {
             Sort::Repo => "repo",
             Sort::Branch => "branch",
             Sort::State => "state",
+            Sort::Sync => "sync",
             Sort::Result => "result",
         }
     }
@@ -171,6 +182,7 @@ impl App {
             }
             Sort::Branch => sort_unknown_last(rows, descending, |i| self.branch_key(i)),
             Sort::State => sort_unknown_last(rows, descending, |i| self.state_key(i)),
+            Sort::Sync => sort_unknown_last(rows, descending, |i| self.sync_key(i)),
             Sort::Result => sort_unknown_last(rows, descending, |i| Some(self.result_rank(i))),
         }
     }
@@ -182,12 +194,21 @@ impl App {
             .map(|state| probe::branch_text(state).to_lowercase())
     }
 
-    /// STATE's counts in the order the column itself prints them, so
-    /// descending is "carrying the most", with no hidden weighting between
-    /// uncommitted work and unpushed commits.
-    fn state_key(&self, idx: usize) -> Option<(usize, u32, u32)> {
-        self.known_probe(idx)
-            .map(|state| (state.changed, state.ahead, state.behind))
+    /// STATE orders by what the column shows and nothing else: how much
+    /// uncommitted work the tree is carrying. Distance from the upstream is
+    /// SYNC's to order by.
+    fn state_key(&self, idx: usize) -> Option<usize> {
+        self.known_probe(idx).map(|state| state.changed)
+    }
+
+    /// SYNC ordered behind-first, since being behind is the count you act on:
+    /// descending leads with the repos with the most to pull, and ahead only
+    /// separates rows level on that.
+    ///
+    /// A row with no upstream has no distance rather than a distance of zero,
+    /// so it sorts with the unprobed at the end.
+    fn sync_key(&self, idx: usize) -> Option<(u32, u32)> {
+        self.sync_counts(idx).map(|(ahead, behind)| (behind, ahead))
     }
 
     /// A probe whose fields can be ordered. A timed-out one is excluded for
@@ -337,23 +358,71 @@ mod tests {
 
     #[test]
     fn state_orders_by_what_a_repo_is_carrying() {
-        let mut a = app(&["ahead", "clean", "dirty"]);
-        let mut with_commits = probed(0, "main");
-        with_commits.ahead = 3;
-        a.on_probe(0, with_commits);
-        a.on_probe(0, probed(1, "main"));
-        let mut with_changes = probed(2, "main");
-        with_changes.changed = 1;
-        a.on_probe(0, with_changes);
+        let mut a = app(&["a-clean", "b-messy", "c-dirty"]);
+        a.on_probe(0, probed(0, "main"));
+        let mut lots = probed(1, "main");
+        lots.changed = 7;
+        a.on_probe(0, lots);
+        let mut some = probed(2, "main");
+        some.changed = 1;
+        a.on_probe(0, some);
 
         assert_eq!(
             sorted_by(&mut a, Sort::State),
-            vec!["dirty", "ahead", "clean"],
-            "uncommitted work outranks unpushed commits, which outrank nothing"
+            vec!["b-messy", "c-dirty", "a-clean"],
+            "the most uncommitted work first"
         );
         assert_eq!(
             sorted_by(&mut a, Sort::State),
-            vec!["clean", "ahead", "dirty"]
+            vec!["a-clean", "c-dirty", "b-messy"]
+        );
+    }
+
+    /// STATE stopped ranking by ahead/behind when SYNC took that column over,
+    /// so unpushed commits must no longer move a row under STATE at all.
+    #[test]
+    fn unpushed_commits_do_not_reorder_the_state_column() {
+        let mut a = app(&["a-ahead", "b-level"]);
+        let mut ahead = probed(0, "main");
+        ahead.upstream = Some("origin/main".into());
+        ahead.ahead = 9;
+        a.on_probe(0, ahead);
+        a.on_probe(0, probed(1, "main"));
+
+        assert_eq!(
+            sorted_by(&mut a, Sort::State),
+            vec!["a-ahead", "b-level"],
+            "both are clean, so name order decides"
+        );
+    }
+
+    #[test]
+    fn sync_leads_with_the_repos_furthest_behind() {
+        let mut a = app(&["a-behind-1", "b-behind-4", "c-level", "d-no-upstream"]);
+        let tracking = |index: usize, ahead: u32, behind: u32| {
+            let mut state = probed(index, "main");
+            state.upstream = Some("origin/main".into());
+            state.ahead = ahead;
+            state.behind = behind;
+            state
+        };
+        a.on_probe(0, tracking(0, 0, 1));
+        a.on_probe(0, tracking(1, 2, 4));
+        a.on_probe(0, tracking(2, 0, 0));
+        a.on_probe(0, probed(3, "wip"));
+        for i in 0..3 {
+            a.fetched_repos.insert(i);
+        }
+
+        assert_eq!(
+            sorted_by(&mut a, Sort::Sync),
+            vec!["b-behind-4", "a-behind-1", "c-level", "d-no-upstream"],
+            "furthest behind first, and nothing to measure against sorts last"
+        );
+        assert_eq!(
+            sorted_by(&mut a, Sort::Sync),
+            vec!["c-level", "a-behind-1", "b-behind-4", "d-no-upstream"],
+            "reversing the column says nothing about where an unmeasured row goes"
         );
     }
 

@@ -134,7 +134,8 @@ Opened with `S`. One key deep: it takes a column and closes.
 |------|--------|
 | `r` | Order by REPO, the name order the table opens in |
 | `b` | Order by BRANCH |
-| `s` | Order by STATE, most changes first |
+| `s` | Order by STATE, most uncommitted work first |
+| `u` | Order by SYNC, furthest behind its upstream first |
 | `l` | Order by RESULT, failures first, then the repos that changed |
 | anything else | Close without changing the order |
 
@@ -201,7 +202,7 @@ These three notes ride along with the `?` overlay, because a table of keys has
 nowhere to put them:
 
 - An empty selection acts on every repo on screen.
-- No `↓` count means nothing has fetched that repo yet. `u`, `f`, `F` or a pull
-  elsewhere all settle the distance.
+- An empty SYNC cell means nothing has fetched that repo yet. `u`, `f`, `F` or a
+  pull elsewhere all settle the distance.
 - Mouse capture takes the terminal's own selection away. Hold Option/Shift, or press
   `m`, to get it back.

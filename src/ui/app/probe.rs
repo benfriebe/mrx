@@ -277,41 +277,10 @@ fn working_tree_text(state: &RepoState) -> String {
     }
 }
 
-/// Working-tree summary: `working_tree_text` plus ahead/behind when there is
-/// an upstream to compare against. The behind count is withheld entirely
-/// until this specific repo has fetched: it compares against the local
-/// remote-tracking ref, so a stale one would render "not asked recently"
-/// identically to "up to date".
-pub fn dirty_text(state: &RepoState, repo_has_fetched: bool) -> String {
-    if state.timed_out {
-        return "timed out".into();
-    }
-    if !state.present {
-        return "not checked out".into();
-    }
-
-    let mut text = working_tree_text(state);
-
-    if state.upstream.is_some() {
-        if state.ahead > 0 {
-            text.push_str(&format!("  ↑{}", state.ahead));
-        }
-        // Silence, not a `?`, for a count nothing has established yet: an
-        // absent ↓ isn't a claim of being up to date, whereas a ↓0 would be,
-        // which is why one is never drawn.
-        if repo_has_fetched && state.behind > 0 {
-            text.push_str(&format!("  ↓{}", state.behind));
-        }
-    }
-
-    text
-}
-
-/// The detail sidebar's single state column: working-tree state without
-/// ahead/behind, since the sidebar has already dropped the branch column and
-/// `↑2 ↓3` with nothing to compare it against is more confusing than useful
-/// there.
-pub fn dirty_text_brief(state: &RepoState) -> String {
+/// The STATE column: what the working tree is carrying, or why there is no
+/// answer. Distance from the upstream is [`sync_counts`]' column, not this
+/// one, so a row's state text ends where the next row's does.
+pub fn dirty_text(state: &RepoState) -> String {
     if state.timed_out {
         return "timed out".into();
     }
@@ -319,6 +288,22 @@ pub fn dirty_text_brief(state: &RepoState) -> String {
         return "not checked out".into();
     }
     working_tree_text(state)
+}
+
+/// The SYNC column's raw counts, `(ahead, behind)`, or `None` when there is
+/// nothing to measure against: no upstream, or a probe that never got far
+/// enough to read one.
+///
+/// The behind count is withheld until this specific repo has fetched, and
+/// reported as zero until it does. It compares against the local
+/// remote-tracking ref, so a stale one would render "not asked recently"
+/// identically to "up to date"; silence, not a `↓0`, is how the row says so.
+pub fn sync_counts(state: &RepoState, repo_has_fetched: bool) -> Option<(u32, u32)> {
+    if state.timed_out || !state.present || state.upstream.is_none() {
+        return None;
+    }
+    let behind = if repo_has_fetched { state.behind } else { 0 };
+    Some((state.ahead, behind))
 }
 
 /// A probe result tagged with the generation it belongs to, so a receiver
@@ -439,7 +424,7 @@ mod tests {
     #[test]
     fn an_untracked_file_is_not_called_modified() {
         let state = checked_out("# branch.head main\n? new-file.txt\n");
-        assert_eq!(dirty_text_brief(&state), "1 untracked");
+        assert_eq!(dirty_text(&state), "1 untracked");
     }
 
     #[test]
@@ -448,7 +433,7 @@ mod tests {
             "# branch.head main\n",
             "1 .M N... 100644 100644 100644 abc def src/main.rs\n",
         ));
-        assert_eq!(dirty_text_brief(&state), "1 modified");
+        assert_eq!(dirty_text(&state), "1 modified");
     }
 
     #[test]
@@ -459,7 +444,7 @@ mod tests {
             "1 M. N... 100644 100644 100644 abc def Cargo.toml\n",
             "? new-file.txt\n",
         ));
-        assert_eq!(dirty_text_brief(&state), "2 modified, 1 untracked");
+        assert_eq!(dirty_text(&state), "2 modified, 1 untracked");
     }
 
     #[test]
@@ -469,7 +454,7 @@ mod tests {
             "1 .D N... 100644 100644 000000 abc def gone.txt\n",
             "2 R. N... 100644 100644 100644 abc def R100 new.txt\told.txt\n",
         ));
-        assert_eq!(dirty_text_brief(&state), "1 modified, 1 deleted");
+        assert_eq!(dirty_text(&state), "1 modified, 1 deleted");
     }
 
     #[test]
@@ -478,7 +463,7 @@ mod tests {
             "# branch.head main\n",
             "1 MM N... 100644 100644 100644 abc def src/main.rs\n",
         ));
-        assert_eq!(dirty_text_brief(&state), "1 modified");
+        assert_eq!(dirty_text(&state), "1 modified");
     }
 
     /// The two forms of one real repo, captured from git itself. The STATE
@@ -504,7 +489,7 @@ mod tests {
             "?? brand-new.txt\n",
         );
         assert_eq!(
-            dirty_text_brief(&checked_out(porcelain_v2)),
+            dirty_text(&checked_out(porcelain_v2)),
             crate::summarize::summarize(crate::summarize::Shape::Status, short, "", 0),
         );
     }
@@ -515,7 +500,7 @@ mod tests {
             "# branch.head main\n",
             "u UU N... 100644 100644 100644 100644 abc def ghi conflict.txt\n",
         ));
-        assert_eq!(dirty_text_brief(&state), "1 changed");
+        assert_eq!(dirty_text(&state), "1 changed");
     }
 
     #[test]
@@ -538,11 +523,11 @@ mod tests {
         ));
         state.present = true;
         assert_eq!(
-            dirty_text(&state, false),
-            "clean",
-            "an unestablished count is left unsaid rather than marked unknown"
+            sync_counts(&state, false),
+            Some((0, 0)),
+            "an unestablished count reads as no distance rather than as unknown"
         );
-        assert_eq!(dirty_text(&state, true), "clean  ↓3");
+        assert_eq!(sync_counts(&state, true), Some((0, 3)));
     }
 
     #[test]
@@ -576,15 +561,32 @@ mod tests {
         );
     }
 
+    /// STATE and SYNC answer different questions from the same probe, and a
+    /// row's state text has to end where every other row's does.
     #[test]
-    fn the_brief_form_drops_ahead_behind() {
+    fn the_state_text_carries_no_distance_and_the_counts_carry_no_state() {
         let mut state = parse_porcelain_v2(concat!(
             "# branch.oid abc123\n",
             "# branch.head main\n",
             "# branch.upstream origin/main\n",
             "# branch.ab +2 -3\n",
+            "1 .M N... 100644 100644 100644 abc abc src/main.rs\n",
         ));
         state.present = true;
-        assert_eq!(dirty_text_brief(&state), "clean");
+        assert_eq!(dirty_text(&state), "1 modified");
+        assert_eq!(sync_counts(&state, true), Some((2, 3)));
+    }
+
+    /// Nothing to be ahead or behind of is not the same as being level with it.
+    #[test]
+    fn a_branch_with_no_upstream_has_no_distance_at_all() {
+        let mut state =
+            parse_porcelain_v2(concat!("# branch.oid abc123\n", "# branch.head wip\n",));
+        state.present = true;
+        assert_eq!(sync_counts(&state, true), None);
+        assert_eq!(dirty_text(&state), "clean");
+
+        state.timed_out = true;
+        assert_eq!(sync_counts(&state, true), None);
     }
 }

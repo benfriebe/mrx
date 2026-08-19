@@ -90,7 +90,7 @@ const CANCEL: Binding = Binding::new("esc", "cancel");
 /// keymap cannot show.
 pub const NOTES: &[&str] = &[
     "  an empty selection acts on every repo on screen",
-    "  no ↓ count means nothing has fetched this repo yet;",
+    "  an empty SYNC cell means nothing has fetched this repo yet;",
     "     u, f, F or a pull elsewhere all settle the distance.",
     "  drag the output pane to select lines and copy them on",
     "     release. Mouse capture takes the terminal's own",
