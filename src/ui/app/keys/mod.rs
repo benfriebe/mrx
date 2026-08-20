@@ -303,7 +303,7 @@ fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::testkit::{app, ctrl, press, probed};
+    use super::testkit::{app, ctrl, press, probed, ran};
     use super::*;
 
     #[test]
@@ -615,12 +615,19 @@ mod tests {
         assert_eq!(a.cursor, 1, "the detail view follows the cursor");
     }
 
+    /// The view opens on the transcript's tail, so `^u` first is what gives
+    /// `^d` anywhere to go.
     #[test]
     fn ctrl_d_scrolls_the_detail_view_down() {
         let mut a = app(&["foo"]);
+        a.terminal_height = 24;
+        ran(&mut a, 0, 200);
         a.open_detail();
+
+        on_input(&mut a, ctrl(KeyCode::Char('u')));
+        let from = a.detail_scroll[&0];
         on_input(&mut a, ctrl(KeyCode::Char('d')));
-        assert!(a.detail_scroll[&0] > 0);
+        assert!(a.detail_scroll[&0] > from);
     }
 
     #[test]
@@ -725,6 +732,8 @@ mod tests {
     #[test]
     fn j_moves_the_cursor_on_the_list_and_scrolls_the_output_on_the_other_pane() {
         let mut a = app(&["foo", "bar", "baz"]);
+        a.terminal_height = 24;
+        ran(&mut a, 1, 200);
         a.open_detail();
 
         on_input(&mut a, press(KeyCode::Char('j')));
@@ -732,12 +741,14 @@ mod tests {
         assert!(a.detail_scroll.is_empty(), "and the output did not move");
 
         on_input(&mut a, press(KeyCode::Tab));
+        on_input(&mut a, ctrl(KeyCode::Char('u'))); // off the tail, so down has room
+        let from = a.detail_scroll[&1];
         on_input(&mut a, press(KeyCode::Char('j')));
         assert_eq!(
             a.cursor, 1,
             "the cursor stays put once the output has focus"
         );
-        assert_eq!(a.detail_scroll.get(&1), Some(&1));
+        assert_eq!(a.detail_scroll.get(&1), Some(&(from + 1)));
     }
 
     #[test]

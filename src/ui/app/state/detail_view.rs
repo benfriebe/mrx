@@ -164,32 +164,35 @@ impl App {
         ((self.terminal_height as usize).saturating_sub(6) / 2).max(1)
     }
 
-    /// Move the cursor row's detail scroll by `delta` lines, floored at 0.
-    /// The actual upper bound depends on the open step's length, which
-    /// render.rs clamps to when it draws.
+    /// Move the cursor row's detail scroll by `delta` lines, bounded at both
+    /// ends of the transcript. The bound has to be applied here and not only
+    /// where the pane is drawn: an offset stored past the end is a distance
+    /// the reader then has to scroll back through before anything moves.
     ///
     /// The first scroll of a row measures from what is on screen, not from
     /// line 0: an unscrolled transcript is showing its tail, so measuring
     /// from 0 would jump to the top of a 4000-line log instead of a half
     /// page up from where the reader is.
     pub fn detail_scroll_by(&mut self, delta: isize) {
+        let (total, height) = self.detail_extent();
         let from = match self.detail_scroll.get(&self.cursor) {
             Some(&scroll) => scroll,
-            None => self.detail_scroll_on_screen(),
+            None => self.detail_view_scroll(total, height),
         };
+        let moved = (from as isize + delta).max(0) as usize;
         self.detail_scroll
-            .insert(self.cursor, (from as isize + delta).max(0) as usize);
+            .insert(self.cursor, detail::clamp_scroll(moved, total, height));
     }
 
-    /// Where [`detail_view_scroll`](Self::detail_view_scroll) has the cursor
-    /// row as of the last frame, so the stored offset and the drawn one
-    /// cannot start from different places. Resolved against the last known
-    /// terminal height rather than the exact viewport, the same
-    /// approximation [`half_page`](Self::half_page) makes.
-    fn detail_scroll_on_screen(&self) -> usize {
+    /// The cursor row's transcript length and the height the output pane
+    /// draws it in, so a scroll and the frame it lands on cannot disagree
+    /// about where the end is. Resolved against the last known terminal
+    /// height rather than the exact viewport, the same approximation
+    /// [`half_page`](Self::half_page) makes.
+    fn detail_extent(&self) -> (usize, usize) {
         let total = self.transcript_lines().map_or(0, |lines| lines.len());
         let height = render::detail_content_height(self.terminal_height, false);
-        self.detail_view_scroll(total, height)
+        (total, height)
     }
 
     pub fn detail_scroll_down(&mut self) {
@@ -272,8 +275,10 @@ mod tests {
     #[test]
     fn detail_scroll_is_kept_per_repo() {
         let mut a = app(&["foo", "bar"]);
+        a.terminal_height = 30;
+        ran_with_long_output(&mut a, 400);
         a.cursor = 0;
-        a.detail_scroll_down();
+        a.detail_scroll_up(); // the view opens at the tail, so up is the way off it
         a.cursor = 1;
         assert_eq!(
             a.detail_scroll.get(&1).copied().unwrap_or(0),
@@ -329,6 +334,32 @@ mod tests {
             a.detail_view_scroll(total, height),
             tail - a.half_page(),
             "one half page up from the tail, not from line 0"
+        );
+    }
+
+    /// Pressing past the bottom used to bank the overshoot, so the same
+    /// number of presses back up bought no movement at all.
+    #[test]
+    fn scrolling_past_the_end_stores_the_end_rather_than_a_distance_beyond_it() {
+        let mut a = app(&["foo"]);
+        a.terminal_height = 30;
+        ran_with_long_output(&mut a, 400);
+        a.detail_open = true;
+
+        let total = a.transcript_lines().unwrap().len();
+        let height = render::detail_content_height(a.terminal_height, false);
+        let tail = a.detail_view_scroll(total, height);
+
+        for _ in 0..5 {
+            a.detail_scroll_down();
+        }
+        assert_eq!(a.detail_scroll[&0], tail, "the bottom is the bottom");
+
+        a.detail_scroll_up();
+        assert_eq!(
+            a.detail_view_scroll(total, height),
+            tail - a.half_page(),
+            "one press off the bottom moves one half page"
         );
     }
 

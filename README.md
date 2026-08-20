@@ -146,7 +146,7 @@ The footer shows as many keys as the terminal is wide enough for, whole ones onl
   tab focus  j/k move  ^d/^u scroll  y copy  esc back  q quit  ? help
 ```
 
-The split is one frame divided, not two windows: the panes rule off their headers on the same row, a rule runs between them, and one key line sits under both. `tab` hands the keys from one pane to the other, marked by the `▌` in the margin and the brighter title, so `j`/`k` either walk the repo list with the output following or scroll the output with the cursor staying put.
+The split is one frame divided, not two windows: the panes rule off their headers on the same row, a rule runs between them, and one key line sits under both. `tab` hands the keys from one pane to the other, marked by the `▌` in the margin and the brighter title, so `j`/`k` either walk the repo list with the output following or scroll the output with the cursor staying put. Clicking a pane focuses it as well.
 
 SYNC carries a row's distance from its upstream, `↑` unpushed and `↓` unpulled, each arrow in a fixed field so the counts line up down the table however many digits the row beside it needs. A set with nothing to report drops the column entirely. The counts only ever reflect the last fetch, so a repo that is ↓3 behind shows no ↓ at all until something updates the remote-tracking ref. An absent count is "nobody has asked", which is not the same claim as ↓0 and so is never drawn as one. Anything that fetches counts, not just mrx: the probe reads `FETCH_HEAD`'s timestamp, so pulling a repo in another terminal settles its count on the next probe.
 

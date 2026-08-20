@@ -65,7 +65,7 @@ takes the whole screen below about 100 columns.
 
 | Keys | Action | Footer |
 |------|--------|--------|
-| `tab` | Hand the keys to the other pane | hinted |
+| `tab` | Hand the keys to the other pane (or click the pane you want) | hinted |
 | `j`/`k`, `↓`/`↑` | Move the cursor with the list focused, scroll the output with the output focused | hinted |
 | `Ctrl-D`/`Ctrl-U` | Scroll the output half a page | hinted |
 | `Enter` | Hand the keys to the output pane | overlay |
@@ -186,14 +186,15 @@ exception, and still quits.
 | Click a row | Move the cursor to it |
 | Click the row already under the cursor | Open its detail view |
 | Click a row in the detail sidebar | Move the cursor, without reopening anything |
+| Click either pane of the detail view | Hand it the keys, the same as `tab` |
 | Wheel | Scroll whichever region is under the pointer: the list, or the output once the detail view is open |
 | Drag down the output pane | Select the lines it covers, copied when the button comes up |
 | Click with no drag in the output pane | Clear that selection again |
 | Drag anywhere else | Ignored, with a one-time hint about getting native selection back |
 
 Clicks have no target while a modal is up (the palette, the set picker, either
-confirmation prompt) and none inside the output pane itself, where a press starts a
-text selection rather than hitting anything.
+confirmation prompt). The output pane has none of its own either: beyond focusing it,
+a press there starts a text selection rather than hitting anything.
 
 ## Behaviour the keymap cannot show
 

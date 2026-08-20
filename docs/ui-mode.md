@@ -37,7 +37,8 @@ screen instead and `Esc` is the only way back.
 
 - `tab` hands the keys from one pane to the other, marked by the `▌` in the margin
   and the brighter title. `j`/`k` then either walk the repo list with the output
-  following, or scroll the output with the cursor staying put.
+  following, or scroll the output with the cursor staying put. Clicking a pane
+  focuses it too, so the pointer can say the same thing.
 - `Enter` on a row whose output is already on screen hands the keys to the output too,
   since the row is no longer the question.
 - The line under the detail title says how the run ended (`2 steps · exit 0`,

@@ -5,7 +5,7 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 use crate::ui::app::detail;
 use crate::ui::app::render;
-use crate::ui::app::state::App;
+use crate::ui::app::state::{App, Pane};
 
 /// Rows, or transcript lines, that one wheel tick moves.
 const WHEEL_STEP: isize = 3;
@@ -66,21 +66,27 @@ fn on_click(app: &mut App, column: u16, row: u16) {
     }
 
     if app.detail_open {
-        // A press in the output starts a text selection: the pane has no
-        // click targets of its own.
-        if let Some(line) = output_line_at(app, column, row) {
-            app.begin_output_selection(line);
-            return;
-        }
-        let in_sidebar = !detail::pointer_over_output(
+        // Both panes are on screen, so a press on one is the clearest
+        // statement there is of which one `j`/`k` should reach: pointing at
+        // a pane hands it the keys, without a `tab` first.
+        let over_output = detail::pointer_over_output(
             app.terminal_width,
             render::sidebar_natural_width(app),
             column,
         );
-        if in_sidebar {
-            if let Some(repo) = resolve_row(app, row) {
-                app.cursor = repo;
+        app.focus = if over_output {
+            Pane::Output
+        } else {
+            Pane::List
+        };
+        if over_output {
+            // A press in the output starts a text selection: the pane has
+            // no click targets of its own.
+            if let Some(line) = output_line_at(app, column, row) {
+                app.begin_output_selection(line);
             }
+        } else if let Some(repo) = resolve_row(app, row) {
+            app.cursor = repo;
         }
         return;
     }
@@ -328,10 +334,54 @@ mod tests {
         );
         assert!(a.output_selection_range().is_some());
 
+        // Tab first: the press that started the drag gave the output the keys.
+        on_input(&mut a, press(KeyCode::Tab));
         on_input(&mut a, press(KeyCode::Char('j')));
         assert!(
             a.output_selection_range().is_none(),
             "the indices only mean anything against the transcript they were taken on"
+        );
+    }
+
+    /// Both panes are on screen at once, so pointing at one has to be enough
+    /// to make `j` mean what it looks like it means.
+    #[test]
+    fn clicking_a_pane_hands_it_the_keys() {
+        let (mut a, column) = app_with_output();
+        let top = render::LIST_HEADER_ROWS as u16;
+        assert_eq!(
+            a.focus,
+            Pane::List,
+            "the view opens on the row it was asked about"
+        );
+
+        on_input(
+            &mut a,
+            mouse(MouseEventKind::Down(MouseButton::Left), column, top),
+        );
+        assert_eq!(a.focus, Pane::Output);
+
+        on_input(
+            &mut a,
+            mouse(MouseEventKind::Down(MouseButton::Left), 2, top),
+        );
+        assert_eq!(a.focus, Pane::List);
+    }
+
+    /// A transcript rarely fills the pane, and the blank under it is still
+    /// the pane.
+    #[test]
+    fn clicking_past_the_end_of_the_output_still_focuses_it() {
+        let (mut a, column) = app_with_output();
+        let below = render::LIST_HEADER_ROWS as u16 + 8;
+        on_input(
+            &mut a,
+            mouse(MouseEventKind::Down(MouseButton::Left), column, below),
+        );
+        assert_eq!(a.focus, Pane::Output);
+        assert!(
+            a.output_selection_range().is_none(),
+            "there is no line down there to select"
         );
     }
 

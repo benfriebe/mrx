@@ -3,8 +3,10 @@
 //! input event.
 
 use crate::config::Repo;
+use crate::executor::StepResult;
+use crate::summarize::Shape;
 use crate::ui::app::probe::RepoState;
-use crate::ui::app::state::App;
+use crate::ui::app::state::{App, RunStatus};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -45,6 +47,21 @@ pub(super) fn probed(index: usize, branch: &str) -> RepoState {
         fetched: false,
         fetch_head: None,
     }
+}
+
+/// A finished run on `index` with a `lines`-long transcript, so the output
+/// pane has somewhere to scroll.
+pub(super) fn ran(app: &mut App, index: usize, lines: usize) {
+    app.run_results[index] = Some(RunStatus::Finished {
+        steps: vec![StepResult {
+            label: "git pull".into(),
+            shape: Shape::Generic,
+            stdout: (1..=lines).map(|i| format!("line {i}\n")).collect(),
+            stderr: String::new(),
+            code: 0,
+        }],
+        exit_code: 0,
+    });
 }
 
 pub(super) fn press(code: KeyCode) -> Event {
