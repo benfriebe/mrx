@@ -62,9 +62,9 @@ impl App {
     /// Ask to run `action_name` over the effective selection. Goes straight
     /// to `run_requested` when nothing in the target selection is dirty or
     /// unprobed, or when `force` is set; otherwise waits on confirmation.
-    /// Refused by [`mutation_blocker`](Self::mutation_blocker), since a
-    /// manual run sharing a repo with a live auto-update pass would run
-    /// `git` against it through two different semaphores at once.
+    /// Refused by [`mutation_blocker`](Self::mutation_blocker), since two
+    /// runs sharing a repo would drive `git` against it through two
+    /// different semaphores at once.
     pub fn request_run(&mut self, action_name: &str) {
         debug_assert!(
             self.actions.iter().any(|a| a.name == action_name),
@@ -79,6 +79,22 @@ impl App {
     /// is by definition not one of `self.actions`.
     pub fn request_run_body(&mut self, body: &str) {
         self.request(&actions::body_label(body), Some(body.to_string()));
+    }
+
+    /// Run `action_name` over exactly `targets`, with no confirmation step.
+    /// Auto-update's way in: its targets are its own, not the selection's,
+    /// and there is nobody at the keyboard to answer a prompt. Skipping the
+    /// prompt costs nothing either way, since every target has already been
+    /// probed clean.
+    pub(super) fn request_run_over(&mut self, action_name: &str, targets: Vec<usize>) {
+        if self.refuse_if_mutation_blocked("start a run") {
+            return;
+        }
+        self.run_requested = Some(RunRequest {
+            action: action_name.to_string(),
+            body: None,
+            targets,
+        });
     }
 
     /// What the two entry points above share: everything from here on is the
@@ -271,24 +287,10 @@ mod tests {
         assert!(a.status_message.is_some());
     }
 
-    /// A manual run sharing a repo with a live auto-update pass would run
-    /// `git` against it through two different semaphores at once.
+    /// A poll completing doesn't wait on a modal, so auto-update can start a
+    /// run of its own while the user is still deciding.
     #[test]
-    fn request_run_refuses_while_auto_update_is_in_flight() {
-        let mut a = app(&["foo"]);
-        a.on_probe(0, probed(0, "main"));
-        a.auto_update_total = 1;
-
-        a.request_run("status");
-        assert!(a.run_requested.is_none());
-        assert!(a.pending_run.is_none());
-        assert!(a.status_message.is_some());
-    }
-
-    /// A poll completing doesn't wait on a modal, so an auto-update pass can
-    /// start while the user is still deciding.
-    #[test]
-    fn confirm_pending_run_refuses_when_auto_update_starts_while_the_prompt_is_open() {
+    fn confirm_pending_run_refuses_when_a_run_starts_while_the_prompt_is_open() {
         let mut a = app(&["foo"]);
         let mut dirty = probed(0, "main");
         dirty.changed = 1;
@@ -297,12 +299,12 @@ mod tests {
         a.request_run("update");
         assert!(a.pending_run.is_some(), "a dirty run needs confirming");
 
-        a.auto_update_total = 1; // starts while the prompt is still open
+        a.begin_named_run("update".into(), vec![0]); // starts while the prompt is still open
         a.confirm_pending_run();
 
         assert!(
             a.run_requested.is_none(),
-            "must not launch into a repo an in-flight auto-update pass owns"
+            "must not launch into a repo a live run already owns"
         );
         assert!(a.status_message.is_some());
     }

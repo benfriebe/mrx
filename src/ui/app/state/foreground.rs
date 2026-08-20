@@ -141,16 +141,6 @@ mod tests {
         assert!(a.status_message.is_some());
     }
 
-    /// Same hazard, same guard, for an in-flight auto-update pass.
-    #[test]
-    fn requesting_the_editor_is_refused_while_auto_update_is_in_flight() {
-        let mut a = app(&["foo"]);
-        a.auto_update_total = 1;
-        a.request_open_editor();
-        assert!(a.foreground.is_none());
-        assert!(a.status_message.is_some());
-    }
-
     #[test]
     fn toggle_mouse_capture_flips_the_flag_and_marks_it_dirty() {
         let mut a = app(&["foo"]);

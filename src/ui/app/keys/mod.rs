@@ -143,7 +143,6 @@ fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('!') => app.request_shell(),
         KeyCode::Char('/') => app.start_filter(),
         KeyCode::Char('r') => app.open_run_command(),
-        KeyCode::Char('R') => app.probe_requested = true,
         KeyCode::Char('u') => app.request_run("update"),
         KeyCode::Char('s') => app.request_run("status"),
         KeyCode::Char('f') => app.request_run("fetch"),
@@ -404,18 +403,11 @@ mod tests {
         assert_eq!(a.cursor, 1);
     }
 
-    /// The two halves of one swap: `r` now types a command and `R` is what
-    /// re-probes, so pinning either alone would let them drift back together.
     #[test]
-    fn r_opens_the_run_command_prompt_and_shift_r_requests_a_reprobe() {
+    fn r_opens_the_run_command_prompt() {
         let mut a = app(&["foo"]);
         assert!(!on_input(&mut a, press(KeyCode::Char('r'))));
         assert!(a.run_command_open);
-        assert!(!a.probe_requested);
-
-        a.close_run_command();
-        assert!(!on_input(&mut a, press(KeyCode::Char('R'))));
-        assert!(a.probe_requested);
     }
 
     #[test]

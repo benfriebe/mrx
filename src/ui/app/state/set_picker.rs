@@ -368,7 +368,7 @@ mod tests {
     /// A poll completing and starting a fast-forward cycle doesn't wait on a
     /// modal, so an auto-update pass can start while the picker sits open.
     #[test]
-    fn confirm_set_picker_is_blocked_when_auto_update_starts_after_the_picker_opened() {
+    fn confirm_set_picker_is_blocked_when_a_run_starts_after_the_picker_opened() {
         let dir = tempfile::tempdir().unwrap();
         let current = dir.path().join("current.mrconfig");
         write_config(&current, "[foo]\n");
@@ -395,13 +395,13 @@ mod tests {
         a.set_picker_cursor = 0;
         a.set_picker_open = true; // picker opened while nothing was blocking it
 
-        a.auto_update_total = 1; // then a poll cycle started fast-forwarding
+        a.begin_named_run("update".into(), vec![0]); // then a poll cycle started one
         a.confirm_set_picker();
 
         assert!(!a.set_picker_open);
         assert_eq!(
             a.config_path, current,
-            "must not have switched sets out from under the in-flight auto-update"
+            "must not have switched sets out from under the live run"
         );
         assert_eq!(a.repos.len(), 1);
         assert!(a.status_message.is_some());
@@ -419,36 +419,5 @@ mod tests {
             "got {:?}",
             a.set_entries
         );
-    }
-
-    /// Switching sets while auto-update has merges in flight would hand a
-    /// later `AutoUpdateResult` an index into a different repo list, the
-    /// same hazard a live run guards against.
-    #[test]
-    fn the_set_picker_is_blocked_while_auto_update_is_in_flight() {
-        let mut a = app(&["foo"]);
-        a.auto_update_total = 1;
-        a.open_set_picker();
-        assert!(!a.set_picker_open);
-        assert!(a.status_message.is_some());
-    }
-
-    /// Same hazard, same guard, for a config reload.
-    #[test]
-    fn reload_config_is_a_no_op_while_auto_update_is_in_flight() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = dir.path().join(".mrconfig");
-        write_config(&cfg, "[foo]\n");
-        let config::Config {
-            repos, defaults, ..
-        } = config::load(&cfg, None);
-        let mut a = App::new(repos, "work".into(), 4, defaults, cfg.clone(), false, None);
-        a.auto_update_total = 1;
-
-        write_config(&cfg, "[foo]\n[bar]\n");
-        a.reload_config();
-
-        assert_eq!(a.repos.len(), 1, "the reload must not have happened");
-        assert!(a.status_message.is_some());
     }
 }

@@ -40,9 +40,11 @@ pub struct Session {
     /// to compare it against, so without this the behind count a previous
     /// session settled would go back to reading as unknown.
     pub fetched: Vec<String>,
-    /// `Some` means the poll was on, at this interval; `None` means it was
-    /// off. One field is both the setting and the on/off state, matching the
+    /// One field is both the setting and the on/off state, matching the
     /// on-disk shape (a bare `"poll": 300`, no separate enabled flag).
+    /// `Some(ZERO)` is a session that turned the poll off, which has to be
+    /// distinguishable from `None`, a file that never said: the first
+    /// overrules a set's `auto_fetch`, the second leaves it to decide.
     pub poll_interval: Option<Duration>,
     pub auto_update: bool,
     /// The order the table was left in. Column and direction are stored
@@ -89,7 +91,11 @@ impl Session {
                 .iter()
                 .filter_map(|&i| app.repos.get(i).map(|r| r.name.clone()))
                 .collect(),
-            poll_interval: app.poll_enabled.then_some(app.poll_interval),
+            poll_interval: Some(if app.poll_enabled {
+                app.poll_interval
+            } else {
+                Duration::ZERO
+            }),
             auto_update: app.auto_update,
             sort: app.sort,
             sort_direction: app.sort_direction,
@@ -138,9 +144,9 @@ fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
                     .collect()
             }
             // A value beyond `MAX_POLL_INTERVAL` reads as the field being
-            // absent (poll off) rather than clamped down to the max: a
-            // corrupted `ui.json` must not resurrect the poll at a value
-            // nobody asked for.
+            // absent rather than clamped down to the max: a corrupted
+            // `ui.json` must not resurrect the poll at a value nobody asked
+            // for.
             "poll" => {
                 session.poll_interval = value
                     .into_u64()
@@ -591,19 +597,22 @@ mod tests {
         });
     }
 
+    /// The off state has to be recorded, not merely implied by the field's
+    /// absence: a set whose `auto_fetch` says otherwise is applied first, and
+    /// only an explicit zero can outrank it.
     #[test]
-    fn a_poll_that_was_off_round_trips_as_off() {
+    fn a_poll_that_was_off_round_trips_as_an_explicit_off() {
         with_state_home(|_| {
             let app = app_with(&["foo"]);
             save(&app).unwrap();
             let loaded = load();
-            assert_eq!(loaded.poll_interval, None);
+            assert_eq!(loaded.poll_interval, Some(Duration::ZERO));
             assert!(!loaded.auto_update);
         });
     }
 
     #[test]
-    fn a_poll_value_beyond_the_sane_bound_loads_as_the_poll_being_off() {
+    fn a_poll_value_beyond_the_sane_bound_loads_as_no_opinion_at_all() {
         with_state_home(|dir| {
             let path = dir.join("mrx").join("ui.json");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -611,8 +620,8 @@ mod tests {
             let loaded = load();
             assert_eq!(
                 loaded.poll_interval, None,
-                "a hostile or fat-fingered poll value must degrade to poll off, \
-                 not resurrect the poll at some clamped value"
+                "a hostile or fat-fingered poll value must degrade to the field \
+                 being absent, not resurrect the poll at some clamped value"
             );
         });
     }

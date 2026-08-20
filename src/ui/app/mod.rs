@@ -202,7 +202,6 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
     let mut poll_was = (app.poll_enabled, app.poll_interval);
     let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
     let (run_tx, mut run_rx) = mpsc::unbounded_channel::<RunEvent>();
-    let (auto_tx, mut auto_rx) = mpsc::unbounded_channel::<poll::AutoUpdateResult>();
 
     // The first frame paints immediately with placeholders; this probe's
     // results fill the table in as they arrive.
@@ -241,13 +240,6 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
                     let targets: Vec<usize> = (0..app.repos.len()).collect();
                     spawn_probe_over(&mut app, &probe_tx, targets);
                 }
-                if app.take_probe_request() {
-                    let targets = app.reprobe_targets();
-                    spawn_probe_over(&mut app, &probe_tx, targets);
-                }
-                if let Some(req) = app.take_run_requested() {
-                    current_run = Some(spawn_action_run(&mut app, &run_tx, req));
-                }
                 if app.take_cancel_requested() {
                     if let Some(handle) = &current_run {
                         handle.request_cancel();
@@ -278,25 +270,10 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
             }
             Some(probed) = probe_rx.recv() => {
                 app.on_probe(probed.generation, probed.state);
-                if let Some(targets) = app.take_auto_update_requested() {
-                    poll::spawn_auto_update(
-                        &app.repos,
-                        targets,
-                        app.jobs,
-                        app.auto_update_generation(),
-                        auto_tx.clone(),
-                    );
-                }
             }
             Some(evt) = run_rx.recv() => {
                 app.on_task(evt.run_id, evt.kind);
                 if let Some(targets) = app.take_post_run_targets() {
-                    spawn_probe_over(&mut app, &probe_tx, targets);
-                }
-            }
-            Some(result) = auto_rx.recv() => {
-                app.on_auto_update_result(result);
-                if let Some(targets) = app.take_auto_update_reprobe_targets() {
                     spawn_probe_over(&mut app, &probe_tx, targets);
                 }
             }
@@ -307,6 +284,11 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
             _ = poll_ticker.tick() => {
                 spawn_poll_cycle(&mut app, &probe_tx);
             }
+        }
+        // Outside the input arm: auto-update asks for a run from the probe
+        // arm, once a poll cycle's last result lands.
+        if let Some(req) = app.take_run_requested() {
+            current_run = Some(spawn_action_run(&mut app, &run_tx, req));
         }
         // Owed from startup, and held until the opening probe has landed so
         // the table is filled in before a cycle of fetches replaces it.

@@ -152,9 +152,9 @@ SYNC carries a row's distance from its upstream, `↑` unpushed and `↓` unpull
 
 `Esc` cancels a live run, but only as far as it honestly can. Everything still queued behind the job limit is skipped; a repo already past its slot keeps running to completion, because `Command::output` has no kill. The status line says exactly that: `cancelled, 2 queued skipped, 1 still finishing`.
 
-`F` toggles a freshness poll and `Ctrl-A` layers a narrow auto-update on top of it. Both are off by default, and both show in the header the moment either is on (`poll 6m`, `poll 6m · auto`), since a mode that touches working trees on a timer has no business being invisible. Once a cycle has run, the header also says when: `checked 40s ago`, rolling up to minutes and then hours as it ages.
+`F` toggles a freshness poll and `Ctrl-A` layers an auto-update on top of it, running the set's own `update` over whatever a cycle finds behind and is safe to touch unattended. Both are off by default, and both show in the header the moment either is on (`poll 6m`, `poll 6m · auto`), since a mode that touches working trees on a timer has no business being invisible. Once a cycle has run, the header also says when: `checked 40s ago`, rolling up to minutes and then hours as it ages.
 
-A set can ask for the poll itself with `[DEFAULT] auto_fetch`, so opening it never needs the keystroke. A set opened with auto-fetch on and no sync answers yet fetches once as soon as the opening probe lands, rather than leaving every `↓` blank until the first interval elapses. `F` still overrides it for the session, and a set switch re-reads whatever the set being opened asks for.
+A set can ask for the poll itself with `[DEFAULT] auto_fetch`, so opening it never needs the keystroke. A set opened with auto-fetch on and no sync answers yet fetches once as soon as the opening probe lands, rather than leaving every `↓` blank until the first interval elapses. `F` still overrides it, off included, and a set switch re-reads whatever the set being opened asks for.
 
 See [docs/ui-keys.md](docs/ui-keys.md) for every binding, by input mode. See [docs/ui-mode.md](docs/ui-mode.md) for colour handling, result lifetime, set switching, cancellation, freshness polling, and the persisted session.
 

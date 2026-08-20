@@ -98,7 +98,6 @@ pub struct App {
     /// the newer timestamp.
     pub fetch_baseline: BTreeMap<usize, Option<SystemTime>>,
     /// Set by the `R` key.
-    pub probe_requested: bool,
     /// Bumped every time a run starts; an executor event tagged with an
     /// older id belongs to a run that's since been cancelled and superseded,
     /// and is dropped by [`on_task`](Self::on_task).
@@ -229,38 +228,18 @@ pub struct App {
     /// Whether the opening fetch is still owed. See
     /// [`arm_boot_fetch`](Self::arm_boot_fetch).
     pub boot_fetch_pending: bool,
-    /// `Ctrl-A`: whether a completed poll cycle is allowed to fast-forward
-    /// what it finds behind. Off by default; never true while `poll_enabled`
-    /// is false, since it has nothing to act on without one.
+    /// `Ctrl-A`: whether a completed poll cycle is allowed to run `update`
+    /// on what it finds behind. Off by default; never true while
+    /// `poll_enabled` is false, since it has nothing to act on without one.
     pub auto_update: bool,
     /// Set by [`on_poll_due`](Self::on_poll_due) when a tick is actually
     /// allowed to start a cycle.
     poll_targets_requested: Option<Vec<usize>>,
     /// The probe generation the current in-flight probe belongs to, when it
-    /// was started as a poll cycle rather than a plain probe or reprobe.
-    /// Lets [`on_probe`](Self::on_probe) tell "a poll cycle just finished"
-    /// from "the user pressed r", without a second copy of the generation
-    /// machinery.
+    /// was started as a poll cycle rather than a plain probe. Lets
+    /// [`on_probe`](Self::on_probe) tell "a poll cycle just finished" from
+    /// any other probe, without a second copy of the generation machinery.
     poll_generation: Option<u64>,
-    /// Set once a poll cycle's results are all in and some of them passed
-    /// [`poll::can_fast_forward`].
-    auto_update_requested: Option<Vec<usize>>,
-    /// Bumped every time an auto-update cycle actually starts; a result
-    /// tagged with a different generation belongs to a cycle that has since
-    /// completed or been superseded and is dropped rather than corrupting
-    /// the current cycle's counters.
-    auto_update_generation: u64,
-    auto_update_total: usize,
-    auto_update_done: usize,
-    auto_update_ok: usize,
-    /// Repos this cycle found behind but never targeted, because
-    /// [`poll::can_fast_forward`] rejected them (dirty, diverged, no
-    /// upstream). The merge counters never see them, so the summary adds
-    /// them in separately.
-    auto_update_skipped: usize,
-    /// Repos an auto-update pass actually fast-forwarded, to be re-probed
-    /// for their new ahead/behind and branch state.
-    auto_update_reprobe_targets: Option<Vec<usize>>,
 }
 
 impl App {
@@ -294,7 +273,6 @@ impl App {
             probe_generation: 0,
             fetched_repos: BTreeSet::new(),
             fetch_baseline: BTreeMap::new(),
-            probe_requested: false,
             run_id: 0,
             run_results: vec![None; n],
             live: BTreeMap::new(),
@@ -343,13 +321,6 @@ impl App {
             auto_update: false,
             poll_targets_requested: None,
             poll_generation: None,
-            auto_update_requested: None,
-            auto_update_generation: 0,
-            auto_update_total: 0,
-            auto_update_done: 0,
-            auto_update_ok: 0,
-            auto_update_skipped: 0,
-            auto_update_reprobe_targets: None,
         }
     }
 
@@ -403,38 +374,32 @@ impl App {
         }
         self.clamp_cursor_to_visible();
 
+        // An explicit off outranks the set's `auto_fetch`, which has already
+        // been applied by this point: pressing `F` has to mean something a
+        // restart cannot undo. The interval is kept only when the poll is on,
+        // so an off session doesn't also overwrite the config's cadence.
         if let Some(interval) = session.poll_interval {
-            self.poll_enabled = true;
-            self.poll_interval = interval;
+            self.poll_enabled = !interval.is_zero();
+            if self.poll_enabled {
+                self.poll_interval = interval;
+            }
         }
         // Never restore auto-update without the poll it depends on, even if
         // the file somehow has that combination.
         self.auto_update = session.auto_update && self.poll_enabled;
     }
 
-    /// Whether an auto-update pass has merges in flight: an auto-update
-    /// result carries a repo index, and anything that replaces `repos` or
-    /// starts a second `git` invocation against the same working tree would
-    /// race it.
-    fn auto_update_in_flight(&self) -> bool {
-        self.auto_update_total > 0
-    }
-
     /// Whichever mutating operation currently owns the repos on disk, if
-    /// any. A live run, an in-flight auto-update pass, a set switch, a
+    /// any. A run (including the one auto-update starts), a set switch, a
     /// config reload, and an editor suspension all either write to a working
     /// tree or replace the repo list out from under indices another of them
     /// is still using, so at most one may be underway at a time. Callers
     /// must check at the moment they commit, not only when they open a
     /// modal: another one can start in the gap between the two.
     fn mutation_blocker(&self) -> Option<&'static str> {
-        if self.run_action.is_some() {
-            Some("another run is already live")
-        } else if self.auto_update_in_flight() {
-            Some("auto-update is running")
-        } else {
-            None
-        }
+        self.run_action
+            .is_some()
+            .then_some("another run is already live")
     }
 
     /// Refuses `verb` with a status message naming what's blocking it, if
@@ -503,6 +468,39 @@ mod tests {
             a.cursor, 0,
             "the same rule move_cursor already applies while filtering live"
         );
+    }
+
+    /// The startup order this depends on: `apply_auto_fetch` runs first, then
+    /// this. Without an explicit zero on disk the config would turn the poll
+    /// straight back on every launch, and `F` would only ever mute it until
+    /// the next one.
+    #[test]
+    fn a_session_that_turned_the_poll_off_outranks_a_set_that_asks_for_it() {
+        let mut a = app(&["foo"]);
+        a.apply_auto_fetch(Some(Duration::from_secs(360)));
+        assert!(a.poll_enabled, "the set asked for the poll");
+
+        let session = Session {
+            poll_interval: Some(Duration::ZERO),
+            ..Default::default()
+        };
+        a.restore_session(&session);
+        assert!(!a.poll_enabled);
+        assert_eq!(
+            a.poll_interval,
+            Duration::from_secs(360),
+            "an off session says nothing about the cadence to use next time"
+        );
+    }
+
+    /// The other half of the pair: a file that never mentioned the poll leaves
+    /// the config's answer standing.
+    #[test]
+    fn a_session_with_no_poll_field_leaves_the_set_to_decide() {
+        let mut a = app(&["foo"]);
+        a.apply_auto_fetch(Some(Duration::from_secs(360)));
+        a.restore_session(&Session::default());
+        assert!(a.poll_enabled);
     }
 
     #[test]

@@ -37,14 +37,13 @@ The default mode: the table of repos, no overlay open.
 | `s`/`f`/`d` | Run `status`, `fetch`, `diff` on the selection | overlay |
 | `:` | Open the action palette | hinted |
 | `r` | Open the run-command prompt | overlay |
-| `R` | Re-probe the selection (or everything, with nothing selected) | overlay |
 | `S` | Open the sort menu | overlay |
 | `!` | Open `$SHELL` (`sh` if unset) in the cursor row's repo | overlay |
 | `o` | Open the cursor row's repo in `$EDITOR` (`vi` if unset) | overlay |
 | `Enter` | Open the detail view for the cursor row | hinted |
 | `tab` | Open the set picker | hinted |
-| `F` | Toggle the freshness poll, overriding `[DEFAULT] auto_fetch` for the session | overlay |
-| `Ctrl-A` | Toggle auto-update | overlay |
+| `F` | Toggle the freshness poll, overriding `[DEFAULT] auto_fetch` | overlay |
+| `Ctrl-A` | Toggle auto-update: run `update` on what the poll finds behind | overlay |
 | `Ctrl-R` | Reload the active config in place | overlay |
 | `m` | Toggle mouse capture | overlay |
 | `?` | Open the keymap overlay | hinted |

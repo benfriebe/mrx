@@ -149,7 +149,7 @@ mod tests {
     fn overlay_only_bindings_stay_out_of_the_footer() {
         let a = app(vec![repo("bill-api")]);
         let text = flatten(&status_line(&a, 400));
-        assert!(!text.contains("re-probe"), "got {text:?}");
+        assert!(!text.contains("reload config"), "got {text:?}");
         assert!(!text.contains("auto-update"), "got {text:?}");
         assert!(
             keymap::LIST_KEYS.iter().any(|b| b.keys == "r"),

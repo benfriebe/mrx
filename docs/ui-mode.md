@@ -110,10 +110,12 @@ the next probe.
 
 - `F` toggles a freshness poll: `git fetch --quiet` across the set on an interval, six
   minutes by default, suspended rather than queued while a run is live.
-- `Ctrl-A` layers a narrow, opt-in auto-update on top, fast-forwarding what a poll
-  finds behind. It acts only on a repo that is checked out, tracks an upstream, is
-  behind, is not ahead, and has no working-tree changes. Anything else is left alone
-  and reported rather than fixed.
+- `Ctrl-A` layers an opt-in auto-update on top: whatever a cycle finds behind gets an
+  ordinary `update` run, the set's own body and hooks included, reported in RESULT
+  exactly as pressing `u` would be. It targets only a repo that is checked out, tracks
+  an upstream, is behind, is not ahead, and has no working-tree changes, so an `update`
+  that does considerably more than a fast-forward still has no local work in front of
+  it. Anything else is left alone and counted in the status line.
 - `Ctrl-A` refuses to turn on while the poll itself is off, since it has nothing to
   act on without one.
 - Both are off by default, and both show in the header the moment either is on
@@ -134,7 +136,8 @@ like a working config.
 - A set that says nothing leaves the poll alone, so `F` still decides. `off` is a value
   and does turn it off, taking auto-update with it.
 - A session restored on top outranks the config, since it is the more specific record of
-  what was last chosen. A set switch re-reads the config instead, the session having
+  what was last chosen, and that includes an explicit off: `F` has to mean something a
+  restart cannot undo. A set switch re-reads the config instead, the session having
   belonged to the set being left behind.
 - A set opened with auto-fetch on and nothing fetched yet runs one cycle immediately
   rather than waiting out the first interval, which would leave every `↓` blank for six

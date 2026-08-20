@@ -1,8 +1,8 @@
-//! The freshness poll (`F`) and auto-update (`Ctrl-A`). A poll cycle is
-//! `git fetch --quiet` followed by the same porcelain parse the probe uses,
-//! so its results land through the existing `RepoState` path and generation
-//! counter; auto-update is a narrow `git merge --ff-only` layered on top,
-//! run only where [`can_fast_forward`] says it is safe.
+//! The freshness poll (`F`). A cycle is `git fetch --quiet` followed by the
+//! same porcelain parse the probe uses, so its results land through the
+//! existing `RepoState` path and generation counter. Auto-update (`Ctrl-A`)
+//! then starts an ordinary `update` run over whatever the cycle found behind
+//! and [`can_fast_forward`] clears as safe to touch unattended.
 
 use super::probe::{self, generation_tagged, Probed, RepoState};
 use crate::config::Repo;
@@ -37,9 +37,10 @@ pub fn clamp_interval(interval: Duration) -> Duration {
 /// one repo and leaves it for the next cycle.
 const POLL_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// A repo is auto-updatable only if a fast-forward is guaranteed to be a
-/// no-op on anything the user has touched. Anything else is left alone and
-/// reported, not fixed.
+/// A repo is auto-updatable only if there is nothing local for the run to
+/// lose: a fast-forward would be a no-op on anything the user has touched,
+/// so an `update` that does more than fast-forward still has no local work
+/// in front of it. Anything else is left alone and reported, not fixed.
 pub fn can_fast_forward(s: &RepoState) -> bool {
     s.present
         && s.upstream.is_some()
@@ -76,13 +77,16 @@ async fn poll_one(index: usize, path: &Path) -> RepoState {
 
 /// Fetch then probe every repo in `which`, bounded by `max_jobs`: the same
 /// job limit a probe uses, so a poll can't compete with a live run for the
-/// network.
-pub fn spawn_poll(
+/// network. Results are tagged with `generation` so they share the probe's
+/// own staleness handling.
+pub fn spawn_poll_generation(
     repos: &[Repo],
     which: Vec<usize>,
     max_jobs: usize,
-    tx: mpsc::UnboundedSender<RepoState>,
+    generation: u64,
+    tx: mpsc::UnboundedSender<Probed>,
 ) {
+    let tx = generation_tagged(generation, tx);
     let semaphore = Arc::new(Semaphore::new(max_jobs));
     for index in which {
         let Some(repo) = repos.get(index) else {
@@ -98,92 +102,6 @@ pub fn spawn_poll(
                 Err(_) => RepoState::timeout(index),
             };
             let _ = tx.send(state);
-        });
-    }
-}
-
-/// Like [`spawn_poll`], tagged with a probe generation so its results share
-/// the probe's own staleness handling.
-pub fn spawn_poll_generation(
-    repos: &[Repo],
-    which: Vec<usize>,
-    max_jobs: usize,
-    generation: u64,
-    tx: mpsc::UnboundedSender<Probed>,
-) {
-    spawn_poll(repos, which, max_jobs, generation_tagged(generation, tx));
-}
-
-/// One repo's outcome from an auto-update pass, tagged with the cycle it
-/// belongs to so a result arriving after a later cycle has started is
-/// dropped rather than counted against it; the same generation scheme the
-/// probe uses.
-pub struct AutoUpdateResult {
-    pub index: usize,
-    pub generation: u64,
-    pub outcome: AutoUpdateOutcome,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AutoUpdateOutcome {
-    FastForwarded,
-    Failed(String),
-}
-
-/// `git merge --ff-only` on every repo in `which`, bounded by `max_jobs`.
-/// Callers filter `which` through [`can_fast_forward`] first, but time
-/// passes before a repo's turn at the semaphore and `merge --ff-only`
-/// succeeds even on a dirty tree when the incoming change doesn't conflict,
-/// so each task re-probes and re-checks immediately before merging rather
-/// than trusting the poll's snapshot.
-///
-/// That re-probe narrows the window to milliseconds but cannot close it: the
-/// probe and the merge are two `git` invocations, and an edit made outside
-/// mrx can still land between them. Hence auto-update only ever
-/// fast-forwards, never merges or rebases anything a conflict could touch,
-/// and stays off until turned on.
-pub fn spawn_auto_update(
-    repos: &[Repo],
-    which: Vec<usize>,
-    max_jobs: usize,
-    generation: u64,
-    tx: mpsc::UnboundedSender<AutoUpdateResult>,
-) {
-    let semaphore = Arc::new(Semaphore::new(max_jobs));
-    for index in which {
-        let Some(repo) = repos.get(index) else {
-            continue;
-        };
-        let path = repo.path.clone();
-        let tx = tx.clone();
-        let sem = semaphore.clone();
-        tokio::spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
-            let fresh = probe::probe_one(index, &path).await;
-            let outcome = if !can_fast_forward(&fresh) {
-                AutoUpdateOutcome::Failed("no longer fast-forwardable".into())
-            } else {
-                match Command::new("git")
-                    .args(["merge", "--ff-only"])
-                    .current_dir(&path)
-                    .env("GIT_TERMINAL_PROMPT", "0")
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .output()
-                    .await
-                {
-                    Ok(o) if o.status.success() => AutoUpdateOutcome::FastForwarded,
-                    Ok(o) => AutoUpdateOutcome::Failed(
-                        String::from_utf8_lossy(&o.stderr).trim().to_string(),
-                    ),
-                    Err(e) => AutoUpdateOutcome::Failed(e.to_string()),
-                }
-            };
-            let _ = tx.send(AutoUpdateResult {
-                index,
-                generation,
-                outcome,
-            });
         });
     }
 }
@@ -313,72 +231,6 @@ mod tests {
             .status()
             .expect("git must be on PATH to run this test");
         assert!(status.success(), "git {args:?} failed in {dir:?}");
-    }
-
-    fn git_output(dir: &std::path::Path, args: &[&str]) -> String {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("git must be on PATH to run this test");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    /// `merge --ff-only` succeeds on a dirty tree whenever the incoming
-    /// commit doesn't touch the dirtied file, so eligibility decided from an
-    /// earlier probe snapshot has to be re-checked at merge time.
-    #[tokio::test]
-    async fn auto_update_skips_a_repo_that_went_dirty_after_it_was_marked_eligible() {
-        let origin = tempfile::tempdir().unwrap();
-        run_git(origin.path(), &["init", "--quiet"]);
-        run_git(origin.path(), &["config", "user.email", "t@example.com"]);
-        run_git(origin.path(), &["config", "user.name", "t"]);
-        std::fs::write(origin.path().join("a.txt"), "one\n").unwrap();
-        run_git(origin.path(), &["add", "a.txt"]);
-        run_git(origin.path(), &["commit", "--quiet", "-m", "one"]);
-
-        let clone_dir = tempfile::tempdir().unwrap();
-        let clone_path = clone_dir.path().join("clone");
-        run_git(
-            clone_dir.path(),
-            &[
-                "clone",
-                "--quiet",
-                origin.path().to_str().unwrap(),
-                clone_path.to_str().unwrap(),
-            ],
-        );
-        run_git(&clone_path, &["config", "user.email", "t@example.com"]);
-        run_git(&clone_path, &["config", "user.name", "t"]);
-
-        // Origin moves ahead, and the clone learns about it, exactly as a
-        // poll cycle would: the clone is clean and behind, eligible.
-        std::fs::write(origin.path().join("a.txt"), "two\n").unwrap();
-        run_git(origin.path(), &["commit", "--quiet", "-am", "two"]);
-        run_git(&clone_path, &["fetch", "--quiet"]);
-
-        // An uncommitted edit on a file the incoming commit never touches,
-        // so a plain `merge --ff-only` would still succeed here.
-        std::fs::write(clone_path.join("b.txt"), "local edit\n").unwrap();
-
-        let repo = Repo {
-            name: "clone".into(),
-            path: clone_path.clone(),
-            clone_url: None,
-            keys: Default::default(),
-        };
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        spawn_auto_update(&[repo], vec![0], 1, 1, tx);
-        let result = rx.recv().await.expect("a result");
-
-        assert_eq!(
-            result.outcome,
-            AutoUpdateOutcome::Failed("no longer fast-forwardable".into()),
-            "a repo dirtied after eligibility was decided must not be merged"
-        );
-        let clone_head = git_output(&clone_path, &["rev-parse", "HEAD"]);
-        let origin_head = git_output(origin.path(), &["rev-parse", "HEAD"]);
-        assert_ne!(clone_head, origin_head, "the merge must not have happened");
     }
 
     /// `poll_one` must carry a failed fetch into `RepoState.fetched` rather

@@ -5,17 +5,6 @@ use super::App;
 use crate::ui::app::probe::{self, RepoState};
 
 impl App {
-    /// Repos to re-probe for `r`: the selection, or everything when nothing
-    /// is selected, the same reading of an empty selection
-    /// [`effective_selection`](Self::effective_selection) uses.
-    pub fn reprobe_targets(&self) -> Vec<usize> {
-        if self.selected.is_empty() {
-            (0..self.repos.len()).collect()
-        } else {
-            self.selected.iter().copied().collect()
-        }
-    }
-
     /// Start a new probe generation over `targets`: bumps the counter, marks
     /// every target in-flight, and returns the generation so the caller can
     /// tag the probe it is about to spawn with it.
@@ -58,10 +47,6 @@ impl App {
                 state.fetch_head > *baseline.get()
             }
         }
-    }
-
-    pub fn take_probe_request(&mut self) -> bool {
-        std::mem::take(&mut self.probe_requested)
     }
 
     /// Branch and working-tree text for a row, resolved once so `render.rs`
@@ -273,19 +258,6 @@ mod tests {
             a.probes[0].is_none(),
             "a result from a superseded generation must be dropped"
         );
-    }
-
-    #[test]
-    fn reprobe_targets_default_to_everything_when_nothing_is_selected() {
-        let a = app(&["foo", "bar", "baz"]);
-        assert_eq!(a.reprobe_targets(), vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn reprobe_targets_are_the_selection_when_something_is_selected() {
-        let mut a = app(&["foo", "bar", "baz"]);
-        a.selected.insert(1);
-        assert_eq!(a.reprobe_targets(), vec![1]);
     }
 
     #[test]

@@ -1,9 +1,14 @@
-//! The freshness poll and the fast-forward pass it feeds, including the
-//! counters that track a cycle from start to summary.
+//! The freshness poll and the `update` pass it feeds.
 
 use super::App;
-use crate::ui::app::poll::{self, AutoUpdateOutcome, AutoUpdateResult};
+use crate::ui::app::poll;
 use std::time::{Duration, Instant};
+
+/// What `Ctrl-A` runs on a repo it finds behind: the set's own `update`, hooks
+/// and all, rather than a bare fast-forward. A set that wants auto-update to do
+/// less says so in its `update` body, which is the one place the answer should
+/// live.
+const AUTO_UPDATE_ACTION: &str = "update";
 
 impl App {
     /// The tick loop's poll `Interval` arm always fires; this is what decides
@@ -81,6 +86,7 @@ impl App {
 
     /// `Ctrl-A`: turn auto-update on or off. Refuses while the poll itself
     /// is off, since auto-update only ever acts on a poll's results.
+    /// See [`AUTO_UPDATE_ACTION`] for what it runs.
     pub fn toggle_auto_update(&mut self) {
         if !self.poll_enabled {
             self.status_message = Some("auto-update needs the freshness poll on first".into());
@@ -89,9 +95,9 @@ impl App {
         self.auto_update = !self.auto_update;
     }
 
-    /// Once every repo a poll cycle covered has reported back, decide which
-    /// ones auto-update is allowed to touch. A plain probe or reprobe never
-    /// sets `poll_generation`, so this is a no-op for those.
+    /// Once every repo a poll cycle covered has reported back, start an
+    /// `update` run over whatever it found behind. A plain probe never sets
+    /// `poll_generation`, so this is a no-op for those.
     pub(super) fn maybe_complete_poll(&mut self, generation: u64) {
         if self.poll_generation != Some(generation) || !self.probing.is_empty() {
             return;
@@ -102,24 +108,23 @@ impl App {
         if !self.auto_update {
             return;
         }
-        // A run that started mid-cycle suspends the fast-forward pass, the
-        // same way `on_poll_due` suspends the poll itself.
+        // A run that started mid-cycle suspends the update pass, the same way
+        // `on_poll_due` suspends the poll itself. `request_run_over` would
+        // refuse anyway; returning here keeps it from saying so in the status
+        // bar over something the user is watching.
         if self.run_action.is_some() {
-            return;
-        }
-        // Refuse to start a second cycle on top of one still in flight: a
-        // late result from the first would otherwise land against the
-        // second cycle's counters.
-        if self.auto_update_in_flight() {
             return;
         }
         // A repo whose fetch failed keeps whatever stale ahead/behind it
         // already had, so `s.fetched` is what makes it ineligible.
         //
         // Everything this cycle found behind is either a target or a skip,
-        // split on `can_fast_forward` itself so the two can't drift apart.
-        // A skip never reaches the merge, so this is the only place it can
-        // be counted for the summary.
+        // split on `can_fast_forward`. The action that runs is the set's own
+        // `update`, which may do considerably more than a fast-forward, so
+        // the guard is about what is safe to start unattended rather than
+        // what the action will do: only a repo that is clean, on a branch
+        // tracking an upstream, and behind it with nothing of its own to lose
+        // is touched. Everything else is reported and left.
         let mut targets: Vec<usize> = Vec::new();
         let mut skipped = 0usize;
         for (i, probe) in self.probes.iter().enumerate() {
@@ -134,79 +139,24 @@ impl App {
             }
         }
         if targets.is_empty() {
-            // Nothing merged still leaves something to say when repos were
-            // skipped; a cycle that found nothing behind stays quiet. No
-            // counters are set either way, so nothing looks in flight.
+            // A cycle that found nothing behind stays quiet; one that found
+            // repos it was not allowed to touch says so, since from the
+            // outside that is indistinguishable from auto-update not working.
             if skipped > 0 {
-                self.status_message = Some(Self::auto_update_summary(0, skipped));
+                self.status_message = Some(format!("auto-update: {skipped} left alone"));
             }
             return;
         }
-        self.auto_update_generation += 1;
-        self.auto_update_total = targets.len();
-        self.auto_update_done = 0;
-        self.auto_update_ok = 0;
-        self.auto_update_skipped = skipped;
-        self.auto_update_requested = Some(targets);
-    }
-
-    /// The one-line summary, shared by the two paths that can produce it:
-    /// a finished merge pass, and a cycle that never had a target to merge.
-    fn auto_update_summary(fast_forwarded: usize, left_alone: usize) -> String {
-        if left_alone == 0 {
-            format!("auto-update: fast-forwarded {fast_forwarded}")
+        let started = targets.len();
+        self.request_run_over(AUTO_UPDATE_ACTION, targets);
+        // The run reports itself from here: its progress in the header, each
+        // repo's outcome in RESULT. Only the repos it never got is this
+        // message's to carry.
+        self.status_message = Some(if skipped == 0 {
+            format!("auto-update: updating {started}")
         } else {
-            format!("auto-update: fast-forwarded {fast_forwarded}, {left_alone} left alone")
-        }
-    }
-
-    /// The generation the current in-flight auto-update cycle was tagged
-    /// with, for the caller to tag its `spawn_auto_update` call with.
-    pub fn auto_update_generation(&self) -> u64 {
-        self.auto_update_generation
-    }
-
-    pub fn take_auto_update_requested(&mut self) -> Option<Vec<usize>> {
-        self.auto_update_requested.take()
-    }
-
-    /// Apply one repo's outcome from an auto-update pass, unless it belongs
-    /// to a cycle a later one has since superseded. Once every targeted repo
-    /// has reported in, leaves a one-line summary in the status bar: repos a
-    /// fast-forward could not touch are reported rather than fixed, counted
-    /// rather than named, and that count spans both the repos that failed
-    /// here and the ones
-    /// [`maybe_complete_poll`](Self::maybe_complete_poll) never targeted.
-    pub fn on_auto_update_result(&mut self, result: AutoUpdateResult) {
-        if result.generation != self.auto_update_generation {
-            return;
-        }
-        self.auto_update_done += 1;
-        let fast_forwarded = matches!(result.outcome, AutoUpdateOutcome::FastForwarded);
-        if fast_forwarded {
-            self.auto_update_ok += 1;
-            self.auto_update_reprobe_targets
-                .get_or_insert_with(Vec::new)
-                .push(result.index);
-        }
-
-        if self.auto_update_done < self.auto_update_total {
-            return;
-        }
-        // Guarded rather than a plain `-`: an overlapping cycle that still
-        // slipped through the generation check would otherwise underflow
-        // here, and a panic in this path takes the terminal down with it.
-        let left_alone =
-            self.auto_update_total.saturating_sub(self.auto_update_ok) + self.auto_update_skipped;
-        self.status_message = Some(Self::auto_update_summary(self.auto_update_ok, left_alone));
-        self.auto_update_total = 0;
-        self.auto_update_done = 0;
-        self.auto_update_ok = 0;
-        self.auto_update_skipped = 0;
-    }
-
-    pub fn take_auto_update_reprobe_targets(&mut self) -> Option<Vec<usize>> {
-        self.auto_update_reprobe_targets.take()
+            format!("auto-update: updating {started}, {skipped} left alone")
+        });
     }
 
     /// The header's `poll 5m` / `poll 5m · auto` text, `None` when the poll
@@ -383,39 +333,43 @@ mod tests {
         assert!(a.status_message.is_some());
     }
 
+    /// A poll cycle's results, applied one by one, with `probed` as the
+    /// baseline each caller then bends into the shape it is testing.
+    fn poll_cycle(a: &mut App, shape: impl Fn(usize, &mut RepoState)) {
+        a.on_poll_due();
+        let targets = a.take_poll_requested().expect("poll started");
+        let generation = a.probe_generation;
+        for &i in &targets {
+            let mut s = probed(i, "main");
+            s.upstream = Some("origin/main".into());
+            s.behind = 2;
+            s.fetched = true;
+            shape(i, &mut s);
+            a.on_probe(generation, s);
+        }
+    }
+
+    /// The run auto-update starts is an ordinary one: same action, same
+    /// executor, same RESULT column as pressing `u` would give.
     #[test]
-    fn a_finished_poll_cycle_requests_auto_update_only_for_fast_forwardable_repos() {
+    fn a_finished_poll_cycle_runs_update_on_the_repos_it_may_touch() {
         let mut a = app(&["clean-behind", "dirty-behind"]);
         a.poll_enabled = true;
         a.auto_update = true;
 
-        a.on_poll_due();
-        let targets = a.take_poll_requested().expect("poll started");
-        let generation = a.probe_generation;
+        poll_cycle(&mut a, |i, s| s.changed = usize::from(i == 1));
 
-        let clean = RepoState {
-            index: 0,
-            branch: Some("main".into()),
-            upstream: Some("origin/main".into()),
-            ahead: 0,
-            behind: 2,
-            changed: 0,
-            changes: Default::default(),
-            present: true,
-            timed_out: false,
-            fetched: true,
-            fetch_head: None,
-        };
-        let mut dirty = clean.clone();
-        dirty.index = 1;
-        dirty.changed = 1;
-
-        for state in [clean, dirty] {
-            assert!(targets.contains(&state.index));
-            a.on_probe(generation, state);
-        }
-
-        assert_eq!(a.take_auto_update_requested(), Some(vec![0]));
+        let run = a.take_run_requested().expect("a run was requested");
+        assert_eq!(run.action, "update");
+        assert_eq!(run.targets, vec![0], "the dirty repo is never a target");
+        assert_eq!(
+            run.body, None,
+            "the set's own update body, not one typed at the prompt"
+        );
+        assert_eq!(
+            a.status_message.as_deref(),
+            Some("auto-update: updating 1, 1 left alone")
+        );
     }
 
     #[test]
@@ -433,54 +387,32 @@ mod tests {
         a.begin_named_run("update".into(), vec![0]);
 
         for &index in &targets {
-            a.on_probe(
-                generation,
-                RepoState {
-                    index,
-                    branch: Some("main".into()),
-                    upstream: Some("origin/main".into()),
-                    ahead: 0,
-                    behind: 2,
-                    changed: 0,
-                    changes: Default::default(),
-                    present: true,
-                    timed_out: false,
-                    fetched: true,
-                    fetch_head: None,
-                },
-            );
+            let mut s = probed(index, "main");
+            s.upstream = Some("origin/main".into());
+            s.behind = 2;
+            s.fetched = true;
+            a.on_probe(generation, s);
         }
 
         assert!(
-            a.take_auto_update_requested().is_none(),
+            a.take_run_requested().is_none(),
             "a run that started mid-poll must suppress that poll's auto-update pass"
         );
     }
 
     #[test]
-    fn a_plain_reprobe_never_triggers_auto_update() {
+    fn a_plain_probe_never_triggers_auto_update() {
         let mut a = app(&["clean-behind"]);
         a.auto_update = true; // set directly: never went through the poll it needs
 
         let generation = a.begin_probe(&[0]);
-        a.on_probe(
-            generation,
-            RepoState {
-                index: 0,
-                branch: Some("main".into()),
-                upstream: Some("origin/main".into()),
-                ahead: 0,
-                behind: 2,
-                changed: 0,
-                changes: Default::default(),
-                present: true,
-                timed_out: false,
-                fetched: false,
-                fetch_head: None,
-            },
-        );
+        let mut s = probed(0, "main");
+        s.upstream = Some("origin/main".into());
+        s.behind = 2;
+        a.on_probe(generation, s);
+
         assert!(
-            a.take_auto_update_requested().is_none(),
+            a.take_run_requested().is_none(),
             "only a poll cycle's own results should ever trigger auto-update"
         );
     }
@@ -494,143 +426,35 @@ mod tests {
         a.poll_enabled = true;
         a.auto_update = true;
 
-        a.on_poll_due();
-        let targets = a.take_poll_requested().expect("poll started");
-        let generation = a.probe_generation;
-
-        let mut s = probed(targets[0], "main");
-        s.upstream = Some("origin/main".into());
-        s.behind = 2;
-        s.fetched = false; // this repo's own git fetch failed
-
-        a.on_probe(generation, s);
+        poll_cycle(&mut a, |_, s| s.fetched = false);
 
         assert!(
-            a.take_auto_update_requested().is_none(),
+            a.take_run_requested().is_none(),
             "a repo whose fetch failed this cycle must not be picked for auto-update"
         );
     }
 
+    /// A cycle that can touch nothing at all still has something honest to
+    /// say: from the outside, silence is indistinguishable from auto-update
+    /// not working.
     #[test]
-    fn an_auto_update_result_summarises_once_every_target_has_reported() {
-        let mut a = app(&["ok", "fails"]);
-        a.poll_enabled = true;
-        a.auto_update = true;
-        a.on_poll_due();
-        let targets = a.take_poll_requested().expect("poll started");
-        let generation = a.probe_generation;
-
-        for &i in &targets {
-            let mut s = probed(i, "main");
-            s.upstream = Some("origin/main".into());
-            s.behind = 2;
-            s.fetched = true;
-            a.on_probe(generation, s);
-        }
-
-        let auto_targets = a
-            .take_auto_update_requested()
-            .expect("both repos are eligible");
-        let cycle = a.auto_update_generation();
-
-        a.on_auto_update_result(AutoUpdateResult {
-            index: auto_targets[0],
-            generation: cycle,
-            outcome: AutoUpdateOutcome::FastForwarded,
-        });
-        assert!(a.status_message.is_none(), "not done yet");
-
-        a.on_auto_update_result(AutoUpdateResult {
-            index: auto_targets[1],
-            generation: cycle,
-            outcome: AutoUpdateOutcome::Failed("not fast-forward possible".into()),
-        });
-        assert_eq!(
-            a.status_message.as_deref(),
-            Some("auto-update: fast-forwarded 1, 1 left alone")
-        );
-        assert_eq!(
-            a.take_auto_update_reprobe_targets(),
-            Some(vec![auto_targets[0]])
-        );
-    }
-
-    /// The common shape of "left alone": a repo that came back behind and
-    /// dirty is never eligible in the first place, so it never reaches the
-    /// merge and never lands in the merge-time count. It still has to appear
-    /// in the summary, or a skipped repo reads exactly like one with nothing
-    /// to do.
-    #[test]
-    fn a_repo_skipped_at_eligibility_time_is_counted_as_left_alone() {
-        let mut a = app(&["clean-behind", "dirty-behind"]);
-        a.poll_enabled = true;
-        a.auto_update = true;
-        a.on_poll_due();
-        let targets = a.take_poll_requested().expect("poll started");
-        let generation = a.probe_generation;
-
-        for &i in &targets {
-            let mut s = probed(i, "main");
-            s.upstream = Some("origin/main".into());
-            s.behind = 2;
-            s.fetched = true;
-            s.changed = usize::from(i == 1); // the second repo is dirty
-            a.on_probe(generation, s);
-        }
-
-        let auto_targets = a
-            .take_auto_update_requested()
-            .expect("the clean repo is eligible");
-        assert_eq!(auto_targets, vec![0], "the dirty repo is never a target");
-        let cycle = a.auto_update_generation();
-
-        a.on_auto_update_result(AutoUpdateResult {
-            index: auto_targets[0],
-            generation: cycle,
-            outcome: AutoUpdateOutcome::FastForwarded,
-        });
-        assert_eq!(
-            a.status_message.as_deref(),
-            Some("auto-update: fast-forwarded 1, 1 left alone")
-        );
-    }
-
-    /// A cycle that could merge nothing at all still has something honest to
-    /// say, so the "no targets" path reports rather than going quiet, and
-    /// leaves no phantom in-flight cycle behind it.
-    #[test]
-    fn a_cycle_that_merges_nothing_still_reports_what_it_left_alone() {
+    fn a_cycle_that_updates_nothing_still_reports_what_it_left_alone() {
         let mut a = app(&["dirty-behind", "diverged"]);
         a.poll_enabled = true;
         a.auto_update = true;
-        a.on_poll_due();
-        let targets = a.take_poll_requested().expect("poll started");
-        let generation = a.probe_generation;
 
-        for &i in &targets {
-            let mut s = probed(i, "main");
-            s.upstream = Some("origin/main".into());
-            s.behind = 2;
-            s.fetched = true;
+        poll_cycle(&mut a, |i, s| {
             if i == 0 {
                 s.changed = 1;
             } else {
                 s.ahead = 1;
             }
-            a.on_probe(generation, s);
-        }
+        });
 
-        assert!(
-            a.take_auto_update_requested().is_none(),
-            "nothing was eligible to merge"
-        );
+        assert!(a.take_run_requested().is_none(), "nothing was eligible");
         assert_eq!(
             a.status_message.as_deref(),
-            Some("auto-update: fast-forwarded 0, 2 left alone")
-        );
-        assert!(
-            !a.auto_update_in_flight(),
-            "a cycle that spawned no merges must not look like one still running"
+            Some("auto-update: 2 left alone")
         );
     }
 
@@ -641,83 +465,11 @@ mod tests {
         let mut a = app(&["up-to-date"]);
         a.poll_enabled = true;
         a.auto_update = true;
-        a.on_poll_due();
-        let targets = a.take_poll_requested().expect("poll started");
-        let generation = a.probe_generation;
 
-        let mut s = probed(targets[0], "main");
-        s.upstream = Some("origin/main".into());
-        s.fetched = true;
-        a.on_probe(generation, s);
+        poll_cycle(&mut a, |_, s| s.behind = 0);
 
-        assert!(a.take_auto_update_requested().is_none());
+        assert!(a.take_run_requested().is_none());
         assert!(a.status_message.is_none(), "an idle tick stays quiet");
-    }
-
-    /// A result tagged with an older auto-update generation belongs to a
-    /// cycle the counters have already moved past and must be dropped, the
-    /// same way a stale probe result is.
-    #[test]
-    fn an_auto_update_result_from_a_superseded_generation_is_dropped() {
-        let mut a = app(&["foo"]);
-        a.auto_update_generation = 2;
-        a.auto_update_total = 1;
-
-        a.on_auto_update_result(AutoUpdateResult {
-            index: 0,
-            generation: 1, // an older cycle
-            outcome: AutoUpdateOutcome::FastForwarded,
-        });
-
-        assert_eq!(
-            a.auto_update_done, 0,
-            "a result from a superseded generation must not be counted"
-        );
-        assert!(a.status_message.is_none());
-    }
-
-    /// A poll cycle must not start a second auto-update pass while one is
-    /// still in flight, since a late result from the first would otherwise
-    /// land against the second cycle's counters.
-    #[test]
-    fn a_poll_cycle_refuses_to_start_a_second_auto_update_pass_while_one_is_in_flight() {
-        let mut a = app(&["foo"]);
-        a.poll_enabled = true;
-        a.auto_update = true;
-        a.auto_update_total = 1; // a cycle is already in flight
-        a.auto_update_done = 0;
-
-        a.on_poll_due();
-        let targets = a.take_poll_requested().expect("poll started");
-        let generation = a.probe_generation;
-        let mut s = probed(targets[0], "main");
-        s.upstream = Some("origin/main".into());
-        s.behind = 2;
-        s.fetched = true;
-        a.on_probe(generation, s);
-
-        assert!(
-            a.take_auto_update_requested().is_none(),
-            "must not start a second auto-update cycle while one is still in flight"
-        );
-    }
-
-    /// The completion arithmetic must not panic even if a stale result
-    /// slips past the generation check with `ok` already ahead of `total`,
-    /// since a panic in this path takes the terminal down with it.
-    #[test]
-    fn on_auto_update_result_does_not_panic_when_ok_would_exceed_total() {
-        let mut a = app(&["foo"]);
-        a.auto_update_generation = 1;
-        a.auto_update_total = 0;
-        a.auto_update_done = 0;
-        a.auto_update_ok = 1;
-
-        a.on_auto_update_result(AutoUpdateResult {
-            index: 0,
-            generation: 1,
-            outcome: AutoUpdateOutcome::FastForwarded,
-        });
     }
 
     #[test]
