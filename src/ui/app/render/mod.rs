@@ -6,7 +6,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use super::detail::{self, DetailLayout};
-use super::state::{App, Pane, Sort, SEGMENT_SEP};
+use super::state::{App, Mode, Pane, Sort, SEGMENT_SEP};
 use crate::ui::widgets::{display_width, truncate};
 
 mod detail_pane;
@@ -71,26 +71,21 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_list(frame, app, area, false);
     }
 
-    if app.palette_open {
-        draw_palette(frame, app, area);
-    }
-    if app.run_command_open {
-        draw_run_command(frame, app, area);
-    }
-    if app.sort_menu_open {
-        draw_sort_menu(frame, app, area);
-    }
-    if app.set_picker_open {
-        draw_set_picker(frame, app, area);
-    }
-    if let Some(pending) = &app.pending_run {
-        draw_confirm(frame, app, pending, area);
-    }
-    if app.quit_pending {
-        draw_quit_confirm(frame, area);
-    }
-    if app.help_open {
-        draw_help(frame, area);
+    // At most one popup, chosen by the same precedence the dispatcher uses,
+    // so what is drawn on top is always what the next keystroke reaches.
+    match app.mode() {
+        Mode::Palette => draw_palette(frame, app, area),
+        Mode::RunCommand => draw_run_command(frame, app, area),
+        Mode::SortMenu => draw_sort_menu(frame, app, area),
+        Mode::SetPicker => draw_set_picker(frame, app, area),
+        Mode::RunConfirm => {
+            if let Some(pending) = &app.pending_run {
+                draw_confirm(frame, app, pending, area);
+            }
+        }
+        Mode::QuitConfirm => draw_quit_confirm(frame, area),
+        Mode::Help => draw_help(frame, area),
+        Mode::Filter | Mode::Detail | Mode::List => {}
     }
 }
 

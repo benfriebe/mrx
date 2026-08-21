@@ -19,7 +19,7 @@ fn repo(name: &str) -> Repo {
     }
 }
 
-pub(super) fn app(names: &[&str]) -> App {
+pub(crate) fn app(names: &[&str]) -> App {
     App::new(
         names.iter().map(|n| repo(n)).collect(),
         "work".into(),

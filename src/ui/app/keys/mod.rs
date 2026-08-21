@@ -7,7 +7,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 
-use super::state::{App, Pane, Sort};
+use super::state::{App, Mode, Pane, Sort};
 
 mod mouse;
 #[cfg(test)]
@@ -53,83 +53,95 @@ fn on_resize(app: &mut App, width: u16, height: u16) {
     app.terminal_height = height;
 }
 
+/// One keystroke, classified before any mode sees it.
+///
+/// crossterm reports Ctrl-U as `Char('u')` with the modifier set, so a mode
+/// matching `KeyCode::Char` on its own types the `u` or fires the shortcut it
+/// is bound to. Splitting the two here means a handler cannot make that
+/// mistake by omission: a chord simply never arrives as [`Plain`](Self::Plain).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Input {
+    /// A Ctrl chord, carrying the key it was struck with.
+    Chord(KeyCode),
+    /// A key standing for itself: a character to type, or a named key.
+    Plain(KeyCode),
+}
+
+impl From<KeyEvent> for Input {
+    fn from(key: KeyEvent) -> Self {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            Self::Chord(key.code)
+        } else {
+            Self::Plain(key.code)
+        }
+    }
+}
+
 fn on_key(app: &mut App, key: KeyEvent) -> bool {
+    let input = Input::from(key);
     // Quit is bound in every mode, and handled here rather than in each of
     // them: a mode-local handler that forgets to wire it (the set picker, the
     // dirty-run confirm) would strand the user with no way out. A second
     // Ctrl-C at the quit prompt confirms rather than declining, like `y`.
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+    if input == Input::Chord(KeyCode::Char('c')) {
         return if app.quit_pending {
             app.confirm_quit()
         } else {
             app.request_quit()
         };
     }
-    if app.quit_pending {
-        return on_quit_confirm_key(app, key);
+    match app.mode() {
+        Mode::QuitConfirm => on_quit_confirm_key(app, input),
+        // Dismissed by any key: the overlay reads rather than does, so there
+        // is nothing to hunt for an exit key over.
+        Mode::Help => {
+            app.help_open = false;
+            false
+        }
+        Mode::RunConfirm => on_confirm_key(app, input),
+        Mode::SetPicker => {
+            on_set_picker_key(app, input);
+            false
+        }
+        Mode::Palette => {
+            on_palette_key(app, input);
+            false
+        }
+        // The only handler still given the raw event: `TextArea` owns the
+        // editing chords, and guards the same rule for itself.
+        Mode::RunCommand => {
+            on_run_command_key(app, input, key);
+            false
+        }
+        Mode::SortMenu => {
+            on_sort_menu_key(app, input);
+            false
+        }
+        Mode::Filter => {
+            on_filter_key(app, input);
+            false
+        }
+        Mode::Detail => on_detail_key(app, input),
+        Mode::List => on_list_key(app, input),
     }
-    // Dismissed by any key: the overlay reads rather than does, so there is
-    // nothing to hunt for an exit key over.
-    if app.help_open {
-        app.help_open = false;
-        return false;
-    }
-    if app.pending_run.is_some() {
-        return on_confirm_key(app, key);
-    }
-    if app.set_picker_open {
-        on_set_picker_key(app, key);
-        return false;
-    }
-    if app.palette_open {
-        on_palette_key(app, key);
-        return false;
-    }
-    if app.run_command_open {
-        on_run_command_key(app, key);
-        return false;
-    }
-    if app.sort_menu_open {
-        on_sort_menu_key(app, key);
-        return false;
-    }
-    if app.filtering {
-        on_filter_key(app, key);
-        return false;
-    }
-    if app.detail_open {
-        return on_detail_key(app, key);
-    }
-    on_list_key(app, key)
 }
 
-fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        // crossterm reports Ctrl-U as `Char('u')` with the modifier set, so an
-        // unmatched Ctrl chord must return rather than fall through to the
-        // plain-letter shortcuts and run `update` on a readline keystroke.
-        return match key.code {
-            KeyCode::Char('d') => {
-                app.move_cursor_half_page(1);
-                false
+fn on_list_key(app: &mut App, input: Input) -> bool {
+    let code = match input {
+        Input::Chord(code) => {
+            match code {
+                KeyCode::Char('d') => app.move_cursor_half_page(1),
+                KeyCode::Char('u') => app.move_cursor_half_page(-1),
+                KeyCode::Char('r') => app.reload_config(),
+                KeyCode::Char('a') => app.toggle_auto_update(),
+                _ => {}
             }
-            KeyCode::Char('u') => {
-                app.move_cursor_half_page(-1);
-                false
-            }
-            KeyCode::Char('r') => {
-                app.reload_config();
-                false
-            }
-            KeyCode::Char('a') => {
-                app.toggle_auto_update();
-                false
-            }
-            _ => false,
-        };
-    }
+            return false;
+        }
+        Input::Plain(code) => code,
+    };
 
-    match key.code {
+    match code {
         KeyCode::Char('q') => return app.request_quit(),
         KeyCode::Char('j') | KeyCode::Down => app.move_cursor(1),
         KeyCode::Char('k') | KeyCode::Up => app.move_cursor(-1),
@@ -163,13 +175,12 @@ fn on_list_key(app: &mut App, key: KeyEvent) -> bool {
 
 /// Keys while `q`/`Ctrl-C` is waiting on a "quit while a run is live?"
 /// confirmation: `y`/Enter confirms, everything else declines.
-fn on_quit_confirm_key(app: &mut App, key: KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Enter => app.confirm_quit(),
-        _ => {
-            app.cancel_quit();
-            false
-        }
+fn on_quit_confirm_key(app: &mut App, input: Input) -> bool {
+    if matches!(input, Input::Plain(KeyCode::Char('y') | KeyCode::Enter)) {
+        app.confirm_quit()
+    } else {
+        app.cancel_quit();
+        false
     }
 }
 
@@ -177,9 +188,9 @@ fn on_quit_confirm_key(app: &mut App, key: KeyEvent) -> bool {
 /// leave the order alone. It swallows every key it does not bind, since the
 /// menu covers the list it would otherwise reach: `s` behind it means "sort
 /// by STATE", never "run status".
-fn on_sort_menu_key(app: &mut App, key: KeyEvent) {
+fn on_sort_menu_key(app: &mut App, input: Input) {
     app.sort_menu_open = false;
-    if let KeyCode::Char(c) = key.code {
+    if let Input::Plain(KeyCode::Char(c)) = input {
         if let Some(sort) = Sort::from_key(c) {
             app.choose_sort(sort);
         }
@@ -189,8 +200,9 @@ fn on_sort_menu_key(app: &mut App, key: KeyEvent) {
 /// Keys while the set picker is open: just navigation and the two exits. No
 /// text capture, unlike the palette, since the list of sets is short enough to
 /// scan without filtering it.
-fn on_set_picker_key(app: &mut App, key: KeyEvent) {
-    match key.code {
+fn on_set_picker_key(app: &mut App, input: Input) {
+    let Input::Plain(code) = input else { return };
+    match code {
         KeyCode::Esc => app.close_set_picker(),
         KeyCode::Enter => app.confirm_set_picker(),
         KeyCode::Char('j') | KeyCode::Down => app.set_picker_move(1),
@@ -202,8 +214,9 @@ fn on_set_picker_key(app: &mut App, key: KeyEvent) {
 /// Keys while `/` is capturing text. Everything but Esc, Enter, and
 /// Backspace is literal filter text, including letters that are shortcuts in
 /// the normal mode.
-fn on_filter_key(app: &mut App, key: KeyEvent) {
-    match key.code {
+fn on_filter_key(app: &mut App, input: Input) {
+    let Input::Plain(code) = input else { return };
+    match code {
         KeyCode::Esc => app.cancel_filter(),
         KeyCode::Enter => app.commit_filter(),
         KeyCode::Backspace => app.filter_backspace(),
@@ -214,8 +227,9 @@ fn on_filter_key(app: &mut App, key: KeyEvent) {
 
 /// Keys while the action palette is open. Same shape as filter capture:
 /// only navigation and the exits are special, everything else is text.
-fn on_palette_key(app: &mut App, key: KeyEvent) {
-    match key.code {
+fn on_palette_key(app: &mut App, input: Input) {
+    let Input::Plain(code) = input else { return };
+    match code {
         KeyCode::Esc => app.close_palette(),
         KeyCode::Enter => app.palette_confirm(),
         KeyCode::Backspace => app.palette_backspace(),
@@ -231,26 +245,28 @@ fn on_palette_key(app: &mut App, key: KeyEvent) {
 /// rest. Ctrl-D is taken before the buffer sees it, so a body is ended by the
 /// chord that ends input everywhere else rather than by Enter, which the body
 /// needs for its own newlines.
-fn on_run_command_key(app: &mut App, key: KeyEvent) {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
-        app.run_command_confirm();
-        return;
+fn on_run_command_key(app: &mut App, input: Input, key: KeyEvent) {
+    match input {
+        Input::Chord(KeyCode::Char('d')) => app.run_command_confirm(),
+        Input::Plain(KeyCode::Esc) => app.close_run_command(),
+        // The buffer says whether it took the key; nothing here needs to
+        // know, since an unmatched chord is simply not typed.
+        _ => {
+            app.run_command.on_key(key);
+        }
     }
-    if key.code == KeyCode::Esc {
-        app.close_run_command();
-        return;
-    }
-    app.run_command.on_key(key);
 }
 
 /// Keys while the dirty-selection confirmation is up: a modal that swallows
 /// everything but yes/no.
-fn on_confirm_key(app: &mut App, key: KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Enter => app.confirm_pending_run(),
-        KeyCode::Char('c') => app.confirm_pending_run_at_cursor(),
-        KeyCode::Char('n') | KeyCode::Esc => app.cancel_pending_run(),
-        _ => {}
+fn on_confirm_key(app: &mut App, input: Input) -> bool {
+    if let Input::Plain(code) = input {
+        match code {
+            KeyCode::Char('y') | KeyCode::Enter => app.confirm_pending_run(),
+            KeyCode::Char('c') => app.confirm_pending_run_at_cursor(),
+            KeyCode::Char('n') | KeyCode::Esc => app.cancel_pending_run(),
+            _ => {}
+        }
     }
     false
 }
@@ -258,25 +274,20 @@ fn on_confirm_key(app: &mut App, key: KeyEvent) -> bool {
 /// Keys while the detail view is open: the cursor still moves the
 /// underlying selection (the view follows it), plus scrolling, copying, and
 /// the exit back to the full-width list.
-fn on_detail_key(app: &mut App, key: KeyEvent) -> bool {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        match key.code {
-            KeyCode::Char('d') => {
-                app.detail_scroll_down();
-                return false;
+fn on_detail_key(app: &mut App, input: Input) -> bool {
+    let code = match input {
+        Input::Chord(code) => {
+            match code {
+                KeyCode::Char('d') => app.detail_scroll_down(),
+                KeyCode::Char('u') => app.detail_scroll_up(),
+                KeyCode::Char('r') => app.reload_config(),
+                _ => {}
             }
-            KeyCode::Char('u') => {
-                app.detail_scroll_up();
-                return false;
-            }
-            KeyCode::Char('r') => {
-                app.reload_config();
-                return false;
-            }
-            _ => {}
+            return false;
         }
-    }
-    match key.code {
+        Input::Plain(code) => code,
+    };
+    match code {
         KeyCode::Char('q') => return app.request_quit(),
         // `j`/`k` follow the focus. Both panes are on screen either way, so
         // which one moves has to be something the user chose.
@@ -497,6 +508,76 @@ mod tests {
         a.on_probe(0, probed(0, "main"));
         on_input(&mut a, &press(KeyCode::Char('u')));
         assert_eq!(a.run_requested.unwrap().action, "update");
+    }
+
+    /// The detail view matched its chords and then fell through to the plain
+    /// letters, so Ctrl-O suspended the whole TUI into `$EDITOR`.
+    #[test]
+    fn a_chord_in_the_detail_view_does_not_act_as_the_plain_letter() {
+        for code in [
+            KeyCode::Char('o'),
+            KeyCode::Char('y'),
+            KeyCode::Char('q'),
+            KeyCode::Char('!'),
+            KeyCode::Char('m'),
+            KeyCode::Char('?'),
+        ] {
+            let mut a = app(&["foo"]);
+            ran(&mut a, 0, 3);
+            a.open_detail();
+            let quit = on_input(&mut a, &ctrl(code));
+
+            assert!(!quit, "Ctrl-{code:?} quit");
+            assert!(a.foreground.is_none(), "Ctrl-{code:?} suspended the app");
+            assert!(a.detail_open, "Ctrl-{code:?} left the detail view");
+            assert!(!a.help_open, "Ctrl-{code:?} opened the help overlay");
+            assert!(a.status_message.is_none(), "Ctrl-{code:?} did something");
+        }
+    }
+
+    /// A chord reaching a text capture types its letter, so the readline
+    /// habits (Ctrl-U to clear the line, Ctrl-W to rub out a word) wrote
+    /// `u` and `w` into what they were meant to be clearing.
+    #[test]
+    fn a_chord_is_never_typed_into_a_text_capture() {
+        let mut a = app(&["foo", "bar"]);
+        a.start_filter();
+        for code in [KeyCode::Char('u'), KeyCode::Char('w'), KeyCode::Char('a')] {
+            on_input(&mut a, &ctrl(code));
+        }
+        assert_eq!(a.filter, "", "a chord was typed into the filter");
+
+        let mut a = app(&["foo", "bar"]);
+        a.open_palette();
+        for code in [KeyCode::Char('u'), KeyCode::Char('w'), KeyCode::Char('a')] {
+            on_input(&mut a, &ctrl(code));
+        }
+        assert_eq!(a.palette_filter, "", "a chord was typed into the palette");
+    }
+
+    /// The sort menu binds bare letters, `u` for SYNC among them, so a chord
+    /// falling through reordered the table on a readline keystroke.
+    #[test]
+    fn a_chord_in_the_sort_menu_chooses_no_column() {
+        let mut a = app(&["foo"]);
+        let before = a.sort;
+        a.sort_menu_open = true;
+        on_input(&mut a, &ctrl(KeyCode::Char('u')));
+        assert_eq!(a.sort, before);
+    }
+
+    /// Both confirmations take `y`, and neither should read Ctrl-Y as it.
+    #[test]
+    fn a_chord_does_not_answer_a_confirmation() {
+        let mut a = app(&["foo"]);
+        a.enter_mode(Mode::QuitConfirm);
+        assert!(!on_input(&mut a, &ctrl(KeyCode::Char('y'))));
+
+        let mut a = app(&["foo"]);
+        a.enter_mode(Mode::RunConfirm);
+        on_input(&mut a, &ctrl(KeyCode::Char('y')));
+        assert!(a.run_requested.is_none());
+        assert!(a.pending_run.is_some(), "the confirmation was answered");
     }
 
     #[test]

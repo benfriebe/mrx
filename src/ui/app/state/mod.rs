@@ -16,6 +16,7 @@ mod auto_update;
 mod detail_view;
 mod foreground;
 mod list;
+mod mode;
 mod palette;
 mod probing;
 mod run;
@@ -24,10 +25,11 @@ mod run_request;
 mod set_picker;
 mod sort;
 #[cfg(test)]
-mod testkit;
+pub(crate) mod testkit;
 
 pub use detail_view::{OutputSelection, Pane};
 pub use foreground::{Foreground, Suspend};
+pub use mode::Mode;
 pub use probing::{sync_width, ProbeDisplay};
 pub use run::{LiveRun, RunStatus, DEFAULT_RESULT_TTL, SEGMENT_SEP};
 pub use run_request::{PendingRun, RunRequest};
@@ -44,8 +46,8 @@ const NEVER_RUN: &str = "·";
 /// needing a spawn, a terminal write, or the executor's `RunHandle` is
 /// recorded here as a flag or a target list and consumed by the run loop
 /// through the `take_*` methods.
-// These flags are independent modes rather than one mode with several values,
-// so an enum over them would enumerate combinations instead of describing them.
+// The flags stay independent because the layered modes reopen what they
+// covered; [`Mode`] is the derived answer to which of them owns the input.
 #[expect(clippy::struct_excessive_bools)]
 pub struct App {
     pub repos: Vec<Repo>,
@@ -349,12 +351,6 @@ impl App {
     /// have is dropped silently: a config edit is not an error. `set_label`
     /// is left untouched, since `main.rs` already decided which config to
     /// load before this ever runs.
-    /// Whether an overlay is covering the table, so a click behind it lands
-    /// on nothing rather than on the row it happens to sit over.
-    pub fn any_overlay_open(&self) -> bool {
-        self.palette_open || self.set_picker_open || self.run_command_open || self.sort_menu_open
-    }
-
     pub fn restore_session(&mut self, session: &Session) {
         self.filter.clone_from(&session.filter);
         self.sort = session.sort;

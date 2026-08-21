@@ -11,6 +11,13 @@ use crate::ui::app::state::{App, Pane};
 const WHEEL_STEP: isize = 3;
 
 pub(super) fn on_mouse(app: &mut App, mouse: MouseEvent) -> bool {
+    // A modal draws a `Clear`ed popup over the table, so every gesture under
+    // it would act on something the user cannot see: a click resolving to a
+    // row, the wheel moving a cursor behind the popup. Guarding here rather
+    // than in each handler is what stops the next gesture arriving unguarded.
+    if app.mode().is_modal() {
+        return false;
+    }
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => on_click(app, mouse.column, mouse.row),
         MouseEventKind::ScrollUp => on_scroll(app, mouse.column, -1),
@@ -58,13 +65,9 @@ fn output_line_at(app: &App, column: u16, row: u16) -> Option<usize> {
 }
 
 /// Click a row to move the cursor to it, click the row already under the
-/// cursor to open its detail view. A click inside the detail pane itself, or
-/// while a modal overlay is up, has no target.
+/// cursor to open its detail view. A click inside the detail pane itself has
+/// no target.
 fn on_click(app: &mut App, column: u16, row: u16) {
-    if app.pending_run.is_some() || app.quit_pending || app.any_overlay_open() {
-        return;
-    }
-
     if app.detail_open {
         // Both panes are on screen, so a press on one is the clearest
         // statement there is of which one `j`/`k` should reach: pointing at
@@ -151,6 +154,7 @@ mod tests {
     use super::*;
     use crate::ui::app::keys::on_input;
     use crate::ui::app::keys::testkit::{app, press};
+    use crate::ui::app::state::Mode;
     use crossterm::event::{Event, KeyCode, KeyModifiers};
 
     /// [`render::LIST_HEADER_ROWS`] as a screen row: the first table row, and
@@ -174,29 +178,31 @@ mod tests {
         assert!(a.detail_open);
     }
 
-    /// Every overlay covers the table, so none of them can let a click
-    /// through to the row it happens to be drawn over.
+    /// A modal covers the table, so no gesture under one may reach the row it
+    /// happens to be drawn over. Swept over every mode rather than the four
+    /// this test used to list, which is how it missed the help overlay.
     #[test]
-    fn a_click_behind_an_overlay_reaches_nothing() {
-        for open in [
-            |a: &mut App| a.palette_open = true,
-            |a: &mut App| a.set_picker_open = true,
-            |a: &mut App| a.run_command_open = true,
-            |a: &mut App| a.sort_menu_open = true,
-        ] {
-            let mut a = app(&["foo", "bar"]);
-            a.terminal_height = 24;
-            a.cursor = 0;
-            open(&mut a);
-            let ev = Event::Mouse(MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: 5,
-                row: header_row(),
-                modifiers: KeyModifiers::NONE,
-            });
-            on_input(&mut a, &ev);
-            assert!(!a.detail_open);
-            assert_eq!(a.cursor, 0);
+    fn no_pointer_gesture_reaches_the_table_behind_a_modal() {
+        for &mode in Mode::ALL.iter().filter(|m| m.is_modal()) {
+            for kind in [
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::ScrollDown,
+                MouseEventKind::ScrollUp,
+            ] {
+                let mut a = app(&["foo", "bar"]);
+                a.terminal_height = 24;
+                a.cursor = 0;
+                a.enter_mode(mode);
+                let ev = Event::Mouse(MouseEvent {
+                    kind,
+                    column: 5,
+                    row: header_row(),
+                    modifiers: KeyModifiers::NONE,
+                });
+                on_input(&mut a, &ev);
+                assert!(!a.detail_open, "{mode:?} let {kind:?} open the detail view");
+                assert_eq!(a.cursor, 0, "{mode:?} let {kind:?} move the cursor");
+            }
         }
     }
 
