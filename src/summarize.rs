@@ -15,6 +15,41 @@ pub enum Shape {
     Generic,
 }
 
+/// Whether a step left the repo as it found it.
+///
+/// Decided by the summariser that phrases the step, rather than read back off
+/// the phrase afterwards, so the wording and the conclusion cannot disagree
+/// about one step. They did: a config-defined body is summarised by its own
+/// output, so `echo done`, or a linter printing `clean`, used to be filed as
+/// having changed nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Quiet,
+    Changed,
+}
+
+/// A step's summary and what it amounts to.
+struct Summary {
+    text: String,
+    verdict: Verdict,
+}
+
+impl Summary {
+    fn quiet(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            verdict: Verdict::Quiet,
+        }
+    }
+
+    fn changed(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            verdict: Verdict::Changed,
+        }
+    }
+}
+
 /// Summarise one step's output into a short, shape-aware description.
 ///
 /// `stdout`/`stderr` may carry ANSI escapes (forced on so ui mode can show
@@ -22,18 +57,24 @@ pub enum Shape {
 /// match, and char-counted truncation below assumes plain text; the
 /// shape-specific parsers rely on that rather than stripping again.
 pub fn summarize(shape: Shape, stdout: &str, stderr: &str, exit_code: i32) -> String {
+    summarize_full(shape, stdout, stderr, exit_code).text
+}
+
+fn summarize_full(shape: Shape, stdout: &str, stderr: &str, exit_code: i32) -> Summary {
     let stdout = crate::ansi::strip(stdout);
     let stderr = crate::ansi::strip(stderr);
     let stdout = stdout.as_str();
     let stderr = stderr.as_str();
 
     if exit_code != 0 {
+        // Only successful steps are ever asked for a verdict, so a failure
+        // takes the one that keeps it out of the quiet bucket.
         let msg = error_line(stderr)
             .or_else(|| error_line(stdout))
             .or_else(|| first_meaningful_line(stderr))
             .or_else(|| first_meaningful_line(stdout))
             .unwrap_or_else(|| format!("exit code {exit_code}"));
-        return msg;
+        return Summary::changed(msg);
     }
 
     match shape {
@@ -64,25 +105,20 @@ pub fn summarize_steps(steps: &[StepResult], exit_code: i32) -> String {
     )
 }
 
-/// Whether a finished run left everything as it found it, read from the
-/// literals the summarisers below return for exactly that case. It lives beside
-/// them because it is the only thing that has to stay in step with their
-/// wording: RESULT sorts on it, and a phrase reworded above would otherwise
-/// quietly stop being recognised here.
+/// Whether a finished run left everything as it found it, from the verdict the
+/// step's own summariser reached. RESULT sorts on it, so a run that did
+/// something ranks above the ones that had nothing to do.
 pub fn changed_nothing(steps: &[StepResult], exit_code: i32) -> bool {
     let Some(last) = steps.last() else {
         return true;
     };
-    matches!(
-        summarize(last.shape, &last.stdout, &last.stderr, exit_code).as_str(),
-        "already up to date" | "clean" | "no changes" | "up to date" | "done"
-    )
+    summarize_full(last.shape, &last.stdout, &last.stderr, exit_code).verdict == Verdict::Quiet
 }
 
-fn summarize_pull(stdout: &str, stderr: &str) -> String {
+fn summarize_pull(stdout: &str, stderr: &str) -> Summary {
     let combined = format!("{stdout}\n{stderr}");
     if combined.contains("Already up to date") || combined.contains("Already up-to-date") {
-        return "already up to date".into();
+        return Summary::quiet("already up to date");
     }
     for line in stdout.lines().chain(stderr.lines()) {
         if line.contains("files changed")
@@ -90,13 +126,13 @@ fn summarize_pull(stdout: &str, stderr: &str) -> String {
             || line.contains("insertions")
             || line.contains("deletions")
         {
-            return line.trim().to_string();
+            return Summary::changed(line.trim());
         }
     }
     if stdout.trim().is_empty() && stderr.trim().is_empty() {
-        "done".into()
+        Summary::quiet("done")
     } else {
-        first_meaningful_line(stdout).unwrap_or_else(|| "done".into())
+        first_meaningful_line(stdout).map_or_else(|| Summary::quiet("done"), Summary::changed)
     }
 }
 
@@ -109,37 +145,57 @@ enum Change {
     Deleted,
 }
 
-fn summarize_status(stdout: &str) -> String {
+/// A working tree in words: `clean`, `2 modified, 1 untracked`, or a bare
+/// total when everything in it falls outside the three buckets (unmerged,
+/// ignored).
+///
+/// Shared with the STATE column, which counts the same changes off porcelain
+/// v2 rather than off `git status --short`. Only the parsing differs, so only
+/// the parsing is written twice: one phrasing means the column and an `s`
+/// run's RESULT cannot describe one repo differently.
+pub fn working_tree(modified: usize, untracked: usize, deleted: usize, total: usize) -> String {
+    if total == 0 {
+        return "clean".into();
+    }
+    let parts: Vec<String> = [
+        (modified, "modified"),
+        (untracked, "untracked"),
+        (deleted, "deleted"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, label)| format!("{count} {label}"))
+    .collect();
+    if parts.is_empty() {
+        format!("{total} changed")
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn summarize_status(stdout: &str) -> Summary {
     // `--branch` prepends `## main...origin/main`, which is not a file: left
     // in the count it reports every clean repo as "1 changed".
     let files: Vec<&str> = stdout
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with("##"))
         .collect();
-    if files.is_empty() {
-        return "clean".into();
-    }
-    let parts: Vec<String> = [
-        (Change::Modified, "modified"),
-        (Change::Untracked, "untracked"),
-        (Change::Deleted, "deleted"),
-    ]
-    .into_iter()
-    .filter_map(|(kind, label)| {
-        match files
+    let count = |kind| {
+        files
             .iter()
             .filter(|l| change_kind(l) == Some(kind))
             .count()
-        {
-            0 => None,
-            n => Some(format!("{n} {label}")),
-        }
-    })
-    .collect();
-    if parts.is_empty() {
-        format!("{} changed", files.len())
+    };
+    let text = working_tree(
+        count(Change::Modified),
+        count(Change::Untracked),
+        count(Change::Deleted),
+        files.len(),
+    );
+    if files.is_empty() {
+        Summary::quiet(text)
     } else {
-        parts.join(", ")
+        Summary::changed(text)
     }
 }
 
@@ -162,9 +218,9 @@ fn change_kind(line: &str) -> Option<Change> {
     })
 }
 
-fn summarize_diff(stdout: &str) -> String {
+fn summarize_diff(stdout: &str) -> Summary {
     if stdout.trim().is_empty() {
-        return "no changes".into();
+        return Summary::quiet("no changes");
     }
     let plus = stdout
         .lines()
@@ -178,52 +234,55 @@ fn summarize_diff(stdout: &str) -> String {
         .lines()
         .filter(|l| l.starts_with("diff --git"))
         .collect();
-    format!("{} files, +{} -{}", files.len(), plus, minus)
+    Summary::changed(format!("{} files, +{} -{}", files.len(), plus, minus))
 }
 
-fn summarize_push(stdout: &str, stderr: &str) -> String {
+fn summarize_push(stdout: &str, stderr: &str) -> Summary {
     let combined = format!("{stdout}\n{stderr}");
     if combined.contains("Everything up-to-date") {
-        return "up to date".into();
+        return Summary::quiet("up to date");
     }
     for line in stderr.lines().chain(stdout.lines()) {
         if line.contains("->") {
-            return line.trim().to_string();
+            return Summary::changed(line.trim());
         }
     }
-    "done".into()
+    Summary::quiet("done")
 }
 
-fn summarize_fetch(stdout: &str, stderr: &str) -> String {
+fn summarize_fetch(stdout: &str, stderr: &str) -> Summary {
     if stdout.trim().is_empty() && stderr.trim().is_empty() {
-        return "up to date".into();
+        return Summary::quiet("up to date");
     }
     let new_refs: Vec<&str> = stderr.lines().filter(|l| l.contains("->")).collect();
     if new_refs.is_empty() {
-        "up to date".into()
+        Summary::quiet("up to date")
     } else {
-        format!("{} updated refs", new_refs.len())
+        Summary::changed(format!("{} updated refs", new_refs.len()))
     }
 }
 
-fn summarize_clone(stderr: &str) -> String {
+fn summarize_clone(stderr: &str) -> Summary {
     if stderr.contains("Cloning into") {
-        "cloned".into()
+        Summary::changed("cloned")
     } else {
-        "done".into()
+        Summary::quiet("done")
     }
 }
 
-fn summarize_generic(stdout: &str, stderr: &str) -> String {
+/// A config-defined body's own output. Only silence counts as quiet: mrx has
+/// no idea what the body does, so a line it happens to have printed is not
+/// evidence that nothing moved, whatever the line says.
+fn summarize_generic(stdout: &str, stderr: &str) -> Summary {
     let lines: Vec<&str> = stdout
         .lines()
         .chain(stderr.lines())
         .filter(|l| !l.trim().is_empty())
         .collect();
     match lines.len() {
-        0 => "done".into(),
-        1 => lines[0].trim().to_string(),
-        n => format!("{} ({}+ lines)", lines[0].trim(), n),
+        0 => Summary::quiet("done"),
+        1 => Summary::changed(lines[0].trim()),
+        n => Summary::changed(format!("{} ({}+ lines)", lines[0].trim(), n)),
     }
 }
 
@@ -403,10 +462,8 @@ mod tests {
         }
     }
 
-    /// The RESULT column sorts on this, so each summariser's own "nothing
-    /// happened" wording has to keep being recognised. A phrase reworded above
-    /// without this list following it fails here rather than quietly ranking
-    /// every repo as having changed.
+    /// The RESULT column sorts on this, so every shape has to reach a verdict
+    /// on its own no-op rather than only the ones anyone thought to check.
     #[test]
     fn a_run_that_left_everything_alone_is_recognised_whatever_shape_said_so() {
         let quiet = [
@@ -432,6 +489,27 @@ mod tests {
 
         let moved = vec![step("git", Shape::Status, " M src/main.rs\n", 0)];
         assert!(!changed_nothing(&moved, 0));
+    }
+
+    /// mrx does not know what a config-defined body does, so a line it printed
+    /// is not evidence that nothing moved. These read as no-ops while the
+    /// verdict was recovered from the wording, and ranked with the repos that
+    /// genuinely had nothing to do.
+    #[test]
+    fn a_body_printing_a_word_mrx_uses_has_still_done_something() {
+        for output in ["done\n", "clean\n", "no changes\n", "up to date\n"] {
+            let steps = vec![step("check", Shape::Generic, output, 0)];
+            assert!(
+                !changed_nothing(&steps, 0),
+                "a body printing {output:?} was filed as having changed nothing"
+            );
+        }
+
+        let silent = vec![step("check", Shape::Generic, "", 0)];
+        assert!(
+            changed_nothing(&silent, 0),
+            "silence is the only thing a generic body says nothing with"
+        );
     }
 
     #[test]

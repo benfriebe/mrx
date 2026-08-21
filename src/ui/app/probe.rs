@@ -251,30 +251,19 @@ pub fn branch_text(state: &RepoState) -> String {
     state.branch.clone().unwrap_or_else(|| "(detached)".into())
 }
 
-/// The working tree alone: `clean`, or the same bucketed phrasing an `s` run
-/// puts in RESULT (`2 modified, 1 untracked`), so the two never describe one
-/// repo differently. A repo whose only changes are unmerged or ignored has
-/// nothing to bucket and falls back to the bare total. The building block
-/// [`dirty_text`] and the detail sidebar's briefer column share, so it
-/// layers on no ahead/behind or timeout/absent handling of its own.
+/// The working tree alone, phrased by [`summarize::working_tree`] so an `s`
+/// run's RESULT and this column cannot word one repo differently. What is
+/// local here is the counting: a probe reads porcelain v2, where a run reads
+/// `git status --short`. The building block [`dirty_text`] and the detail
+/// sidebar's briefer column share, so it layers on no ahead/behind or
+/// timeout/absent handling of its own.
 fn working_tree_text(state: &RepoState) -> String {
-    if state.changed == 0 {
-        return "clean".to_string();
-    }
-    let parts: Vec<String> = [
-        (state.changes.modified, "modified"),
-        (state.changes.untracked, "untracked"),
-        (state.changes.deleted, "deleted"),
-    ]
-    .into_iter()
-    .filter(|(count, _)| *count > 0)
-    .map(|(count, label)| format!("{count} {label}"))
-    .collect();
-    if parts.is_empty() {
-        format!("{} changed", state.changed)
-    } else {
-        parts.join(", ")
-    }
+    crate::summarize::working_tree(
+        state.changes.modified,
+        state.changes.untracked,
+        state.changes.deleted,
+        state.changed,
+    )
 }
 
 /// The STATE column: what the working tree is carrying, or why there is no
