@@ -12,7 +12,7 @@ use super::poll;
 use super::state::{App, Direction, Sort};
 use std::fmt::Write as _;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `$XDG_STATE_HOME/mrx/ui.json`, falling back to `~/.local/state/mrx/ui.json`.
 ///
@@ -47,6 +47,10 @@ pub struct Session {
     /// distinguishable from `None`, a file that never said: the first
     /// overrules a set's `auto_fetch`, the second leaves it to decide.
     pub poll_interval: Option<Duration>,
+    /// When the last poll cycle went out, as wall-clock time: the boot fetch
+    /// asks how stale the sync answers on screen are, and the answer has to
+    /// survive the process that measured it. Absent when nothing has polled.
+    pub checked: Option<SystemTime>,
     pub auto_update: bool,
     /// The order the table was left in. Column and direction are stored
     /// separately because the pair is what was chosen: a column reversed in
@@ -66,6 +70,7 @@ impl Default for Session {
             cursor: None,
             fetched: Vec::new(),
             poll_interval: None,
+            checked: None,
             auto_update: false,
             sort: Sort::default(),
             sort_direction: Sort::default().natural(),
@@ -97,10 +102,23 @@ impl Session {
             } else {
                 Duration::ZERO
             }),
+            // Taken from the monotonic clock the app measures with, so a
+            // wall clock nudged mid-session cannot backdate it.
+            checked: app
+                .last_poll_at
+                .and_then(|at| SystemTime::now().checked_sub(at.elapsed())),
             auto_update: app.auto_update,
             sort: app.sort,
             sort_direction: app.sort_direction,
         }
+    }
+
+    /// How long ago the persisted cycle ran, for the boot fetch to judge.
+    /// A stamp in the future, which a clock change is enough to produce,
+    /// reads the same as no stamp at all: fetch, rather than trust it.
+    pub fn checked_ago(&self) -> Option<Duration> {
+        self.checked
+            .and_then(|at| SystemTime::now().duration_since(at).ok())
     }
 }
 
@@ -153,6 +171,11 @@ fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
                     .into_u64()
                     .filter(|&secs| secs <= poll::MAX_POLL_INTERVAL.as_secs())
                     .map(Duration::from_secs);
+            }
+            "checked" => {
+                session.checked = value
+                    .into_u64()
+                    .map(|secs| UNIX_EPOCH + Duration::from_secs(secs));
             }
             "auto_update" => session.auto_update = value.into_bool().unwrap_or(false),
             // A column mrx no longer has reads as the field being absent.
@@ -218,6 +241,9 @@ fn to_json(s: &Session) -> String {
     let _ = writeln!(out, "  \"fetched\": [{fetched}],");
     if let Some(interval) = s.poll_interval {
         let _ = writeln!(out, "  \"poll\": {},", interval.as_secs());
+    }
+    if let Some(secs) = s.checked.and_then(|t| t.duration_since(UNIX_EPOCH).ok()) {
+        let _ = writeln!(out, "  \"checked\": {},", secs.as_secs());
     }
     let _ = writeln!(out, "  \"auto_update\": {},", s.auto_update);
     let _ = writeln!(out, "  \"sort\": {},", json::string(s.sort.name()));
@@ -584,6 +610,31 @@ mod tests {
             restarted.restore_session(&load());
 
             assert_eq!(restarted.fetched_repos, BTreeSet::from([1]));
+        });
+    }
+
+    /// The boot fetch reads this back after a restart, so a stamp that does
+    /// not survive the file silently becomes "fetch the whole set on every
+    /// launch".
+    #[test]
+    fn the_time_of_the_last_check_survives_a_save_and_a_load() {
+        with_state_home(|_| {
+            let mut app = app_with(&["alpha"]);
+            app.poll_enabled = true;
+            app.on_poll_due();
+            save(&app).unwrap();
+
+            let ago = load().checked_ago().expect("the cycle was recorded");
+            assert!(ago < Duration::from_mins(1), "just now, got {ago:?}");
+        });
+    }
+
+    #[test]
+    fn a_session_that_never_polled_records_no_check_at_all() {
+        with_state_home(|_| {
+            let app = app_with(&["alpha"]);
+            save(&app).unwrap();
+            assert_eq!(load().checked_ago(), None);
         });
     }
 

@@ -42,12 +42,21 @@ impl App {
         }
     }
 
-    /// Owe an opening fetch when the poll is on and nothing on screen has a
-    /// sync answer yet: without it a first run leaves every ↓ blank for a
-    /// whole interval, which reads as "up to date" rather than "not asked".
+    /// Owe an opening fetch when the poll is on and what is on screen is not
+    /// a fresh answer. `checked_ago` is how long ago the last cycle ran, and
+    /// `None` is nothing having run against this repo list at all: a first
+    /// run, or a set just switched into.
+    ///
+    /// Anything older than one interval is what the poll would already have
+    /// refreshed had the app stayed open, so this is the poll catching up
+    /// rather than a cycle of its own. Without it a boot shows the distances
+    /// a previous session left behind, which read as "up to date" rather than
+    /// "last asked on Tuesday".
+    ///
     /// Called once the poll's settings have settled, config and session both.
-    pub fn arm_boot_fetch(&mut self) {
-        self.boot_fetch_pending = self.poll_enabled && self.fetched_repos.is_empty();
+    pub fn arm_boot_fetch(&mut self, checked_ago: Option<Duration>) {
+        self.boot_fetch_pending =
+            self.poll_enabled && checked_ago.is_none_or(|ago| ago >= self.poll_interval);
     }
 
     /// Whether the opening fetch should go now, claimed once. Held back until
@@ -84,15 +93,16 @@ impl App {
         }
     }
 
-    /// `Ctrl-A`: turn auto-update on or off. Refuses while the poll itself
-    /// is off, since auto-update only ever acts on a poll's results.
+    /// `Ctrl-A`: turn auto-update on or off. Turning it on turns the poll on
+    /// with it rather than refusing: auto-update is the poll plus what it
+    /// does with the result, so asking for the second is asking for the
+    /// first. Turning it off leaves the poll where it is.
     /// See [`AUTO_UPDATE_ACTION`] for what it runs.
     pub fn toggle_auto_update(&mut self) {
-        if !self.poll_enabled {
-            self.status_message = Some("auto-update needs the freshness poll on first".into());
-            return;
-        }
         self.auto_update = !self.auto_update;
+        if self.auto_update {
+            self.poll_enabled = true;
+        }
     }
 
     /// Once every repo a poll cycle covered has reported back, start an
@@ -159,18 +169,22 @@ impl App {
         });
     }
 
-    /// The header's `poll 5m` / `poll 5m · auto` text, `None` when the poll
-    /// is off, so a mode that modifies repos is never invisible on screen.
-    pub fn poll_status_text(&self) -> Option<String> {
+    /// The header's `poll 5m` / `poll 5m · auto` / `poll off`.
+    ///
+    /// Off is stated rather than left blank. `F` toggles, so a header that
+    /// says nothing makes the key a guess, and a set whose `auto_fetch`
+    /// already turned the poll on then reads exactly like one that did not:
+    /// the first press turns it off.
+    pub fn poll_status_text(&self) -> String {
         if !self.poll_enabled {
-            return None;
+            return "poll off".into();
         }
         let interval = poll::format_interval(self.poll_interval);
-        Some(if self.auto_update {
+        if self.auto_update {
             format!("poll {interval} · auto")
         } else {
             format!("poll {interval}")
-        })
+        }
     }
 }
 
@@ -225,7 +239,7 @@ mod tests {
     fn the_opening_fetch_waits_for_the_opening_probe_to_land() {
         let mut a = app(&["foo", "bar"]);
         a.apply_auto_fetch(Some(Duration::from_mins(6)));
-        a.arm_boot_fetch();
+        a.arm_boot_fetch(None);
 
         let generation = a.begin_probe(&[0, 1]);
         assert!(!a.take_boot_fetch(), "a probe is still in flight");
@@ -238,17 +252,31 @@ mod tests {
         assert!(!a.take_boot_fetch(), "claimed once, not every frame");
     }
 
+    /// The whole point of the boot fetch: a session reopened after the poll
+    /// would have run again owes a cycle, however many sync answers the last
+    /// one left behind.
     #[test]
-    fn a_set_that_already_has_sync_answers_waits_for_its_first_interval() {
+    fn a_check_older_than_the_interval_still_owes_an_opening_fetch() {
         let mut a = app(&["foo"]);
         a.apply_auto_fetch(Some(Duration::from_mins(6)));
         a.fetched_repos.insert(0);
-        a.arm_boot_fetch();
+        a.arm_boot_fetch(Some(Duration::from_mins(7)));
 
         assert!(
-            !a.take_boot_fetch(),
-            "something has already fetched, so there is nothing to catch up on"
+            a.take_boot_fetch(),
+            "the answers on screen are an hour stale"
         );
+    }
+
+    /// Quitting and reopening inside the interval is not a reason to fetch:
+    /// the poll itself would not have.
+    #[test]
+    fn a_check_inside_the_interval_waits_for_the_tick_it_is_owed() {
+        let mut a = app(&["foo"]);
+        a.apply_auto_fetch(Some(Duration::from_mins(6)));
+        a.arm_boot_fetch(Some(Duration::from_mins(1)));
+
+        assert!(!a.take_boot_fetch());
     }
 
     #[test]
@@ -325,12 +353,20 @@ mod tests {
         );
     }
 
+    /// Asking for auto-update while the poll is off used to be refused, which
+    /// cost two presses of two different keys to get to one state.
     #[test]
-    fn auto_update_refuses_to_turn_on_while_the_poll_is_off() {
+    fn auto_update_turns_the_poll_on_with_it() {
         let mut a = app(&["foo"]);
+        assert!(!a.poll_enabled);
+
+        a.toggle_auto_update();
+        assert!(a.auto_update);
+        assert!(a.poll_enabled, "auto-update brought the poll it acts on");
+
         a.toggle_auto_update();
         assert!(!a.auto_update);
-        assert!(a.status_message.is_some());
+        assert!(a.poll_enabled, "and left it on the way back down");
     }
 
     /// A poll cycle's results, applied one by one, with `probed` as the
@@ -473,9 +509,9 @@ mod tests {
     }
 
     #[test]
-    fn poll_status_text_is_none_until_the_poll_is_on() {
+    fn poll_status_text_says_so_while_the_poll_is_off() {
         let a = app(&["foo"]);
-        assert_eq!(a.poll_status_text(), None);
+        assert_eq!(a.poll_status_text(), "poll off");
     }
 
     #[test]
@@ -483,9 +519,9 @@ mod tests {
         let mut a = app(&["foo"]);
         a.poll_enabled = true;
         a.poll_interval = Duration::from_mins(5);
-        assert_eq!(a.poll_status_text().as_deref(), Some("poll 5m"));
+        assert_eq!(a.poll_status_text(), "poll 5m");
 
         a.auto_update = true;
-        assert_eq!(a.poll_status_text().as_deref(), Some("poll 5m · auto"));
+        assert_eq!(a.poll_status_text(), "poll 5m · auto");
     }
 }

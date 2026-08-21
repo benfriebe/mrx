@@ -308,7 +308,10 @@ impl App {
     /// counts that stop moving.
     pub fn header_right_segments(&self) -> Vec<String> {
         if let Some(run) = self.run_status_text() {
-            return vec![run];
+            // The poll keeps its place under a run rather than being shed
+            // with the rest: auto-update is what starts a run nobody asked
+            // for, so a run is when saying so matters most.
+            return vec![run, self.poll_status_text()];
         }
         let mut parts = vec![if self.filter.is_empty() {
             format!("{} repos", self.repos.len())
@@ -324,7 +327,7 @@ impl App {
         if !self.selected.is_empty() {
             parts.push(format!("{} selected", self.selected.len()));
         }
-        parts.extend(self.poll_status_text());
+        parts.push(self.poll_status_text());
         parts.extend(self.last_check_text());
         if !self.sorted_by_default() {
             parts.push(self.sort_label());
@@ -348,6 +351,24 @@ impl App {
 mod tests {
     use super::super::testkit::{ago, app};
     use super::*;
+
+    /// A run takes the header over, and auto-update is what starts a run
+    /// nobody pressed a key for: shedding the poll here hides the mode at
+    /// the one moment it is visibly acting.
+    #[test]
+    fn a_live_run_keeps_the_poll_on_screen_beside_its_progress() {
+        let mut a = app(&["foo", "bar", "baz"]);
+        a.poll_enabled = true;
+        a.poll_interval = std::time::Duration::from_mins(6);
+        a.auto_update = true;
+        a.run_action = Some("update".into());
+        a.run_total = 3;
+
+        assert_eq!(
+            a.header_right_segments(),
+            vec!["update 0/3".to_string(), "poll 6m · auto".to_string()]
+        );
+    }
 
     #[test]
     fn a_repo_that_has_never_run_shows_the_never_run_placeholder() {

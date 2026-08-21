@@ -176,7 +176,9 @@ impl App {
         // The config just read is entitled to its own answer, and the session
         // that could outrank it belongs to the set being left behind.
         self.apply_auto_fetch(auto_fetch);
-        self.arm_boot_fetch();
+        // `None`: nothing has polled this repo list, whatever the one it
+        // replaced was told.
+        self.arm_boot_fetch(None);
 
         self.full_reprobe_requested = true;
     }

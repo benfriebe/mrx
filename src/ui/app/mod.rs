@@ -189,7 +189,7 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
     // what this set does by default, the session what was last chosen in it.
     app.apply_auto_fetch(auto_fetch);
     app.restore_session(&session);
-    app.arm_boot_fetch();
+    app.arm_boot_fetch(session.checked_ago());
     // `session::from_fields` already rejects an out-of-range interval; this
     // is belt and braces, so no path into `poll_interval` can reach the
     // `Instant` arithmetic below unclamped.
