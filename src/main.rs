@@ -94,15 +94,19 @@ fn ui_set_label(cli: &Cli, restored: Option<&str>) -> String {
 /// used: nothing on the command line named one (`-s` always wins), and the
 /// stored name still resolves to a config on disk. A set removed since the
 /// last session falls back to the ordinary default rather than erroring.
-fn restored_set(cli: &Cli, session: &ui::app::session::Session) -> Option<String> {
+///
+/// The name comes back with the path it resolved to, so the caller uses the
+/// answer this lookup gave rather than asking again: a set file removed
+/// between the two calls would have made the second one fail.
+fn restored_set(
+    cli: &Cli,
+    session: &ui::app::session::Session,
+) -> Option<(String, std::path::PathBuf)> {
     if cli.config.is_some() || named_set(cli).is_some() {
         return None;
     }
-    session
-        .set
-        .as_deref()
-        .filter(|name| sets::resolve(name).is_some())
-        .map(str::to_string)
+    let name = session.set.as_deref()?;
+    Some((name.to_string(), sets::resolve(name)?))
 }
 
 /// `ui` needs an interactive terminal and contradicts `--plain`. Both are
@@ -137,9 +141,7 @@ async fn main() {
     let ui_restored_set = ui_session.as_ref().and_then(|s| restored_set(&cli, s));
 
     let config_path = match &ui_restored_set {
-        Some(name) => {
-            absolutize(&sets::resolve(name).expect("restored_set already confirmed this resolves"))
-        }
+        Some((_, resolved)) => absolutize(resolved),
         None => resolve_config_path(&cli),
     };
 
@@ -185,7 +187,10 @@ async fn main() {
     }
 
     if matches!(cli.command, Command::Ui) {
-        let label = ui_set_label(&cli, ui_restored_set.as_deref());
+        let label = ui_set_label(
+            &cli,
+            ui_restored_set.as_ref().map(|(name, _)| name.as_str()),
+        );
         ui::app::run(ui::app::RunOptions {
             repos,
             set_label: label,
@@ -465,7 +470,9 @@ mod tests {
                 set: Some("work".into()),
                 ..Default::default()
             };
-            assert_eq!(restored_set(&cli, &session).as_deref(), Some("work"));
+            let (name, path) = restored_set(&cli, &session).expect("the stored set resolves");
+            assert_eq!(name, "work");
+            assert_eq!(path, dir.join("mrx/work.mrconfig"));
         });
     }
 
