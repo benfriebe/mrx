@@ -137,7 +137,14 @@ pub fn run(
 fn spawn_probe_for_all(state: &mut AppState, jobs: usize, tx: &mpsc::UnboundedSender<Probed>) {
     let targets: Vec<usize> = (0..state.repos.len()).collect();
     let generation = state.begin_probe();
-    probe::spawn_probe_generation(&state.repos, targets, jobs, generation, tx.clone());
+    probe::spawn_cycle(
+        &state.repos,
+        targets,
+        jobs,
+        generation,
+        tx,
+        probe::Cycle::Probe,
+    );
 }
 
 /// Apply one event to the row it names. The executor reports on every target

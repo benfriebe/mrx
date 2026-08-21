@@ -4,14 +4,11 @@
 //! then starts an ordinary `update` run over whatever the cycle found behind
 //! and [`can_fast_forward`] clears as safe to touch unattended.
 
-use super::probe::{self, generation_tagged, Probed, RepoState};
-use crate::config::Repo;
+use super::probe::{self, RepoState};
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
-use tokio::sync::{mpsc, Semaphore};
 
 /// How often `F` fetches, unless a config or a persisted session says
 /// otherwise; the interval lives on `App` rather than in the timer, so it can
@@ -35,7 +32,7 @@ pub fn clamp_interval(interval: Duration) -> Duration {
 /// A fetch is a network round trip rather than a local status read, so it
 /// gets more slack than the probe's own timeout before the poll gives up on
 /// one repo and leaves it for the next cycle.
-const POLL_TIMEOUT: Duration = Duration::from_secs(20);
+pub(super) const POLL_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// A repo is auto-updatable only if there is nothing local for the run to
 /// lose: a fast-forward would be a no-op on anything the user has touched,
@@ -54,7 +51,7 @@ pub fn can_fast_forward(s: &RepoState) -> bool {
 /// follows, since a stale local view is still worth showing, and the result
 /// carries whether this repo's own fetch succeeded so it can't inherit the
 /// freshness of another repo polled in the same cycle.
-async fn poll_one(index: usize, path: &Path) -> RepoState {
+pub(super) async fn poll_one(index: usize, path: &Path) -> RepoState {
     let fetched = if path.is_dir() {
         matches!(
             Command::new("git")
@@ -73,37 +70,6 @@ async fn poll_one(index: usize, path: &Path) -> RepoState {
     let mut state = probe::probe_one(index, path).await;
     state.fetched = fetched;
     state
-}
-
-/// Fetch then probe every repo in `which`, bounded by `max_jobs`: the same
-/// job limit a probe uses, so a poll can't compete with a live run for the
-/// network. Results are tagged with `generation` so they share the probe's
-/// own staleness handling.
-pub fn spawn_poll_generation(
-    repos: &[Repo],
-    which: Vec<usize>,
-    max_jobs: usize,
-    generation: u64,
-    tx: mpsc::UnboundedSender<Probed>,
-) {
-    let tx = generation_tagged(generation, tx);
-    let semaphore = Arc::new(Semaphore::new(max_jobs));
-    for index in which {
-        let Some(repo) = repos.get(index) else {
-            continue;
-        };
-        let path = repo.path.clone();
-        let tx = tx.clone();
-        let sem = semaphore.clone();
-        tokio::spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
-            let state = match tokio::time::timeout(POLL_TIMEOUT, poll_one(index, &path)).await {
-                Ok(state) => state,
-                Err(_) => RepoState::timeout(index),
-            };
-            let _ = tx.send(state);
-        });
-    }
 }
 
 /// The header's `poll 5m` / `poll 5m · auto` text: minutes when the interval

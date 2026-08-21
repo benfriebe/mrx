@@ -33,7 +33,14 @@ use suspend::{apply_mouse_capture, suspend_for, EditorOutcome};
 /// Begin a new probe generation over `targets` and spawn it.
 fn spawn_probe_over(app: &mut App, tx: &mpsc::UnboundedSender<Probed>, targets: Vec<usize>) {
     let generation = app.begin_probe(&targets);
-    probe::spawn_probe_generation(&app.repos, targets, app.jobs, generation, tx.clone());
+    probe::spawn_cycle(
+        &app.repos,
+        targets,
+        app.jobs,
+        generation,
+        tx,
+        probe::Cycle::Probe,
+    );
 }
 
 /// Start a freshness cycle if one is due, the single path both the interval
@@ -42,12 +49,15 @@ fn spawn_probe_over(app: &mut App, tx: &mpsc::UnboundedSender<Probed>, targets: 
 fn spawn_poll_cycle(app: &mut App, tx: &mpsc::UnboundedSender<Probed>) {
     app.on_poll_due();
     if let Some(targets) = app.take_poll_requested() {
-        poll::spawn_poll_generation(
+        // The same job limit a probe uses, so a poll cannot compete with a
+        // live run for the network.
+        probe::spawn_cycle(
             &app.repos,
             targets,
             app.jobs,
             app.probe_generation,
-            tx.clone(),
+            tx,
+            probe::Cycle::Poll,
         );
     }
 }

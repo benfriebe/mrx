@@ -100,14 +100,52 @@ impl RepoState {
     }
 }
 
-/// Probe every repo in `which`, concurrently, bounded by `max_jobs`. Results
-/// arrive on `tx` as each repo finishes, not in index order, so the first
-/// frame can paint long before the slowest one is back.
-pub fn spawn_probe(
+/// Which per-repo cycle a fan-out runs.
+///
+/// The two differ in what one repo costs and what it does, and in nothing
+/// else: same job limit, same timeout-becomes-an-unknown-row rule, same
+/// generation tagging. So they share the fan-out and vary here.
+#[derive(Clone, Copy)]
+pub enum Cycle {
+    /// The status parse alone, off whatever the last fetch left behind.
+    Probe,
+    /// A `git fetch --quiet` and then that same parse.
+    Poll,
+}
+
+impl Cycle {
+    /// How long one repo gets before it is written off as an unknown row. A
+    /// poll waits on the network, so it is given far longer than a local
+    /// status read.
+    fn timeout(self) -> Duration {
+        match self {
+            Self::Probe => PROBE_TIMEOUT,
+            Self::Poll => super::poll::POLL_TIMEOUT,
+        }
+    }
+
+    async fn run(self, index: usize, path: &Path) -> RepoState {
+        match self {
+            Self::Probe => probe_one(index, path).await,
+            Self::Poll => super::poll::poll_one(index, path).await,
+        }
+    }
+}
+
+/// Run `cycle` against every repo in `which`, concurrently, bounded by
+/// `max_jobs`.
+///
+/// Results arrive on `tx` as each repo finishes, not in index order, so the
+/// first frame can paint long before the slowest one is back. Each carries
+/// `generation`, so mashing `r` or switching sets twice quickly cannot leave
+/// one cycle's results painted over a newer one's.
+pub fn spawn_cycle(
     repos: &[Repo],
     which: Vec<usize>,
     max_jobs: usize,
-    tx: &mpsc::UnboundedSender<RepoState>,
+    generation: u64,
+    tx: &mpsc::UnboundedSender<Probed>,
+    cycle: Cycle,
 ) {
     let semaphore = Arc::new(Semaphore::new(max_jobs));
     for index in which {
@@ -119,11 +157,11 @@ pub fn spawn_probe(
         let sem = semaphore.clone();
         tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            let state = match tokio::time::timeout(PROBE_TIMEOUT, probe_one(index, &path)).await {
+            let state = match tokio::time::timeout(cycle.timeout(), cycle.run(index, &path)).await {
                 Ok(state) => state,
                 Err(_) => RepoState::timeout(index),
             };
-            let _ = tx.send(state);
+            let _ = tx.send(Probed { generation, state });
         });
     }
 }
@@ -300,36 +338,6 @@ pub fn sync_counts(state: &RepoState, repo_has_fetched: bool) -> Option<(u32, u3
 pub struct Probed {
     pub generation: u64,
     pub state: RepoState,
-}
-
-/// A sender that tags every result with `generation` before forwarding it on
-/// `tx`; the forwarding task ends when either side closes. Shared with
-/// `poll`, so mashing `r` or switching sets twice quickly can't leave one
-/// cycle's results painted on top of a newer one's.
-pub(super) fn generation_tagged(
-    generation: u64,
-    tx: mpsc::UnboundedSender<Probed>,
-) -> mpsc::UnboundedSender<RepoState> {
-    let (inner_tx, mut inner_rx) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        while let Some(state) = inner_rx.recv().await {
-            if tx.send(Probed { generation, state }).is_err() {
-                break;
-            }
-        }
-    });
-    inner_tx
-}
-
-/// Like [`spawn_probe`], but tags every result with `generation`.
-pub fn spawn_probe_generation(
-    repos: &[Repo],
-    which: Vec<usize>,
-    max_jobs: usize,
-    generation: u64,
-    tx: mpsc::UnboundedSender<Probed>,
-) {
-    spawn_probe(repos, which, max_jobs, &generation_tagged(generation, tx));
 }
 
 #[cfg(test)]
@@ -577,5 +585,37 @@ mod tests {
 
         state.timed_out = true;
         assert_eq!(sync_counts(&state, true), None);
+    }
+    fn repo_at(name: &str) -> Repo {
+        Repo {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/nonexistent/{name}")),
+            clone_url: None,
+            keys: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Both cycles run through the one fan-out, so this is what says every
+    /// repo asked for comes back, carrying the generation the caller began
+    /// with, whichever cycle it was. The paths do not exist, which is a state
+    /// the probe has an answer for and needs no git to reach.
+    #[tokio::test]
+    async fn a_cycle_reports_on_every_repo_it_was_asked_about() {
+        for cycle in [Cycle::Probe, Cycle::Poll] {
+            let repos = vec![repo_at("a"), repo_at("b"), repo_at("c")];
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            // 9 names no repo: unlike a run, a cycle feeds a table keyed by
+            // the rows themselves, so there is nothing for it to report to.
+            spawn_cycle(&repos, vec![0, 2, 9], 4, 7, &tx, cycle);
+            drop(tx);
+
+            let mut seen: Vec<(u64, usize)> = Vec::new();
+            while let Some(probed) = rx.recv().await {
+                assert!(!probed.state.present, "the path does not exist");
+                seen.push((probed.generation, probed.state.index));
+            }
+            seen.sort_unstable();
+            assert_eq!(seen, vec![(7, 0), (7, 2)]);
+        }
     }
 }
