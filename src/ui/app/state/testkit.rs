@@ -38,7 +38,7 @@ pub(super) fn scrolling_app(rows: usize, terminal_height: u16) -> (App, usize) {
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     let mut a = app(&refs);
     a.terminal_height = terminal_height;
-    let height = render::list_height(&a, a.terminal_height);
+    let height = render::Panes::last_known(&a).list_rows;
     assert!(height >= 2 && rows > height, "list must actually scroll");
     (a, height)
 }

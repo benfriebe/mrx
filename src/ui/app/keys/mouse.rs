@@ -3,8 +3,7 @@
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
-use crate::ui::app::detail;
-use crate::ui::app::render;
+use crate::ui::app::render::{self, Panes};
 use crate::ui::app::state::{App, Pane};
 
 /// Rows, or transcript lines, that one wheel tick moves.
@@ -40,27 +39,15 @@ fn on_drag(app: &mut App, column: u16, row: u16) {
 }
 
 /// The transcript line under a pointer in the output pane, or `None` when the
-/// pointer is elsewhere or past the end of the output. Repeats the geometry
-/// `draw_detail` lays out with, so the two have to move together.
+/// pointer is elsewhere or past the end of the output.
 fn output_line_at(app: &App, column: u16, row: u16) -> Option<usize> {
-    if !app.detail_open {
+    let panes = Panes::last_known(app);
+    if !panes.over_detail(column) {
         return None;
     }
-    if !detail::pointer_over_output(
-        app.terminal_width,
-        render::sidebar_natural_width(app),
-        column,
-    ) {
-        return None;
-    }
-    let content_row = (row as usize).checked_sub(render::LIST_HEADER_ROWS)?;
-    // See detail_content_height's doc for why `false` still matches a split.
-    let content_height = render::detail_content_height(app.terminal_height, false);
-    if content_row >= content_height {
-        return None;
-    }
+    let content_row = panes.detail_body_row(row)?;
     let lines = app.transcript_lines()?;
-    let line = app.detail_view_scroll(lines.len(), content_height) + content_row;
+    let line = app.detail_view_scroll(lines.len(), panes.detail_rows) + content_row;
     (line < lines.len()).then_some(line)
 }
 
@@ -72,11 +59,7 @@ fn on_click(app: &mut App, column: u16, row: u16) {
         // Both panes are on screen, so a press on one is the clearest
         // statement there is of which one `j`/`k` should reach: pointing at
         // a pane hands it the keys, without a `tab` first.
-        let over_output = detail::pointer_over_output(
-            app.terminal_width,
-            render::sidebar_natural_width(app),
-            column,
-        );
+        let over_output = Panes::last_known(app).over_detail(column);
         app.focus = if over_output {
             Pane::Output
         } else {
@@ -103,36 +86,22 @@ fn on_click(app: &mut App, column: u16, row: u16) {
     }
 }
 
-/// The repo a click at on-screen `row` lands on, using the same header and
-/// scroll math the table was just drawn with.
+/// The repo a click at on-screen `row` lands on, off the same rects and row
+/// counts the table was drawn from.
 fn resolve_row(app: &App, row: u16) -> Option<usize> {
-    let row = row as usize;
-    if row < render::LIST_HEADER_ROWS {
-        return None;
-    }
-    let body_row = row - render::LIST_HEADER_ROWS;
-    let list_h = render::list_height(app, app.terminal_height);
-    if body_row >= list_h {
-        return None;
-    }
+    let panes = Panes::last_known(app);
+    let body_row = panes.list_body_row(row)?;
     let visible = app.visible_indices();
-    let scroll = render::list_start(app, &visible, list_h);
+    let scroll = render::list_start(app, &visible, panes.list_rows);
     app.repo_at_row(body_row, scroll)
 }
 
 /// Scroll whichever region the pointer is over: the list (moving the
 /// cursor) or, once the detail view is open, the output under it.
 fn on_scroll(app: &mut App, column: u16, dir: isize) {
-    if app.detail_open {
-        let over_detail = detail::pointer_over_output(
-            app.terminal_width,
-            render::sidebar_natural_width(app),
-            column,
-        );
-        if over_detail {
-            app.detail_scroll_by(dir * WHEEL_STEP);
-            return;
-        }
+    if Panes::last_known(app).over_detail(column) {
+        app.detail_scroll_by(dir * WHEEL_STEP);
+        return;
     }
     app.move_cursor(dir * WHEEL_STEP);
 }

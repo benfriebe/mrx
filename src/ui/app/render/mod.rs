@@ -5,7 +5,6 @@
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
-use super::detail::{self, DetailLayout};
 use super::state::{App, Mode, Pane, Sort, SEGMENT_SEP};
 use crate::ui::widgets::{display_width, truncate};
 
@@ -61,14 +60,31 @@ pub(crate) const FOOTER_ROWS: u16 = 2;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
+    let panes = Panes::new(area, app);
 
-    if app.detail_open {
-        match detail::layout_for_width(area.width) {
-            DetailLayout::FullScreen => draw_detail(frame, app, area, false),
-            DetailLayout::Split => draw_split(frame, app, area),
-        }
-    } else {
-        draw_list(frame, app, area, false);
+    if let Some(list) = panes.list {
+        draw_list(
+            frame,
+            app,
+            list,
+            panes.shared_footer.is_some(),
+            panes.list_rows,
+        );
+    }
+    if let Some(detail) = panes.detail {
+        draw_detail(
+            frame,
+            app,
+            detail,
+            panes.shared_footer.is_some(),
+            panes.detail_rows,
+        );
+    }
+    if let Some(rule) = panes.rule {
+        draw_split_rule(frame, rule);
+    }
+    if let Some(footer) = panes.shared_footer {
+        draw_split_footer(frame, app, footer, panes.rule.map_or(0, |r| r.x as usize));
     }
 
     // At most one popup, chosen by the same precedence the dispatcher uses,
@@ -87,28 +103,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Help => draw_help(frame, area),
         Mode::Filter | Mode::Detail | Mode::List => {}
     }
-}
-
-/// The split: the list narrowed to a sidebar, a rule down the middle, and one
-/// footer under both, so the chrome reads as one frame divided rather than as
-/// two windows side by side.
-fn draw_split(frame: &mut Frame, app: &App, area: Rect) {
-    let [panes, footer] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(FOOTER_ROWS)]).areas(area);
-    let [list, rule, output] = Layout::horizontal([
-        Constraint::Length(detail::sidebar_width(
-            area.width,
-            sidebar_natural_width(app),
-        )),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .areas(panes);
-
-    draw_list(frame, app, list, true);
-    draw_detail(frame, app, output, true);
-    draw_split_rule(frame, rule);
-    draw_split_footer(frame, app, footer, list.width as usize);
 }
 
 /// The vertical rule between the split's panes, notched where the two
@@ -274,6 +268,7 @@ fn separator(width: usize) -> Line<'static> {
 mod tests {
     use super::testkit::*;
     use super::*;
+    use crate::ui::app::detail;
 
     /// The counts are the half `styled_two_column_line` drops first, so the
     /// sidebar buys room for its title and lets them go. Reserving their width

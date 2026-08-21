@@ -4,19 +4,145 @@
 use super::footer::LEAD_IN;
 use super::{column_header, header_title, BRANCH_LABEL, COL_GAP, FOOTER_ROWS};
 use super::{LIST_HEADER_ROWS, PREFIX_W, REPO_LABEL, STATE_LABEL, SYNC_LABEL};
+use crate::ui::app::detail::{self, DetailLayout};
 use crate::ui::app::probe;
 use crate::ui::app::state::{sync_width, App, Sort};
 use crate::ui::widgets::display_width;
+use ratatui::layout::Rect;
+
+/// Where everything in one frame sits, worked out once.
+///
+/// The pointer has no `Frame` to ask, so it used to rebuild the layout from
+/// the terminal size with its own arithmetic, and the scroll keys did it a
+/// third time. Three of those derivations agreed with the renderer only
+/// because `(h - footer) - header` and `h - header - footer` are the same
+/// number, and one agreed only because a mode combination happens to be
+/// unreachable. Everything now reads the rects and row counts from here.
+pub(crate) struct Panes {
+    /// The repo table, full width or as the split's sidebar. `None` while the
+    /// detail view has the whole frame.
+    pub(crate) list: Option<Rect>,
+    /// The output pane, `None` while the table has the whole frame.
+    pub(crate) detail: Option<Rect>,
+    /// The split's vertical rule, between the two panes.
+    pub(crate) rule: Option<Rect>,
+    /// The footer under both panes of a split. A pane owning the whole frame
+    /// draws its own inside its rect instead, which is why this is an option
+    /// rather than always a rect.
+    pub(crate) shared_footer: Option<Rect>,
+    /// Body rows the table draws.
+    pub(crate) list_rows: usize,
+    /// Transcript rows the output pane draws.
+    pub(crate) detail_rows: usize,
+}
+
+impl Panes {
+    /// Lay out `area` for the mode `app` is in.
+    pub(crate) fn new(area: Rect, app: &App) -> Self {
+        if !app.detail_open {
+            return Self {
+                list: Some(area),
+                detail: None,
+                rule: None,
+                shared_footer: None,
+                // The filter line is chrome the table pays for, and only the
+                // full-width table ever draws one.
+                list_rows: body_rows(area.height, chrome_rows(app)),
+                detail_rows: 0,
+            };
+        }
+
+        if detail::layout_for_width(area.width) == DetailLayout::FullScreen {
+            return Self {
+                list: None,
+                detail: Some(area),
+                rule: None,
+                shared_footer: None,
+                list_rows: 0,
+                detail_rows: body_rows(area.height, LIST_HEADER_ROWS + FOOTER_ROWS as usize),
+            };
+        }
+
+        // One footer under the whole frame rather than one per pane, so the
+        // chrome reads as a divided frame rather than two windows. Clamped, so
+        // a frame too short to hold one still lays out inside itself.
+        let footer_height = FOOTER_ROWS.min(area.height);
+        let body_height = area.height - footer_height;
+        let sidebar = detail::sidebar_width(area.width, sidebar_natural_width(app));
+        let rows = body_rows(body_height, LIST_HEADER_ROWS);
+        Self {
+            list: Some(Rect::new(area.x, area.y, sidebar, body_height)),
+            rule: Some(Rect::new(area.x + sidebar, area.y, 1, body_height)),
+            detail: Some(Rect::new(
+                area.x + sidebar + 1,
+                area.y,
+                area.width.saturating_sub(sidebar + 1),
+                body_height,
+            )),
+            shared_footer: Some(Rect::new(
+                area.x,
+                area.y + body_height,
+                area.width,
+                footer_height,
+            )),
+            list_rows: rows,
+            detail_rows: rows,
+        }
+    }
+
+    /// The frame as `App` last recorded it. Click resolution and the scroll
+    /// keys have no `Frame` to measure, so they lay out against the size the
+    /// resize handler stored, which trails the real one only while a redraw
+    /// is in flight.
+    pub(crate) fn last_known(app: &App) -> Self {
+        Self::new(
+            Rect::new(0, 0, app.terminal_width, app.terminal_height),
+            app,
+        )
+    }
+
+    /// The table body row screen `row` lands on.
+    pub(crate) fn list_body_row(&self, row: u16) -> Option<usize> {
+        body_row_at(self.list?, self.list_rows, row)
+    }
+
+    /// The output pane's content row screen `row` lands on.
+    pub(crate) fn detail_body_row(&self, row: u16) -> Option<usize> {
+        body_row_at(self.detail?, self.detail_rows, row)
+    }
+
+    /// Whether `column` is over the output pane rather than the table beside
+    /// it. The output is always the rightmost pane, so its left edge decides.
+    pub(crate) fn over_detail(&self, column: u16) -> bool {
+        self.detail.is_some_and(|pane| column >= pane.x)
+    }
+}
+
+/// Half a pane's body, floored at one row so a very short terminal still
+/// scrolls. Approximate by design: it measures the last known frame rather
+/// than the exact viewport, which is close enough for a "half page" key.
+pub(crate) fn half_page(rows: usize) -> usize {
+    (rows / 2).max(1)
+}
+
+/// A pane's body height: what is left of it once its chrome is taken out.
+fn body_rows(height: u16, chrome: usize) -> usize {
+    (height as usize).saturating_sub(chrome)
+}
+
+/// The body row `row` lands on inside `pane`: `None` above its header, past
+/// the last body row, or off the pane entirely.
+fn body_row_at(pane: Rect, rows: usize, row: u16) -> Option<usize> {
+    let within = usize::from(row.checked_sub(pane.y)?);
+    let body = within.checked_sub(LIST_HEADER_ROWS)?;
+    (body < rows).then_some(body)
+}
 
 /// Total chrome rows above and below the table body: the header (fixed at
 /// [`LIST_HEADER_ROWS`]) plus a bottom separator, status line, and (while
 /// `/` is capturing text) the filter line.
-pub(crate) fn chrome_rows(app: &App) -> usize {
+fn chrome_rows(app: &App) -> usize {
     LIST_HEADER_ROWS + FOOTER_ROWS as usize + usize::from(app.filtering)
-}
-
-pub(crate) fn list_height(app: &App, area_height: u16) -> usize {
-    (area_height as usize).saturating_sub(chrome_rows(app))
 }
 
 /// First visible-list position on screen: the same computation the table
@@ -24,14 +150,6 @@ pub(crate) fn list_height(app: &App, area_height: u16) -> usize {
 pub(crate) fn list_start(app: &App, visible: &[usize], height: usize) -> usize {
     let cursor_pos = visible.iter().position(|&i| i == app.cursor).unwrap_or(0);
     scroll_offset(app.list_scroll, cursor_pos, visible.len(), height)
-}
-
-/// Transcript rows a detail pane shows: the pane minus its chrome, minus
-/// its own footer when it draws one (a split pane shares the frame's,
-/// which occupies the same rows, so both layouts land on the same count).
-pub(crate) fn detail_content_height(pane_height: u16, split: bool) -> usize {
-    let footer = if split { 0 } else { FOOTER_ROWS as usize };
-    (pane_height as usize).saturating_sub(LIST_HEADER_ROWS + footer)
 }
 
 /// Name and state column widths for the two-column sidebar. Name shrink-wraps
@@ -153,6 +271,7 @@ pub(crate) fn scroll_offset(
 #[cfg(test)]
 mod tests {
     use super::super::testkit::*;
+    use super::super::LIST_HEADER_ROWS;
     use super::*;
     use crate::ui::app::detail;
 
@@ -237,5 +356,126 @@ mod tests {
     fn sidebar_columns_handle_zero_available_width() {
         let a = app(vec![repo("bill-api")]);
         assert_eq!(sidebar_column_widths(&a, 0), (0, 0));
+    }
+    /// Three of the old derivations were right only because
+    /// `(h - footer) - header` and `h - header - footer` are the same number,
+    /// and one was right only because a mode pair happens to be unreachable.
+    /// One layout means the rects have to account for the frame exactly.
+    #[test]
+    fn the_panes_tile_the_frame_at_every_size() {
+        let mut a = app(vec![repo("bill-api"), repo("crew")]);
+        a.detail_open = true;
+        for width in [1u16, 20, 79, 80, 120, 200] {
+            for height in 0..40u16 {
+                let area = Rect::new(0, 0, width, height);
+                let panes = Panes::new(area, &a);
+                let at = format!("{width}x{height}");
+
+                for rect in [panes.list, panes.detail, panes.rule, panes.shared_footer]
+                    .into_iter()
+                    .flatten()
+                {
+                    assert!(
+                        rect.x + rect.width <= area.width,
+                        "{at}: {rect:?} is wider than the frame"
+                    );
+                    assert!(
+                        rect.y + rect.height <= area.height,
+                        "{at}: {rect:?} is taller than the frame"
+                    );
+                }
+
+                let Some(rule) = panes.rule else { continue };
+                let list = panes
+                    .list
+                    .expect("a split draws the table beside the output");
+                let detail = panes.detail.expect("a split draws an output pane");
+                let footer = panes.shared_footer.expect("a split shares one footer");
+
+                assert_eq!(
+                    list.width + rule.width + detail.width,
+                    area.width,
+                    "{at}: a column is unaccounted for"
+                );
+                assert_eq!(
+                    rule.x,
+                    list.x + list.width,
+                    "{at}: the rule has drifted off the seam"
+                );
+                assert_eq!(
+                    detail.x,
+                    rule.x + rule.width,
+                    "{at}: the output has drifted off the rule"
+                );
+                assert_eq!(
+                    list.height + footer.height,
+                    area.height,
+                    "{at}: a row is unaccounted for"
+                );
+                assert_eq!(
+                    list.height, detail.height,
+                    "{at}: the panes' rules would not meet"
+                );
+            }
+        }
+    }
+
+    /// The count the pointer resolves clicks against, checked against the rows
+    /// the table puts on screen rather than against the arithmetic that
+    /// produced it.
+    #[test]
+    fn the_table_draws_exactly_the_rows_the_layout_gave_it() {
+        let names: Vec<String> = (0..60).map(|i| format!("repo-{i:02}")).collect();
+        let a = app(names.iter().map(|n| repo(n)).collect());
+        for height in 8..24u16 {
+            let rows = Panes::new(Rect::new(0, 0, 100, height), &a).list_rows;
+            let drawn = frame_rows(&a, 100, height);
+            assert!(rows > 0, "height {height} should still draw a body");
+
+            for offset in 0..rows {
+                assert!(
+                    drawn[LIST_HEADER_ROWS + offset].contains("repo-"),
+                    "height {height}: body row {offset} is not a repo"
+                );
+            }
+            // The renderer draws whatever count this hands it, so asserting
+            // the body against that count proves nothing. What the frame can
+            // still say is where the rule under the body ended up: too many
+            // rows push the footer off the bottom, too few leave a gap.
+            let rule = drawn
+                .iter()
+                .rposition(|line| line.starts_with('─'))
+                .expect("the body has a rule under it");
+            assert_eq!(
+                rule,
+                usize::from(height - FOOTER_ROWS),
+                "height {height}: the table's footer is not the last thing on the frame"
+            );
+            assert_eq!(
+                rule,
+                LIST_HEADER_ROWS + rows,
+                "height {height}: the row count does not reach the rule the table drew"
+            );
+        }
+    }
+
+    /// The filter line is chrome only the full-width table draws, but click
+    /// resolution used to subtract it in the split too, where the sidebar has
+    /// no such line. That cost the sidebar its last clickable row, and was
+    /// unreachable only because the dispatcher happens to check `filtering`
+    /// before `detail_open`.
+    #[test]
+    fn the_split_sidebar_pays_for_no_filter_line() {
+        let mut a = app(vec![repo("bill-api"), repo("crew")]);
+        a.detail_open = true;
+        let area = Rect::new(0, 0, 120, 30);
+
+        let without = Panes::new(area, &a).list_rows;
+        a.filtering = true;
+        assert_eq!(
+            Panes::new(area, &a).list_rows,
+            without,
+            "the sidebar drew no filter line either way"
+        );
     }
 }

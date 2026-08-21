@@ -5,7 +5,6 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use super::footer::status_line;
-use super::layout::detail_content_height;
 use super::{focus_marker, separator, title_style, two_column_line, FOOTER_ROWS};
 use crate::ui::app::detail;
 use crate::ui::app::state::{App, Pane, RunStatus};
@@ -17,9 +16,9 @@ const INDENT: &str = "  ";
 /// The detail view for the cursor row: a title, a line of run and scroll
 /// state, the output as labelled step sections, and a footer unless `split`
 /// says the frame's shared one is drawing that part instead.
-pub(super) fn draw_detail(frame: &mut Frame, app: &App, area: Rect, split: bool) {
+pub(super) fn draw_detail(frame: &mut Frame, app: &App, area: Rect, split: bool, rows: usize) {
     let width = area.width as usize;
-    let content_height = detail_content_height(area.height, split);
+    let content_height = rows;
 
     let mut body: Vec<Line> = Vec::new();
     let mut position = None;

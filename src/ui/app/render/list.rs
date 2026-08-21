@@ -5,15 +5,18 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use super::footer::status_line;
-use super::layout::{column_widths, list_height, list_start, sidebar_column_widths};
+use super::layout::{column_widths, list_start, sidebar_column_widths};
+use super::PREFIX_W;
 use super::{column_header, header_line, separator, BRANCH_LABEL, COL_GAP};
-use super::{LIST_HEADER_ROWS, PREFIX_W};
 use super::{REPO_LABEL, RESULT_LABEL, SIDEBAR_PREFIX_W, STATE_LABEL, SYNC_LABEL};
 use crate::ui::app::probe;
 use crate::ui::app::state::{App, RunStatus, Sort};
 use crate::ui::widgets::{display_width, frame as spinner_frame, truncate};
 
-pub(super) fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool) {
+/// The repo table. `rows` is the body height [`Panes`](super::Panes) laid out
+/// for it, rather than a count derived here: the pointer resolves clicks
+/// against that same number.
+pub(super) fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool, rows: usize) {
     let width = area.width as usize;
     let mut lines: Vec<Line> = Vec::new();
 
@@ -21,16 +24,8 @@ pub(super) fn draw_list(frame: &mut Frame, app: &App, area: Rect, sidebar: bool)
     lines.push(Line::default());
 
     let visible = app.visible_indices();
-    // As a sidebar the area already stops above the shared footer, so the body
-    // is just what's left under the header. Either way the row count matches,
-    // which is what lets click resolution use one formula for both.
-    let lh = if sidebar {
-        (area.height as usize).saturating_sub(LIST_HEADER_ROWS)
-    } else {
-        list_height(app, area.height)
-    };
-    let start = list_start(app, &visible, lh);
-    let end = visible.len().min(start + lh);
+    let start = list_start(app, &visible, rows);
+    let end = visible.len().min(start + rows);
 
     if sidebar {
         let (name_col, state_col) = sidebar_column_widths(app, width.saturating_sub(PREFIX_W));

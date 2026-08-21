@@ -77,7 +77,7 @@ impl App {
     /// window's memory of where the user had scrolled to.
     fn follow_cursor(&mut self) {
         let visible = self.visible_indices();
-        let height = render::list_height(self, self.terminal_height);
+        let height = render::Panes::last_known(self).list_rows;
         self.list_scroll = render::list_start(self, &visible, height);
     }
 
@@ -96,10 +96,12 @@ impl App {
         self.follow_cursor();
     }
 
-    /// Move the cursor `dir` half-pages, the same jump `Ctrl-D`/`Ctrl-U`
-    /// make in the detail view, so the chord means the same thing in both.
+    /// Move the cursor `dir` half-pages, the same jump `Ctrl-D`/`Ctrl-U` make
+    /// in the detail view, so the chord means the same thing in both. Half of
+    /// this pane, though: the table's body is the one the cursor moves down.
     pub fn move_cursor_half_page(&mut self, dir: isize) {
-        self.move_cursor(dir * self.half_page().cast_signed());
+        let step = render::half_page(render::Panes::last_known(self).list_rows);
+        self.move_cursor(dir * step.cast_signed());
     }
 
     pub fn move_to_first(&mut self) {

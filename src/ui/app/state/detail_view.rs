@@ -160,13 +160,11 @@ impl App {
     /// known frame height rather than the exact viewport, which is close
     /// enough for a "half page" key.
     ///
-    /// The row count comes from [`detail_content_height`](render::detail_content_height)
-    /// rather than being worked out again here, so the key cannot keep
-    /// scrolling by a chrome height the panes no longer have. The list and the
-    /// detail pane draw the same number of content rows for a given terminal
-    /// height, so the one helper serves both callers.
+    /// The row count is the output pane's own, off the same layout it is drawn
+    /// from, so the key cannot scroll by a chrome height the pane no longer
+    /// has. The list asks about its own pane rather than borrowing this one.
     pub(super) fn half_page(&self) -> usize {
-        (render::detail_content_height(self.terminal_height, false) / 2).max(1)
+        render::half_page(render::Panes::last_known(self).detail_rows)
     }
 
     /// Move the cursor row's detail scroll by `delta` lines, bounded at both
@@ -196,7 +194,7 @@ impl App {
     /// [`half_page`](Self::half_page) makes.
     fn detail_extent(&self) -> (usize, usize) {
         let total = self.transcript_lines().map_or(0, |lines| lines.len());
-        let height = render::detail_content_height(self.terminal_height, false);
+        let height = render::Panes::last_known(self).detail_rows;
         (total, height)
     }
 
@@ -247,15 +245,17 @@ mod tests {
     use crate::summarize;
 
     /// `half_page` used to subtract its own chrome height, a literal 6 that
-    /// happened to equal `LIST_HEADER_ROWS + FOOTER_ROWS`. Nothing tied the
-    /// two together, so changing either constant would have moved the pane
-    /// without moving the key that scrolls it.
+    /// happened to equal `LIST_HEADER_ROWS + FOOTER_ROWS`. It now reads the
+    /// output pane's own row count, which `render::layout` pins against a
+    /// real draw, so what is left to check here is that the key steps by half
+    /// of that pane rather than half of the table beside it.
     #[test]
     fn a_half_page_is_half_the_rows_the_pane_actually_draws() {
         let mut a = app(&["foo"]);
+        a.detail_open = true;
         for height in 0..80u16 {
             a.terminal_height = height;
-            let drawn = render::detail_content_height(height, false);
+            let drawn = render::Panes::last_known(&a).detail_rows;
             assert_eq!(
                 a.half_page(),
                 (drawn / 2).max(1),
@@ -349,7 +349,7 @@ mod tests {
         a.detail_open = true;
 
         let total = a.transcript_lines().unwrap().len();
-        let height = render::detail_content_height(a.terminal_height, false);
+        let height = render::Panes::last_known(&a).detail_rows;
         let tail = a.detail_view_scroll(total, height);
         assert!(tail > a.half_page(), "the tail must be a long way down");
 
@@ -372,7 +372,7 @@ mod tests {
         a.detail_open = true;
 
         let total = a.transcript_lines().unwrap().len();
-        let height = render::detail_content_height(a.terminal_height, false);
+        let height = render::Panes::last_known(&a).detail_rows;
         let tail = a.detail_view_scroll(total, height);
 
         for _ in 0..5 {
