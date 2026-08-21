@@ -48,18 +48,18 @@ pub(super) fn sidebar_column_widths(app: &App, avail: usize) -> (usize, usize) {
 }
 
 /// How wide the sidebar wants to be: its prefix and two columns at the
-/// widths their text actually needs, but never so narrow that the header
-/// has to drop the repo counts, which are the first thing
-/// [`styled_two_column_line`] gives up. [`detail::sidebar_width`] caps it.
+/// widths their text actually needs, and never narrower than its own title.
+///
+/// The counts beside that title are deliberately not part of the demand.
+/// They are the first thing [`styled_two_column_line`] sheds, and a sidebar
+/// wide enough to keep them is one spending the output pane's columns on the
+/// least important text on screen, often to no purpose: [`detail::sidebar_width`]
+/// caps this at a third of the frame, which can land under what the counts
+/// needed anyway, dropping them and keeping the width.
 pub(crate) fn sidebar_natural_width(app: &App) -> u16 {
     let columns = PREFIX_W + natural_name_width(app) + COL_GAP + natural_state_width(app);
-    // The header's columns need the same gap the rows use, or the title and
-    // the counts meet with nothing between them.
-    let header = display_width(&header_title(app, true))
-        + COL_GAP
-        + display_width(&app.header_right_text())
-        + LEAD_IN.len();
-    u16::try_from(columns.max(header)).unwrap_or(u16::MAX)
+    let title = display_width(&header_title(app, true)) + LEAD_IN.len();
+    u16::try_from(columns.max(title)).unwrap_or(u16::MAX)
 }
 
 fn natural_name_width(app: &App) -> usize {

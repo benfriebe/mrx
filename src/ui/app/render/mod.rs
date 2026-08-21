@@ -239,25 +239,33 @@ mod tests {
     use super::*;
 
     /// The counts are the half `styled_two_column_line` drops first, so the
-    /// sidebar has to ask for room for them even when the columns are narrow,
-    /// and for the gap that keeps them from reading as part of the set name.
+    /// sidebar buys room for its title and lets them go. Reserving their width
+    /// here would spend the output pane's columns on the least important text
+    /// on screen, and the cap can take those columns back off the header
+    /// anyway, leaving the width bought and the counts gone.
     #[test]
-    fn the_sidebar_stays_wide_enough_for_its_own_header() {
+    fn the_sidebar_keeps_its_title_and_lets_the_counts_go() {
         let mut a = app(vec![repo("ab")]);
         a.set_label = "a-rather-long-set-name".into();
-        let header = flatten(&header_line(
-            &a,
-            detail::sidebar_width(200, sidebar_natural_width(&a)) as usize,
-            true,
-        ));
-        assert!(header.contains("1 repo"), "got {header:?}");
-        let (before_count, _) = header
-            .split_once("1 repo")
-            .unwrap_or_else(|| panic!("got {header:?}"));
+
+        let width = detail::sidebar_width(200, sidebar_natural_width(&a)) as usize;
         assert!(
-            before_count.ends_with(' '),
-            "the set name and the count ran together: {header:?}"
+            width < display_width(&header_title(&a, true)) + display_width(&a.header_right_text()),
+            "the sidebar reserved room for counts it will not draw"
         );
+
+        let header = flatten(&header_line(&a, width, true));
+        assert!(header.contains("a-rather-long-set-name"), "got {header:?}");
+        assert!(!header.contains("1 repo"), "got {header:?}");
+    }
+
+    /// Only the split gives the counts up. A full-width list has the room,
+    /// and they are how it says what the poll and the last check are doing.
+    #[test]
+    fn the_full_width_list_still_carries_its_counts() {
+        let a = app(vec![repo("ab")]);
+        let header = flatten(&header_line(&a, 120, false));
+        assert!(header.contains("1 repo"), "got {header:?}");
     }
 
     /// The split's two panes are drawn as separate widgets, so nothing but

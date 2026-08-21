@@ -41,6 +41,9 @@ screen instead and `Esc` is the only way back.
   focuses it too, so the pointer can say the same thing.
 - `Enter` on a row whose output is already on screen hands the keys to the output too,
   since the row is no longer the question.
+- The sidebar shrink-wraps its own columns, capped at a third of the frame. The set
+  counts that ride beside the header title in the full-width list are dropped rather
+  than paid for: everything the sidebar does not need belongs to the output.
 - The line under the detail title says how the run ended (`2 steps · exit 0`,
   `running git pull`, `skipped`) and, when the output is longer than the pane, which
   slice of it you are looking at (`41-60 of 312`). There is no scrollbar, so without
