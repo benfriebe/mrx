@@ -247,7 +247,27 @@ async fn main() {
     std::process::exit(i32::from(!success));
 }
 
-fn register(config_path: &PathBuf, base_dir: &PathBuf) {
+/// Whether `existing` already declares `[section]`.
+///
+/// Only an unindented line counts. A section header sits at column 0, while
+/// `configparser` reads an indented line as a continuation of the value above
+/// it, so `[repos/x]` inside a multi-line command body is text rather than a
+/// registration.
+fn has_section(existing: &str, section: &str) -> bool {
+    let header = format!("[{section}]");
+    existing
+        .lines()
+        .filter(|line| !line.starts_with([' ', '\t']))
+        .any(|line| line.trim_end() == header)
+}
+
+/// `s` as a single-quoted shell word. A quote inside the word has to close,
+/// escape and reopen, since single quotes admit no escape of their own.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+fn register(config_path: &Path, base_dir: &Path) {
     let cwd = std::env::current_dir().expect("cannot determine current directory");
 
     let output = StdCommand::new("git")
@@ -279,13 +299,23 @@ fn register(config_path: &PathBuf, base_dir: &PathBuf) {
     let section = relative.to_string_lossy().to_string();
 
     let existing = std::fs::read_to_string(config_path).unwrap_or_default();
-    let section_header = format!("[{section}]");
-    if existing.contains(&section_header) {
+    if has_section(&existing, &section) {
         eprintln!("already registered: {section}");
         return;
     }
 
-    let entry = format!("\n[{section}]\ncheckout = git clone '{url}' '{repo_name}'\n");
+    // A newline cannot be quoted onto a single config line, and writing it
+    // anyway would append a stray unindented line to someone's config.
+    if url.contains('\n') || repo_name.contains('\n') {
+        eprintln!("error: the remote url or directory name contains a newline");
+        std::process::exit(1);
+    }
+
+    let entry = format!(
+        "\n[{section}]\ncheckout = git clone {} {}\n",
+        shell_quote(&url),
+        shell_quote(&repo_name)
+    );
 
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -307,6 +337,70 @@ fn register(config_path: &PathBuf, base_dir: &PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The check used to be a substring test over the whole file, so a
+    /// `[repos/x]` anywhere in it, most easily inside a command body, read as
+    /// a registration and made `mrx register` a silent no-op.
+    #[test]
+    fn a_section_name_inside_a_command_body_is_not_a_registration() {
+        let config = "[repos/a]\nupdate = grep -n '[repos/x]' notes.txt\n";
+        assert!(has_section(config, "repos/a"));
+        assert!(!has_section(config, "repos/x"));
+    }
+
+    /// Continuation lines of a multi-line value are indented, which is the
+    /// only thing separating them from a header.
+    #[test]
+    fn an_indented_header_is_a_continuation_line_rather_than_a_section() {
+        let config = "[repos/a]\nupdate = echo one\n    [repos/x]\n";
+        assert!(!has_section(config, "repos/x"));
+    }
+
+    #[test]
+    fn a_header_is_still_found_with_trailing_whitespace_or_no_final_newline() {
+        assert!(has_section("[repos/x]  ", "repos/x"));
+        assert!(has_section(
+            "[DEFAULT]\nbase = /tmp\n\n[repos/x]",
+            "repos/x"
+        ));
+    }
+
+    #[test]
+    fn a_longer_section_name_does_not_match_a_shorter_one() {
+        assert!(!has_section("[repos/xy]\n", "repos/x"));
+    }
+
+    /// The entry is a shell command body, so a quote in a directory name or a
+    /// remote url used to end the quoting early and hand the rest to `sh`.
+    #[test]
+    fn a_quote_in_a_name_stays_inside_the_quoted_word() {
+        assert_eq!(shell_quote("plain"), "'plain'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(
+            shell_quote("a'; touch pwned; '"),
+            r"'a'\''; touch pwned; '\'''"
+        );
+    }
+
+    /// The escaping is only worth anything if a real shell agrees, so this
+    /// asks one what the word came out as.
+    #[test]
+    fn a_shell_reads_a_quoted_word_back_as_the_original() {
+        for raw in [
+            "plain",
+            "it's",
+            "a'; touch pwned; '",
+            "two words",
+            "$HOME `id`",
+        ] {
+            let out = StdCommand::new("sh")
+                .args(["-c", &format!("printf %s {}", shell_quote(raw))])
+                .output()
+                .expect("sh is available");
+            assert!(out.status.success(), "sh rejected {raw:?}");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), raw);
+        }
+    }
 
     #[test]
     fn the_unnamed_row_says_when_its_path_is_not_there() {
