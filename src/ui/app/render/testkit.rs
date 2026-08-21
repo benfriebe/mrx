@@ -14,9 +14,9 @@ use std::path::PathBuf;
 pub(super) fn repo(name: &str) -> Repo {
     Repo {
         name: name.to_string(),
-        path: PathBuf::from(format!("/nonexistent/{}", name)),
+        path: PathBuf::from(format!("/nonexistent/{name}")),
         clone_url: None,
-        keys: Default::default(),
+        keys: BTreeMap::default(),
     }
 }
 

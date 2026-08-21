@@ -96,6 +96,7 @@ pub enum Direction {
 
 impl Direction {
     /// The other way, which choosing the active column again switches to.
+    #[must_use]
     pub fn reversed(self) -> Self {
         match self {
             Direction::Ascending => Direction::Descending,

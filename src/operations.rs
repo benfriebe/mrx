@@ -146,8 +146,7 @@ fn clone_step(repo: &Repo, defaults: &BTreeMap<String, String>) -> Option<Operat
         let parent = repo
             .path
             .parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| repo.path.clone());
+            .map_or_else(|| repo.path.clone(), PathBuf::from);
         return Some(shell(body, parent, "checkout", vec![], repo, defaults));
     }
     repo.clone_url.as_ref().map(|url| Operation::Clone {
@@ -163,49 +162,53 @@ fn post_step(repo: &Repo, defaults: &BTreeMap<String, String>, action: &str) -> 
         .map(|body| shell(body, repo.path.clone(), &key, vec![], repo, defaults))
 }
 
+/// `update`/`pull`: clone a repo that is not on disk yet, then run the `update`
+/// the cascade defines, or `git pull` when it defines none.
+fn update_plan(repo: &Repo, defaults: &BTreeMap<String, String>, exists: bool) -> Operation {
+    let mut steps = Vec::new();
+
+    if !exists {
+        let Some(step) = clone_step(repo, defaults) else {
+            return Operation::NotCheckedOut;
+        };
+        steps.push(step);
+        // A fresh clone still needs the repo's update, which is where
+        // install steps live, or it is the one repo never set up.
+        if let Some(body) = resolve_body(repo, defaults, "update") {
+            steps.push(shell(
+                body,
+                repo.path.clone(),
+                "update",
+                vec![],
+                repo,
+                defaults,
+            ));
+        }
+    } else if let Some(body) = resolve_body(repo, defaults, "update") {
+        steps.push(shell(
+            body,
+            repo.path.clone(),
+            "update",
+            vec![],
+            repo,
+            defaults,
+        ));
+    } else {
+        steps.push(Operation::Git {
+            args: vec!["pull".into()],
+            work_dir: repo.path.clone(),
+        });
+    }
+
+    steps.extend(post_step(repo, defaults, "update"));
+    sequence(steps)
+}
+
 pub fn plan(command: &Command, repo: &Repo, defaults: &BTreeMap<String, String>) -> Operation {
     let exists = repo.path.is_dir();
 
     match command {
-        Command::Update | Command::Pull => {
-            let mut steps = Vec::new();
-
-            if !exists {
-                match clone_step(repo, defaults) {
-                    Some(step) => steps.push(step),
-                    None => return Operation::NotCheckedOut,
-                }
-                // A fresh clone still needs the repo's update, which is where
-                // install steps live, or it is the one repo never set up.
-                if let Some(body) = resolve_body(repo, defaults, "update") {
-                    steps.push(shell(
-                        body,
-                        repo.path.clone(),
-                        "update",
-                        vec![],
-                        repo,
-                        defaults,
-                    ));
-                }
-            } else if let Some(body) = resolve_body(repo, defaults, "update") {
-                steps.push(shell(
-                    body,
-                    repo.path.clone(),
-                    "update",
-                    vec![],
-                    repo,
-                    defaults,
-                ));
-            } else {
-                steps.push(Operation::Git {
-                    args: vec!["pull".into()],
-                    work_dir: repo.path.clone(),
-                });
-            }
-
-            steps.extend(post_step(repo, defaults, "update"));
-            sequence(steps)
-        }
+        Command::Update | Command::Pull => update_plan(repo, defaults, exists),
 
         // `--branch` for the `## main...origin/main [ahead 1, behind 2]`
         // header: working-tree changes alone leave out the half that decides
@@ -275,7 +278,7 @@ pub fn plan(command: &Command, repo: &Repo, defaults: &BTreeMap<String, String>)
             }
             let Some(body) = resolve_body(repo, defaults, &name) else {
                 return Operation::Skip {
-                    reason: format!("no {} action defined", name),
+                    reason: format!("no {name} action defined"),
                 };
             };
             let mut steps = vec![shell(body, repo.path.clone(), &name, tail, repo, defaults)];
@@ -349,7 +352,7 @@ mod tests {
                 assert_eq!(action, "install");
                 assert_eq!(args, vec!["--frozen-lockfile".to_string()]);
             }
-            other => panic!("expected Shell, got {:?}", other),
+            other => panic!("expected Shell, got {other:?}"),
         }
     }
 
@@ -361,7 +364,7 @@ mod tests {
 
         match plan(&cmd, &repo, &BTreeMap::new()) {
             Operation::Skip { reason } => assert!(reason.contains("bake")),
-            other => panic!("expected Skip, got {:?}", other),
+            other => panic!("expected Skip, got {other:?}"),
         }
     }
 
@@ -376,7 +379,7 @@ mod tests {
                 assert_eq!(cmd, "git pull --rebase");
                 assert_eq!(action, "update");
             }
-            other => panic!("expected Shell from DEFAULT, got {:?}", other),
+            other => panic!("expected Shell from DEFAULT, got {other:?}"),
         }
     }
 
@@ -391,7 +394,7 @@ mod tests {
 
         match plan(&Command::Update, &repo, &defs) {
             Operation::Shell { cmd, .. } => assert_eq!(cmd, "git pull --ff-only"),
-            other => panic!("expected Shell from repo keys, got {:?}", other),
+            other => panic!("expected Shell from repo keys, got {other:?}"),
         }
     }
 
@@ -402,7 +405,7 @@ mod tests {
 
         match plan(&Command::Status, &repo, &BTreeMap::new()) {
             Operation::Git { args, .. } => assert_eq!(args, vec!["status", "--short", "--branch"]),
-            other => panic!("expected Git fallback, got {:?}", other),
+            other => panic!("expected Git fallback, got {other:?}"),
         }
     }
 
@@ -416,7 +419,7 @@ mod tests {
 
         match plan(&cmd, &repo, &BTreeMap::new()) {
             Operation::NotCheckedOut => {}
-            other => panic!("expected NotCheckedOut, got {:?}", other),
+            other => panic!("expected NotCheckedOut, got {other:?}"),
         }
     }
 

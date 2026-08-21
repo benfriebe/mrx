@@ -79,8 +79,7 @@ impl App {
         let name = self
             .repos
             .get(self.cursor)
-            .map(|r| r.name.as_str())
-            .unwrap_or("repo");
+            .map_or("repo", |r| r.name.as_str());
         match detail::write_transcript(steps, name) {
             Ok(path) => self.foreground = Some(Foreground::Path(path)),
             Err(e) => self.status_message = Some(format!("could not write the transcript: {e}")),

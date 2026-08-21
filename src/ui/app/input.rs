@@ -164,7 +164,7 @@ pub(super) fn input_thread() -> (
                     }
                     Err(_) => break,
                 },
-                Ok(false) => continue,
+                Ok(false) => {}
                 Err(_) => break,
             }
         }
@@ -254,8 +254,6 @@ mod tests {
     fn park_blocks_until_the_reader_marks_itself_parked() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let gate = InputGate::new();
-
         // A fresh single-shot acker per cycle: it only has to notice one
         // gate close, so it can't miss a reopen the way a persistent polling
         // loop racing the main thread's resume/park pair could.
@@ -277,6 +275,8 @@ mod tests {
             (handle, acknowledged_after_delay)
         }
 
+        let gate = InputGate::new();
+
         for cycle in 1..=2u32 {
             let (acker, acknowledged) = spawn_timed_acker(&gate);
             gate.park();
@@ -293,7 +293,7 @@ mod tests {
         // never come.
         gate.mark_exited();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let waiter = gate.clone();
+        let waiter = gate;
         std::thread::spawn(move || {
             waiter.park();
             let _ = done_tx.send(());
@@ -396,7 +396,7 @@ mod tests {
         gate.mark_exited();
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let waiter = gate.clone();
+        let waiter = gate;
         std::thread::spawn(move || {
             waiter.park();
             let _ = done_tx.send(());

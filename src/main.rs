@@ -1,7 +1,7 @@
 use clap::Parser;
 use mrx::cli::{Cli, Command};
 use mrx::{config, executor, operations, render_plain, sets, ui};
-use std::io::{stdout, IsTerminal};
+use std::io::{stdout, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
@@ -9,9 +9,7 @@ fn absolutize(p: &Path) -> PathBuf {
     if p.is_absolute() {
         p.to_path_buf()
     } else {
-        std::env::current_dir()
-            .map(|d| d.join(p))
-            .unwrap_or_else(|_| p.to_path_buf())
+        std::env::current_dir().map_or_else(|_| p.to_path_buf(), |d| d.join(p))
     }
 }
 
@@ -34,7 +32,7 @@ fn resolve_config_path(cli: &Cli) -> PathBuf {
 
     let raw = match named_set(cli) {
         Some(name) => sets::resolve(&name).unwrap_or_else(|| {
-            eprintln!("error: no config for set '{}'. Looked in:", name);
+            eprintln!("error: no config for set '{name}'. Looked in:");
             for candidate in sets::candidates(&name) {
                 eprintln!("  {}", candidate.display());
             }
@@ -52,9 +50,8 @@ fn print_sets(active: &Path) {
     let found = sets::discover();
 
     if found.is_empty() {
-        let dir = sets::config_dir()
-            .map(|d| d.display().to_string())
-            .unwrap_or_else(|| "~/.config/mrx".into());
+        let dir =
+            sets::config_dir().map_or_else(|| "~/.config/mrx".into(), |d| d.display().to_string());
         println!("no sets defined. Create {}/<name>{}", dir, sets::SET_SUFFIX);
     }
 
@@ -215,14 +212,11 @@ async fn main() {
     // Reject unknown actions before dispatch so typos like `mrx statsu` don't
     // silently succeed-by-skipping every repo.
     if let Command::Custom(parts) = &cli.command {
-        let name = parts.first().map(String::as_str).unwrap_or("");
+        let name = parts.first().map_or("", String::as_str);
         let known = !name.is_empty()
             && (defaults.contains_key(name) || repos.iter().any(|r| r.keys.contains_key(name)));
         if !known {
-            eprintln!(
-                "error: unknown action '{}' (not defined in any repo or [DEFAULT])",
-                name
-            );
+            eprintln!("error: unknown action '{name}' (not defined in any repo or [DEFAULT])");
             std::process::exit(2);
         }
     }
@@ -242,7 +236,7 @@ async fn main() {
             rx,
             jobs,
             &defaults,
-            config_path.clone(),
+            &config_path,
             cli.exit_on_done,
         )
         .expect("TUI error")
@@ -250,7 +244,7 @@ async fn main() {
         render_plain::run(repos, cli.command.display_name(), rx).await
     };
 
-    std::process::exit(if success { 0 } else { 1 });
+    std::process::exit(i32::from(!success));
 }
 
 fn register(config_path: &PathBuf, base_dir: &PathBuf) {
@@ -274,31 +268,25 @@ fn register(config_path: &PathBuf, base_dir: &PathBuf) {
         .expect("cannot determine directory name")
         .to_string_lossy();
 
-    let section = match cwd.strip_prefix(base_dir) {
-        Ok(rel) => rel.to_string_lossy().to_string(),
-        Err(_) => {
-            eprintln!(
-                "error: {} is not under base dir {}",
-                cwd.display(),
-                base_dir.display()
-            );
-            std::process::exit(1);
-        }
+    let Ok(relative) = cwd.strip_prefix(base_dir) else {
+        eprintln!(
+            "error: {} is not under base dir {}",
+            cwd.display(),
+            base_dir.display()
+        );
+        std::process::exit(1);
     };
+    let section = relative.to_string_lossy().to_string();
 
     let existing = std::fs::read_to_string(config_path).unwrap_or_default();
-    let section_header = format!("[{}]", section);
+    let section_header = format!("[{section}]");
     if existing.contains(&section_header) {
-        eprintln!("already registered: {}", section);
+        eprintln!("already registered: {section}");
         return;
     }
 
-    let entry = format!(
-        "\n[{}]\ncheckout = git clone '{}' '{}'\n",
-        section, url, repo_name
-    );
+    let entry = format!("\n[{section}]\ncheckout = git clone '{url}' '{repo_name}'\n");
 
-    use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -309,11 +297,11 @@ fn register(config_path: &PathBuf, base_dir: &PathBuf) {
         });
 
     file.write_all(entry.as_bytes()).unwrap_or_else(|e| {
-        eprintln!("error: write failed: {}", e);
+        eprintln!("error: write failed: {e}");
         std::process::exit(1);
     });
 
-    println!("registered {} ({})", section, url);
+    println!("registered {section} ({url})");
 }
 
 #[cfg(test)]
@@ -357,9 +345,9 @@ mod tests {
     /// `XDG_CONFIG_HOME` is process-global; tests that point it at their own
     /// tempdir still need to serialise against each other.
     fn with_config_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
-        use std::sync::Mutex;
+        use std::sync::{Mutex, PoisonError};
         static LOCK: Mutex<()> = Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
 
         let dir = tempfile::tempdir().unwrap();
         let previous = std::env::var_os("XDG_CONFIG_HOME");

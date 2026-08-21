@@ -147,7 +147,7 @@ pub fn repo_row(row: &RepoRow, columns: &Columns) -> Line<'static> {
     let summ_disp = truncate(row.summary, columns.status);
 
     Line::from(vec![
-        Span::styled(format!("  {} ", selector), selector_style),
+        Span::styled(format!("  {selector} "), selector_style),
         Span::styled(row.icon.to_string(), row.icon_style),
         Span::raw(" "),
         Span::styled(name_disp, name_style),

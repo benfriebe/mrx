@@ -81,12 +81,12 @@ impl AppState {
     }
 
     /// Apply one probe result, unless a later probe has since superseded it.
-    pub fn on_probe(&mut self, generation: u64, state: RepoState) {
+    pub fn on_probe(&mut self, generation: u64, state: &RepoState) {
         if generation < self.probe_generation {
             return;
         }
         if let Some(slot) = self.branch_labels.get_mut(state.index) {
-            *slot = probe::branch_text(&state);
+            *slot = probe::branch_text(state);
         }
     }
 
@@ -179,15 +179,12 @@ impl AppState {
             }
             RepoStatus::Running => note("(still running...)"),
             RepoStatus::Pending => note("(pending...)"),
-            RepoStatus::Skipped { reason } => note(&format!("(skipped: {})", reason)),
+            RepoStatus::Skipped { reason } => note(&format!("(skipped: {reason})")),
         }
     }
 
     pub fn branch_label(&self, idx: usize) -> &str {
-        self.branch_labels
-            .get(idx)
-            .map(String::as_str)
-            .unwrap_or("-")
+        self.branch_labels.get(idx).map_or("-", String::as_str)
     }
 
     pub fn summary_line(&self) -> String {
@@ -195,9 +192,9 @@ impl AppState {
         let done = self.done_count();
         let total = self.total();
         if failed > 0 {
-            format!("{}/{} done, {} failed", done, total, failed)
+            format!("{done}/{total} done, {failed} failed")
         } else {
-            format!("{}/{} done", done, total)
+            format!("{done}/{total} done")
         }
     }
 }
@@ -205,14 +202,15 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     fn repo(name: &str) -> Repo {
         Repo {
             name: name.to_string(),
-            path: PathBuf::from(format!("/nonexistent/{}", name)),
+            path: PathBuf::from(format!("/nonexistent/{name}")),
             clone_url: None,
-            keys: Default::default(),
+            keys: BTreeMap::default(),
         }
     }
 
@@ -304,7 +302,7 @@ mod tests {
             ahead: 0,
             behind: 0,
             changed: 0,
-            changes: Default::default(),
+            changes: probe::Changes::default(),
             present: true,
             timed_out: false,
             fetched: false,
@@ -316,7 +314,7 @@ mod tests {
     fn a_probe_result_for_the_current_generation_sets_the_branch_label() {
         let mut state = AppState::new(vec![repo("a")], "status");
         let generation = state.begin_probe();
-        state.on_probe(generation, probed(0, "main"));
+        state.on_probe(generation, &probed(0, "main"));
         assert_eq!(state.branch_label(0), "main");
     }
 
@@ -325,7 +323,7 @@ mod tests {
         let mut state = AppState::new(vec![repo("a")], "status");
         state.begin_probe(); // generation 1
         state.begin_probe(); // generation 2 supersedes it
-        state.on_probe(1, probed(0, "stale-branch"));
+        state.on_probe(1, &probed(0, "stale-branch"));
         assert_eq!(
             state.branch_label(0),
             PROBING,
@@ -337,7 +335,7 @@ mod tests {
     fn reset_for_rerun_goes_back_to_the_probing_placeholder() {
         let mut state = AppState::new(vec![repo("a")], "status");
         let generation = state.begin_probe();
-        state.on_probe(generation, probed(0, "main"));
+        state.on_probe(generation, &probed(0, "main"));
         state.reset_for_rerun();
         assert_eq!(state.branch_label(0), PROBING);
     }

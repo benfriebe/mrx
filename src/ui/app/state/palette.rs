@@ -125,7 +125,9 @@ impl App {
         if n == 0 {
             return;
         }
-        let next = (self.palette_cursor as isize + delta).clamp(0, n as isize - 1) as usize;
+        let next = (self.palette_cursor.cast_signed() + delta)
+            .clamp(0, n.cast_signed() - 1)
+            .cast_unsigned();
         self.palette_cursor = next;
     }
 

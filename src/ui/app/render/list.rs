@@ -181,7 +181,7 @@ fn repo_line(
 
     Line::from(vec![
         Span::styled(
-            format!(" {} ", cursor_marker),
+            format!(" {cursor_marker} "),
             Style::default().fg(Color::Cyan),
         ),
         select_cell(app, idx),
@@ -202,9 +202,7 @@ fn repo_line(
 fn result_style(app: &App, idx: usize) -> Style {
     match app.run_results.get(idx).and_then(|r| r.as_ref()) {
         None | Some(RunStatus::Skipped { .. }) => Style::default().fg(Color::DarkGray),
-        Some(RunStatus::Running) | Some(RunStatus::Step { .. }) => {
-            Style::default().fg(Color::Yellow)
-        }
+        Some(RunStatus::Running | RunStatus::Step { .. }) => Style::default().fg(Color::Yellow),
         Some(RunStatus::Finished { exit_code, .. }) => {
             if *exit_code == 0 {
                 Style::default().fg(Color::Green)
@@ -241,7 +239,7 @@ fn sidebar_repo_line(app: &App, idx: usize, name_col: usize, state_col: usize) -
 
     Line::from(vec![
         Span::styled(
-            format!(" {} ", cursor_marker),
+            format!(" {cursor_marker} "),
             Style::default().fg(Color::Cyan),
         ),
         Span::styled(name, name_style),
@@ -472,7 +470,7 @@ mod tests {
             ahead: 2,
             behind: 3,
             changed: 0,
-            changes: Default::default(),
+            changes: probe::Changes::default(),
             present: true,
             timed_out: false,
             fetched: true,

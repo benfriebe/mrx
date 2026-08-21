@@ -42,7 +42,7 @@ pub struct Config {
 /// The interval `auto_fetch = on` means, and the one ui mode's own `F` starts
 /// at, so a set that asks for auto-fetch without saying how often and a
 /// session that turns it on by hand agree.
-pub const DEFAULT_AUTO_FETCH: Duration = Duration::from_secs(360);
+pub const DEFAULT_AUTO_FETCH: Duration = Duration::from_mins(6);
 
 /// How many jobs to run at once: `-j` beats `[DEFAULT] jobs`, which beats one
 /// per CPU capped at 8, since these are git processes spending most of their
@@ -134,8 +134,7 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
     let fallback_base = || {
         config_path
             .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."))
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
     };
 
     let content = match std::fs::read_to_string(config_path) {
@@ -144,9 +143,7 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
             return Ok(Config {
                 repos: Vec::new(),
                 defaults: BTreeMap::new(),
-                base: dir_override
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(fallback_base),
+                base: dir_override.map_or_else(fallback_base, Path::to_path_buf),
                 jobs: None,
                 auto_fetch: None,
             });
@@ -406,9 +403,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cases = [
             ("on", Some(DEFAULT_AUTO_FETCH)),
-            ("6m", Some(Duration::from_secs(360))),
+            ("6m", Some(Duration::from_mins(6))),
             ("90s", Some(Duration::from_secs(90))),
-            ("1h", Some(Duration::from_secs(3600))),
+            ("1h", Some(Duration::from_hours(1))),
             ("OFF", Some(Duration::ZERO)),
         ];
         for (raw, expected) in cases {
@@ -513,9 +510,8 @@ mod tests {
         // An unclosed section bracket is invalid INI; `[foo\n` never closes.
         let cfg = write_config(dir.path(), "[foo\nbar = baz\n");
 
-        let err = match try_load(&cfg, None) {
-            Err(e) => e,
-            Ok(_) => panic!("an unparseable config must be an Err"),
+        let Err(err) = try_load(&cfg, None) else {
+            panic!("an unparseable config must be an Err")
         };
         assert!(
             err.contains(&cfg.display().to_string()),
@@ -529,9 +525,8 @@ mod tests {
         let cfg = dir.path().join(".mrconfig");
         std::fs::create_dir(&cfg).unwrap(); // a directory can't be read as a file
 
-        let err = match try_load(&cfg, None) {
-            Err(e) => e,
-            Ok(_) => panic!("an unreadable config must be an Err"),
+        let Err(err) = try_load(&cfg, None) else {
+            panic!("an unreadable config must be an Err")
         };
         assert!(
             err.contains(&cfg.display().to_string()),

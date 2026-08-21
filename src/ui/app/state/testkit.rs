@@ -1,19 +1,21 @@
 //! Test fixtures shared by every `state` submodule: the three-repo app
-//! `App::new` needs seven arguments to build, and a probe result to feed it.
+//! `App::new` needs seven arguments to build, a probe result to feed it, and
+//! a timestamp old enough for the code under test to call stale.
 
 use super::App;
 use crate::config::Repo;
-use crate::ui::app::probe::RepoState;
+use crate::ui::app::probe::{Changes, RepoState};
 use crate::ui::app::render;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 fn repo(name: &str) -> Repo {
     Repo {
         name: name.to_string(),
-        path: PathBuf::from(format!("/nonexistent/{}", name)),
+        path: PathBuf::from(format!("/nonexistent/{name}")),
         clone_url: None,
-        keys: Default::default(),
+        keys: BTreeMap::default(),
     }
 }
 
@@ -49,10 +51,18 @@ pub(super) fn probed(index: usize, branch: &str) -> RepoState {
         ahead: 0,
         behind: 0,
         changed: 0,
-        changes: Default::default(),
+        changes: Changes::default(),
         present: true,
         timed_out: false,
         fetched: false,
         fetch_head: None,
     }
+}
+
+/// An [`Instant`] `d` in the past, for the tests that need a timestamp
+/// something has already had time to age past.
+pub(super) fn ago(d: Duration) -> Instant {
+    Instant::now()
+        .checked_sub(d)
+        .expect("a test's offset never reaches back past the monotonic clock's own origin")
 }

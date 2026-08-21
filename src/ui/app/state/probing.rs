@@ -218,7 +218,7 @@ mod tests {
         let generation = before.begin_probe(&[0]);
         before.on_probe(
             generation,
-            behind_by(0, 1, Some(stamp - Duration::from_secs(60))),
+            behind_by(0, 1, Some(stamp - Duration::from_mins(1))),
         );
         let generation = before.begin_probe(&[0]);
         before.on_probe(generation, behind_by(0, 1, Some(stamp)));

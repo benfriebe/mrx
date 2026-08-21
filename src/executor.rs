@@ -116,6 +116,11 @@ impl StepSink {
 /// `stream` adds a [`TaskEvent::Output`] per line as it is produced. A caller
 /// that only prints at the end passes `false` rather than filtering thousands
 /// of events it will never look at.
+// `tx` is taken by value because the drop matters: the spawned tasks each hold
+// a clone, so this binding going out of scope is what leaves them as the only
+// senders and lets the channel close when the last one finishes. Borrowing it
+// would keep the caller's sender alive and hang every `recv()` loop.
+#[expect(clippy::needless_pass_by_value)]
 pub fn spawn_run(
     repos: &[Repo],
     targets: Vec<(usize, Operation)>,
@@ -472,7 +477,7 @@ mod tests {
                 name: (*n).to_string(),
                 path: dir.to_path_buf(),
                 clone_url: None,
-                keys: Default::default(),
+                keys: std::collections::BTreeMap::new(),
             })
             .collect()
     }
@@ -511,7 +516,7 @@ mod tests {
                 }
             }
         }
-        finished_indices.sort();
+        finished_indices.sort_unstable();
         assert_eq!(
             finished_indices,
             vec![3, 7],
@@ -704,9 +709,9 @@ mod tests {
             "the target already past its permit must run to completion"
         );
         let mut skipped_indices: Vec<usize> = skipped.iter().map(|(i, _)| *i).collect();
-        skipped_indices.sort();
+        skipped_indices.sort_unstable();
         let mut expected: Vec<usize> = (0..3).filter(|i| *i != winner).collect();
-        expected.sort();
+        expected.sort_unstable();
         assert_eq!(skipped_indices, expected);
         for (_, reason) in &skipped {
             assert_eq!(reason, "cancelled");

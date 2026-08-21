@@ -16,11 +16,11 @@ mod testkit;
 use mouse::on_mouse;
 
 /// Dispatch one input event. Returns true when the app should quit.
-pub fn on_input(app: &mut App, event: Event) -> bool {
-    if clears_status_message(&event) {
+pub fn on_input(app: &mut App, event: &Event) -> bool {
+    if clears_status_message(event) {
         app.status_message = None;
     }
-    match event {
+    match *event {
         Event::Key(key) if key.kind == KeyEventKind::Press => on_key(app, key),
         Event::Mouse(mouse) => on_mouse(app, mouse),
         Event::Resize(width, height) => {
@@ -173,9 +173,6 @@ fn on_quit_confirm_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-/// Keys while the set picker is open: just navigation and the two exits. No
-/// text capture, unlike the palette, since the list of sets is short enough to
-/// scan without filtering it.
 /// Keys while the sort menu is open: one column key, or anything else to
 /// leave the order alone. It swallows every key it does not bind, since the
 /// menu covers the list it would otherwise reach: `s` behind it means "sort
@@ -189,6 +186,9 @@ fn on_sort_menu_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Keys while the set picker is open: just navigation and the two exits. No
+/// text capture, unlike the palette, since the list of sets is short enough to
+/// scan without filtering it.
 fn on_set_picker_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.close_set_picker(),
@@ -309,24 +309,24 @@ mod tests {
     #[test]
     fn q_quits_in_list_mode() {
         let mut a = app(&["foo"]);
-        assert!(on_input(&mut a, press(KeyCode::Char('q'))));
+        assert!(on_input(&mut a, &press(KeyCode::Char('q'))));
     }
 
     #[test]
     fn q_is_literal_text_while_filtering() {
         let mut a = app(&["foo"]);
         a.start_filter();
-        assert!(!on_input(&mut a, press(KeyCode::Char('q'))));
+        assert!(!on_input(&mut a, &press(KeyCode::Char('q'))));
         assert_eq!(a.filter, "q");
     }
 
     #[test]
     fn shift_s_opens_the_sort_menu_and_a_column_key_orders_by_it() {
         let mut a = app(&["foo", "bar"]);
-        on_input(&mut a, press(KeyCode::Char('S')));
+        on_input(&mut a, &press(KeyCode::Char('S')));
         assert!(a.sort_menu_open);
 
-        on_input(&mut a, press(KeyCode::Char(Sort::State.key())));
+        on_input(&mut a, &press(KeyCode::Char(Sort::State.key())));
         assert!(!a.sort_menu_open);
         assert_eq!(a.sort, Sort::State);
     }
@@ -337,8 +337,8 @@ mod tests {
     #[test]
     fn the_sort_menu_swallows_the_keys_it_does_not_bind() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Char('S')));
-        on_input(&mut a, press(KeyCode::Char('z')));
+        on_input(&mut a, &press(KeyCode::Char('S')));
+        on_input(&mut a, &press(KeyCode::Char('z')));
 
         assert!(!a.sort_menu_open, "an unbound key closes it");
         assert_eq!(a.sort, Sort::default(), "and leaves the order alone");
@@ -349,12 +349,12 @@ mod tests {
     #[test]
     fn slash_enters_filter_mode_and_typed_chars_narrow_it() {
         let mut a = app(&["foo", "bar"]);
-        on_input(&mut a, press(KeyCode::Char('/')));
+        on_input(&mut a, &press(KeyCode::Char('/')));
         assert!(a.filtering);
-        on_input(&mut a, press(KeyCode::Char('b')));
-        on_input(&mut a, press(KeyCode::Char('a')));
+        on_input(&mut a, &press(KeyCode::Char('b')));
+        on_input(&mut a, &press(KeyCode::Char('a')));
         assert_eq!(a.visible_indices(), vec![1]);
-        on_input(&mut a, press(KeyCode::Enter));
+        on_input(&mut a, &press(KeyCode::Enter));
         assert!(!a.filtering);
         assert_eq!(a.filter, "ba");
     }
@@ -365,13 +365,13 @@ mod tests {
     #[test]
     fn slash_starts_a_fresh_search_after_a_committed_filter() {
         let mut a = app(&["alpha", "bravo"]);
-        on_input(&mut a, press(KeyCode::Char('/')));
-        on_input(&mut a, press(KeyCode::Char('a')));
-        on_input(&mut a, press(KeyCode::Char('l')));
-        on_input(&mut a, press(KeyCode::Enter));
+        on_input(&mut a, &press(KeyCode::Char('/')));
+        on_input(&mut a, &press(KeyCode::Char('a')));
+        on_input(&mut a, &press(KeyCode::Char('l')));
+        on_input(&mut a, &press(KeyCode::Enter));
         assert_eq!(a.visible_indices(), vec![0]);
 
-        on_input(&mut a, press(KeyCode::Char('/')));
+        on_input(&mut a, &press(KeyCode::Char('/')));
         assert!(a.filtering);
         assert!(a.filter.is_empty());
         assert_eq!(a.visible_indices(), vec![0, 1]);
@@ -381,7 +381,7 @@ mod tests {
     fn slash_is_literal_text_while_filtering() {
         let mut a = app(&["foo"]);
         a.start_filter();
-        on_input(&mut a, press(KeyCode::Char('/')));
+        on_input(&mut a, &press(KeyCode::Char('/')));
         assert_eq!(a.filter, "/", "a repo name can contain a slash");
     }
 
@@ -390,7 +390,7 @@ mod tests {
         let mut a = app(&["foo", "bar"]);
         a.start_filter();
         a.filter_push('b');
-        on_input(&mut a, press(KeyCode::Esc));
+        on_input(&mut a, &press(KeyCode::Esc));
         assert!(a.filter.is_empty());
         assert!(!a.filtering);
     }
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn space_selects_and_advances() {
         let mut a = app(&["foo", "bar"]);
-        on_input(&mut a, press(KeyCode::Char(' ')));
+        on_input(&mut a, &press(KeyCode::Char(' ')));
         assert!(a.selected.contains(&0));
         assert_eq!(a.cursor, 1);
     }
@@ -406,22 +406,22 @@ mod tests {
     #[test]
     fn r_opens_the_run_command_prompt() {
         let mut a = app(&["foo"]);
-        assert!(!on_input(&mut a, press(KeyCode::Char('r'))));
+        assert!(!on_input(&mut a, &press(KeyCode::Char('r'))));
         assert!(a.run_command_open);
     }
 
     #[test]
     fn typed_keys_enter_and_backspace_build_a_multi_line_body() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Char('r')));
+        on_input(&mut a, &press(KeyCode::Char('r')));
         for c in "ls".chars() {
-            on_input(&mut a, press(KeyCode::Char(c)));
+            on_input(&mut a, &press(KeyCode::Char(c)));
         }
-        on_input(&mut a, press(KeyCode::Enter));
+        on_input(&mut a, &press(KeyCode::Enter));
         for c in "pwdx".chars() {
-            on_input(&mut a, press(KeyCode::Char(c)));
+            on_input(&mut a, &press(KeyCode::Char(c)));
         }
-        on_input(&mut a, press(KeyCode::Backspace));
+        on_input(&mut a, &press(KeyCode::Backspace));
 
         assert_eq!(a.run_command.text(), "ls\npwd");
         assert!(a.run_command_open, "enter is a newline, not a confirm");
@@ -430,9 +430,9 @@ mod tests {
     #[test]
     fn a_list_shortcut_letter_is_literal_text_in_the_run_command_prompt() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Char('r')));
-        assert!(!on_input(&mut a, press(KeyCode::Char('q'))));
-        on_input(&mut a, press(KeyCode::Char('u')));
+        on_input(&mut a, &press(KeyCode::Char('r')));
+        assert!(!on_input(&mut a, &press(KeyCode::Char('q'))));
+        on_input(&mut a, &press(KeyCode::Char('u')));
         assert_eq!(a.run_command.text(), "qu");
         assert!(a.run_requested.is_none() && a.pending_run.is_none());
     }
@@ -440,8 +440,8 @@ mod tests {
     #[test]
     fn an_unmatched_ctrl_chord_is_not_typed_into_the_run_command_prompt() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Char('r')));
-        on_input(&mut a, ctrl(KeyCode::Char('u')));
+        on_input(&mut a, &press(KeyCode::Char('r')));
+        on_input(&mut a, &ctrl(KeyCode::Char('u')));
         assert!(a.run_command.text().is_empty());
         assert!(a.run_command_open);
     }
@@ -450,11 +450,11 @@ mod tests {
     fn ctrl_d_runs_the_typed_body_over_a_probed_clean_selection() {
         let mut a = app(&["foo"]);
         a.on_probe(0, probed(0, "main"));
-        on_input(&mut a, press(KeyCode::Char('r')));
+        on_input(&mut a, &press(KeyCode::Char('r')));
         for c in "git fetch".chars() {
-            on_input(&mut a, press(KeyCode::Char(c)));
+            on_input(&mut a, &press(KeyCode::Char(c)));
         }
-        on_input(&mut a, ctrl(KeyCode::Char('d')));
+        on_input(&mut a, &ctrl(KeyCode::Char('d')));
 
         assert!(!a.run_command_open);
         assert_eq!(a.run_requested.unwrap().body.as_deref(), Some("git fetch"));
@@ -467,15 +467,15 @@ mod tests {
         dirty.changed = 1;
         a.on_probe(0, dirty);
 
-        on_input(&mut a, press(KeyCode::Char('r')));
+        on_input(&mut a, &press(KeyCode::Char('r')));
         for c in "ls".chars() {
-            on_input(&mut a, press(KeyCode::Char(c)));
+            on_input(&mut a, &press(KeyCode::Char(c)));
         }
-        on_input(&mut a, ctrl(KeyCode::Char('d')));
+        on_input(&mut a, &ctrl(KeyCode::Char('d')));
         assert!(a.run_requested.is_none());
         assert!(a.pending_run.is_some());
 
-        on_input(&mut a, press(KeyCode::Char('y')));
+        on_input(&mut a, &press(KeyCode::Char('y')));
         assert_eq!(a.run_requested.unwrap().body.as_deref(), Some("ls"));
     }
 
@@ -483,9 +483,9 @@ mod tests {
     fn esc_closes_the_run_command_prompt_without_running() {
         let mut a = app(&["foo"]);
         a.on_probe(0, probed(0, "main"));
-        on_input(&mut a, press(KeyCode::Char('r')));
-        on_input(&mut a, press(KeyCode::Char('x')));
-        on_input(&mut a, press(KeyCode::Esc));
+        on_input(&mut a, &press(KeyCode::Char('r')));
+        on_input(&mut a, &press(KeyCode::Char('x')));
+        on_input(&mut a, &press(KeyCode::Esc));
 
         assert!(!a.run_command_open);
         assert!(a.run_requested.is_none() && a.pending_run.is_none());
@@ -495,14 +495,14 @@ mod tests {
     fn u_requests_an_update_run_on_a_clean_selection() {
         let mut a = app(&["foo"]);
         a.on_probe(0, probed(0, "main"));
-        on_input(&mut a, press(KeyCode::Char('u')));
+        on_input(&mut a, &press(KeyCode::Char('u')));
         assert_eq!(a.run_requested.unwrap().action, "update");
     }
 
     #[test]
     fn ctrl_u_does_not_trigger_the_update_shortcut() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, ctrl(KeyCode::Char('u')));
+        on_input(&mut a, &ctrl(KeyCode::Char('u')));
         assert!(
             a.run_requested.is_none() && a.pending_run.is_none(),
             "Ctrl-U must not fall through to the plain u shortcut"
@@ -515,39 +515,39 @@ mod tests {
         let mut a = app(&names.iter().map(String::as_str).collect::<Vec<_>>());
         a.terminal_height = 26;
 
-        on_input(&mut a, ctrl(KeyCode::Char('d')));
+        on_input(&mut a, &ctrl(KeyCode::Char('d')));
         let paged = a.cursor;
         assert!(paged > 1, "Ctrl-D moves a page, not a line, got {paged}");
 
-        on_input(&mut a, ctrl(KeyCode::Char('u')));
+        on_input(&mut a, &ctrl(KeyCode::Char('u')));
         assert_eq!(a.cursor, 0, "Ctrl-U comes back the same distance");
     }
 
     #[test]
     fn ctrl_f_does_not_trigger_the_fetch_shortcut() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, ctrl(KeyCode::Char('f')));
+        on_input(&mut a, &ctrl(KeyCode::Char('f')));
         assert!(a.run_requested.is_none() && a.pending_run.is_none());
     }
 
     #[test]
     fn ctrl_s_does_not_trigger_the_status_shortcut() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, ctrl(KeyCode::Char('s')));
+        on_input(&mut a, &ctrl(KeyCode::Char('s')));
         assert!(a.run_requested.is_none() && a.pending_run.is_none());
     }
 
     #[test]
     fn ctrl_d_does_not_trigger_the_diff_shortcut() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, ctrl(KeyCode::Char('d')));
+        on_input(&mut a, &ctrl(KeyCode::Char('d')));
         assert!(a.run_requested.is_none() && a.pending_run.is_none());
     }
 
     #[test]
     fn colon_opens_the_action_palette() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Char(':')));
+        on_input(&mut a, &press(KeyCode::Char(':')));
         assert!(a.palette_open);
     }
 
@@ -555,7 +555,7 @@ mod tests {
     fn palette_letters_are_literal_filter_text() {
         let mut a = app(&["foo"]);
         a.open_palette();
-        on_input(&mut a, press(KeyCode::Char('u')));
+        on_input(&mut a, &press(KeyCode::Char('u')));
         assert_eq!(a.palette_filter, "u");
         assert!(
             a.palette_open,
@@ -568,7 +568,7 @@ mod tests {
         let mut a = app(&["foo"]);
         a.open_palette();
         assert!(
-            on_input(&mut a, ctrl(KeyCode::Char('c'))),
+            on_input(&mut a, &ctrl(KeyCode::Char('c'))),
             "Ctrl-C is the one binding the plan calls universal"
         );
     }
@@ -577,25 +577,25 @@ mod tests {
     fn ctrl_c_quits_while_filtering() {
         let mut a = app(&["foo"]);
         a.start_filter();
-        assert!(on_input(&mut a, ctrl(KeyCode::Char('c'))));
+        assert!(on_input(&mut a, &ctrl(KeyCode::Char('c'))));
     }
 
     #[test]
     fn enter_opens_the_detail_view() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Enter));
+        on_input(&mut a, &press(KeyCode::Enter));
         assert!(a.detail_open);
     }
 
     #[test]
     fn a_second_enter_hands_the_keys_to_the_output_pane() {
         let mut a = app(&["foo", "bar"]);
-        on_input(&mut a, press(KeyCode::Enter));
+        on_input(&mut a, &press(KeyCode::Enter));
         assert_eq!(a.focus, Pane::List, "opening a row keeps the keys on it");
 
-        on_input(&mut a, press(KeyCode::Enter));
+        on_input(&mut a, &press(KeyCode::Enter));
         assert_eq!(a.focus, Pane::Output);
-        on_input(&mut a, press(KeyCode::Char('j')));
+        on_input(&mut a, &press(KeyCode::Char('j')));
         assert_eq!(a.cursor, 0, "j now scrolls the output, not the list");
     }
 
@@ -603,7 +603,7 @@ mod tests {
     fn esc_closes_the_detail_view() {
         let mut a = app(&["foo"]);
         a.open_detail();
-        on_input(&mut a, press(KeyCode::Esc));
+        on_input(&mut a, &press(KeyCode::Esc));
         assert!(!a.detail_open);
     }
 
@@ -611,7 +611,7 @@ mod tests {
     fn jk_still_move_the_cursor_while_the_detail_view_is_open() {
         let mut a = app(&["foo", "bar"]);
         a.open_detail();
-        on_input(&mut a, press(KeyCode::Char('j')));
+        on_input(&mut a, &press(KeyCode::Char('j')));
         assert_eq!(a.cursor, 1, "the detail view follows the cursor");
     }
 
@@ -624,19 +624,19 @@ mod tests {
         ran(&mut a, 0, 200);
         a.open_detail();
 
-        on_input(&mut a, ctrl(KeyCode::Char('u')));
+        on_input(&mut a, &ctrl(KeyCode::Char('u')));
         let from = a.detail_scroll[&0];
-        on_input(&mut a, ctrl(KeyCode::Char('d')));
+        on_input(&mut a, &ctrl(KeyCode::Char('d')));
         assert!(a.detail_scroll[&0] > from);
     }
 
     #[test]
     fn m_toggles_mouse_capture_in_list_and_detail_modes() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Char('m')));
+        on_input(&mut a, &press(KeyCode::Char('m')));
         assert!(!a.mouse_captured);
         a.open_detail();
-        on_input(&mut a, press(KeyCode::Char('m')));
+        on_input(&mut a, &press(KeyCode::Char('m')));
         assert!(a.mouse_captured);
     }
 
@@ -649,7 +649,7 @@ mod tests {
         a.request_run("update");
         assert!(a.pending_run.is_some());
 
-        on_input(&mut a, press(KeyCode::Char('y')));
+        on_input(&mut a, &press(KeyCode::Char('y')));
         assert!(a.pending_run.is_none());
         assert!(a.run_requested.is_some());
     }
@@ -665,16 +665,16 @@ mod tests {
         a.cursor = 1;
         a.request_run("update");
 
-        on_input(&mut a, press(KeyCode::Char('c')));
+        on_input(&mut a, &press(KeyCode::Char('c')));
         assert_eq!(a.run_requested.as_ref().unwrap().targets, vec![1]);
     }
 
     #[test]
     fn question_mark_opens_the_help_overlay_and_the_next_key_closes_it() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Char('?')));
+        on_input(&mut a, &press(KeyCode::Char('?')));
         assert!(a.help_open);
-        on_input(&mut a, press(KeyCode::Esc));
+        on_input(&mut a, &press(KeyCode::Esc));
         assert!(!a.help_open);
     }
 
@@ -682,8 +682,8 @@ mod tests {
     fn a_key_that_closes_the_help_overlay_does_nothing_else() {
         let mut a = app(&["foo", "bar"]);
         a.cursor = 0;
-        on_input(&mut a, press(KeyCode::Char('?')));
-        on_input(&mut a, press(KeyCode::Char('j')));
+        on_input(&mut a, &press(KeyCode::Char('?')));
+        on_input(&mut a, &press(KeyCode::Char('j')));
         assert!(!a.help_open);
         assert_eq!(a.cursor, 0, "j dismissed the overlay rather than moving");
     }
@@ -691,8 +691,8 @@ mod tests {
     #[test]
     fn question_mark_is_filter_text_rather_than_help_while_filtering() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Char('/')));
-        on_input(&mut a, press(KeyCode::Char('?')));
+        on_input(&mut a, &press(KeyCode::Char('/')));
+        on_input(&mut a, &press(KeyCode::Char('?')));
         assert!(!a.help_open);
         assert_eq!(a.filter, "?");
     }
@@ -700,10 +700,10 @@ mod tests {
     #[test]
     fn ctrl_c_still_quits_from_the_help_overlay() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Char('?')));
+        on_input(&mut a, &press(KeyCode::Char('?')));
         let ev = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(
-            on_input(&mut a, ev),
+            on_input(&mut a, &ev),
             "ctrl-c should quit, not just close help"
         );
     }
@@ -711,19 +711,19 @@ mod tests {
     #[test]
     fn o_requests_the_editor_from_the_list() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Char('o')));
+        on_input(&mut a, &press(KeyCode::Char('o')));
         assert!(a.foreground.is_some());
     }
 
     #[test]
     fn bang_requests_a_shell_from_either_mode() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Char('!')));
+        on_input(&mut a, &press(KeyCode::Char('!')));
         assert!(a.foreground.is_some());
         a.foreground = None;
 
         a.open_detail();
-        on_input(&mut a, press(KeyCode::Char('!')));
+        on_input(&mut a, &press(KeyCode::Char('!')));
         assert!(a.foreground.is_some());
     }
 
@@ -736,14 +736,14 @@ mod tests {
         ran(&mut a, 1, 200);
         a.open_detail();
 
-        on_input(&mut a, press(KeyCode::Char('j')));
+        on_input(&mut a, &press(KeyCode::Char('j')));
         assert_eq!(a.cursor, 1, "the list has the keys when the view opens");
         assert!(a.detail_scroll.is_empty(), "and the output did not move");
 
-        on_input(&mut a, press(KeyCode::Tab));
-        on_input(&mut a, ctrl(KeyCode::Char('u'))); // off the tail, so down has room
+        on_input(&mut a, &press(KeyCode::Tab));
+        on_input(&mut a, &ctrl(KeyCode::Char('u'))); // off the tail, so down has room
         let from = a.detail_scroll[&1];
-        on_input(&mut a, press(KeyCode::Char('j')));
+        on_input(&mut a, &press(KeyCode::Char('j')));
         assert_eq!(
             a.cursor, 1,
             "the cursor stays put once the output has focus"
@@ -754,7 +754,7 @@ mod tests {
     #[test]
     fn tab_still_opens_the_set_picker_from_the_plain_list() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Tab));
+        on_input(&mut a, &press(KeyCode::Tab));
         assert!(a.set_picker_open);
     }
 
@@ -763,17 +763,17 @@ mod tests {
         let mut a = app(&["foo", "bar", "baz"]);
         a.filter = "ba".into();
 
-        on_input(&mut a, press(KeyCode::Char('A')));
+        on_input(&mut a, &press(KeyCode::Char('A')));
         assert_eq!(a.selected.len(), 3, "the whole set, not just what shows");
 
-        on_input(&mut a, press(KeyCode::Char('c')));
+        on_input(&mut a, &press(KeyCode::Char('c')));
         assert!(a.selected.is_empty());
     }
 
     #[test]
     fn resize_updates_the_cached_terminal_size() {
         let mut a = app(&["foo"]);
-        assert!(!on_input(&mut a, Event::Resize(132, 43)));
+        assert!(!on_input(&mut a, &Event::Resize(132, 43)));
         assert_eq!(a.terminal_width, 132);
         assert_eq!(a.terminal_height, 43);
     }
@@ -781,14 +781,14 @@ mod tests {
     #[test]
     fn tab_opens_the_set_picker() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, press(KeyCode::Tab));
+        on_input(&mut a, &press(KeyCode::Tab));
         assert!(a.set_picker_open);
     }
 
     #[test]
     fn ctrl_r_triggers_a_config_reload() {
         let mut a = app(&["foo"]);
-        on_input(&mut a, ctrl(KeyCode::Char('r')));
+        on_input(&mut a, &ctrl(KeyCode::Char('r')));
         assert!(
             a.full_reprobe_requested,
             "reloading must ask for a fresh probe"
@@ -803,7 +803,7 @@ mod tests {
         let run_id = a.begin_named_run("update".into(), vec![0, 1]);
         a.on_task(run_id, TaskEvent::Started { index: 0 });
 
-        on_input(&mut a, press(KeyCode::Esc));
+        on_input(&mut a, &press(KeyCode::Esc));
         assert!(
             a.status_message
                 .as_deref()
@@ -822,11 +822,11 @@ mod tests {
         a.on_task(run_id, TaskEvent::Started { index: 0 });
 
         assert!(
-            !on_input(&mut a, press(KeyCode::Char('q'))),
+            !on_input(&mut a, &press(KeyCode::Char('q'))),
             "must not quit immediately"
         );
         assert!(a.quit_pending);
-        assert!(on_input(&mut a, press(KeyCode::Char('y'))), "y confirms");
+        assert!(on_input(&mut a, &press(KeyCode::Char('y'))), "y confirms");
     }
 
     #[test]
@@ -834,7 +834,7 @@ mod tests {
         let mut a = app(&["foo"]);
         a.open_set_picker();
         assert!(
-            on_input(&mut a, ctrl(KeyCode::Char('c'))),
+            on_input(&mut a, &ctrl(KeyCode::Char('c'))),
             "the set picker has no dedicated exit key for Ctrl-C, so a mode-local \
              handler that never sees it can't be trusted to quit"
         );
@@ -849,7 +849,7 @@ mod tests {
         a.request_run("update");
         assert!(a.pending_run.is_some());
 
-        assert!(on_input(&mut a, ctrl(KeyCode::Char('c'))));
+        assert!(on_input(&mut a, &ctrl(KeyCode::Char('c'))));
     }
 
     #[test]
@@ -861,12 +861,12 @@ mod tests {
         a.on_task(run_id, TaskEvent::Started { index: 0 });
 
         assert!(
-            !on_input(&mut a, ctrl(KeyCode::Char('c'))),
+            !on_input(&mut a, &ctrl(KeyCode::Char('c'))),
             "must not quit immediately while a run is live"
         );
         assert!(a.quit_pending);
         assert!(
-            on_input(&mut a, ctrl(KeyCode::Char('c'))),
+            on_input(&mut a, &ctrl(KeyCode::Char('c'))),
             "a second Ctrl-C at the prompt confirms, like y/Enter, rather than declining"
         );
     }
@@ -879,8 +879,8 @@ mod tests {
         let run_id = a.begin_named_run("update".into(), vec![0]);
         a.on_task(run_id, TaskEvent::Started { index: 0 });
 
-        on_input(&mut a, press(KeyCode::Char('q')));
-        assert!(!on_input(&mut a, press(KeyCode::Char('n'))));
+        on_input(&mut a, &press(KeyCode::Char('q')));
+        assert!(!on_input(&mut a, &press(KeyCode::Char('n'))));
         assert!(!a.quit_pending);
     }
 }

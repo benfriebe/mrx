@@ -10,6 +10,7 @@
 
 use super::poll;
 use super::state::{App, Direction, Sort};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -132,7 +133,7 @@ fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
                     .unwrap_or_default()
                     .into_iter()
                     .filter_map(json::Value::into_string)
-                    .collect()
+                    .collect();
             }
             "cursor" => session.cursor = value.into_string(),
             "fetched" => {
@@ -141,7 +142,7 @@ fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
                     .unwrap_or_default()
                     .into_iter()
                     .filter_map(json::Value::into_string)
-                    .collect()
+                    .collect();
             }
             // A value beyond `MAX_POLL_INTERVAL` reads as the field being
             // absent rather than clamped down to the max: a corrupted
@@ -151,7 +152,7 @@ fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
                 session.poll_interval = value
                     .into_u64()
                     .filter(|&secs| secs <= poll::MAX_POLL_INTERVAL.as_secs())
-                    .map(Duration::from_secs)
+                    .map(Duration::from_secs);
             }
             "auto_update" => session.auto_update = value.into_bool().unwrap_or(false),
             // A column mrx no longer has reads as the field being absent.
@@ -164,7 +165,7 @@ fn from_fields(fields: Vec<(String, json::Value)>) -> Session {
                 direction = value
                     .into_string()
                     .as_deref()
-                    .and_then(Direction::from_name)
+                    .and_then(Direction::from_name);
             }
             _ => {}
         }
@@ -192,20 +193,21 @@ pub fn save(app: &App) -> std::io::Result<()> {
 }
 
 fn to_json(s: &Session) -> String {
+    // Writing into a `String` never fails, so every result here is discarded.
     let mut out = String::from("{\n");
     if let Some(set) = &s.set {
-        out.push_str(&format!("  \"set\": {},\n", json::string(set)));
+        let _ = writeln!(out, "  \"set\": {},", json::string(set));
     }
-    out.push_str(&format!("  \"filter\": {},\n", json::string(&s.filter)));
+    let _ = writeln!(out, "  \"filter\": {},", json::string(&s.filter));
     let selected = s
         .selected
         .iter()
         .map(|n| json::string(n))
         .collect::<Vec<_>>()
         .join(", ");
-    out.push_str(&format!("  \"selected\": [{selected}],\n"));
+    let _ = writeln!(out, "  \"selected\": [{selected}],");
     if let Some(cursor) = &s.cursor {
-        out.push_str(&format!("  \"cursor\": {},\n", json::string(cursor)));
+        let _ = writeln!(out, "  \"cursor\": {},", json::string(cursor));
     }
     let fetched = s
         .fetched
@@ -213,16 +215,17 @@ fn to_json(s: &Session) -> String {
         .map(|n| json::string(n))
         .collect::<Vec<_>>()
         .join(", ");
-    out.push_str(&format!("  \"fetched\": [{fetched}],\n"));
+    let _ = writeln!(out, "  \"fetched\": [{fetched}],");
     if let Some(interval) = s.poll_interval {
-        out.push_str(&format!("  \"poll\": {},\n", interval.as_secs()));
+        let _ = writeln!(out, "  \"poll\": {},", interval.as_secs());
     }
-    out.push_str(&format!("  \"auto_update\": {},\n", s.auto_update));
-    out.push_str(&format!("  \"sort\": {},\n", json::string(s.sort.name())));
-    out.push_str(&format!(
-        "  \"sort_direction\": {}\n",
+    let _ = writeln!(out, "  \"auto_update\": {},", s.auto_update);
+    let _ = writeln!(out, "  \"sort\": {},", json::string(s.sort.name()));
+    let _ = writeln!(
+        out,
+        "  \"sort_direction\": {}",
         json::string(s.sort_direction.name())
-    ));
+    );
     out.push_str("}\n");
     out
 }
@@ -231,6 +234,8 @@ fn to_json(s: &Session) -> String {
 /// object of strings, a number, a bool, and one string array. Not a
 /// general-purpose parser.
 mod json {
+    use std::fmt::Write as _;
+
     #[derive(Debug, Clone, PartialEq)]
     pub enum Value {
         Str(String),
@@ -264,6 +269,9 @@ mod json {
 
         pub fn into_u64(self) -> Option<u64> {
             match self {
+                // The guard rules out a negative; a number too large saturates
+                // at `u64::MAX`, which every caller's own bound rejects anyway.
+                #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 Value::Num(n) if n >= 0.0 => Some(n as u64),
                 _ => None,
             }
@@ -281,7 +289,9 @@ mod json {
                 '\n' => out.push_str("\\n"),
                 '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
-                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c if (c as u32) < 0x20 => {
+                    let _ = write!(out, "\\u{:04x}", c as u32);
+                }
                 c => out.push(c),
             }
         }
@@ -353,7 +363,7 @@ mod json {
             fields.push((key, value));
             c.skip_ws();
             match c.advance()? {
-                ',' => continue,
+                ',' => {}
                 '}' => break,
                 _ => return None,
             }
@@ -439,10 +449,7 @@ mod json {
             items.push(parse_value(c)?);
             c.skip_ws();
             match c.advance()? {
-                ',' => {
-                    c.skip_ws();
-                    continue;
-                }
+                ',' => c.skip_ws(),
                 ']' => break,
                 _ => return None,
             }
@@ -455,7 +462,7 @@ mod json {
 mod tests {
     use super::*;
     use crate::config::Repo;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
 
     fn repo(name: &str) -> Repo {
@@ -463,7 +470,7 @@ mod tests {
             name: name.to_string(),
             path: PathBuf::from(format!("/nonexistent/{name}")),
             clone_url: None,
-            keys: Default::default(),
+            keys: BTreeMap::default(),
         }
     }
 
@@ -472,7 +479,7 @@ mod tests {
             names.iter().map(|n| repo(n)).collect(),
             "work".into(),
             4,
-            Default::default(),
+            BTreeMap::default(),
             PathBuf::from("/dev/null"),
             false,
             None,
@@ -483,9 +490,9 @@ mod tests {
     /// variable is process-global, so they share this lock rather than risk
     /// one clobbering another's.
     fn with_state_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
-        use std::sync::Mutex;
+        use std::sync::{Mutex, PoisonError};
         static LOCK: Mutex<()> = Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
 
         let dir = tempfile::tempdir().unwrap();
         let previous = std::env::var_os("XDG_STATE_HOME");
@@ -506,7 +513,7 @@ mod tests {
             app.selected = BTreeSet::from([0, 1]);
             app.cursor = 2;
             app.poll_enabled = true;
-            app.poll_interval = Duration::from_secs(300);
+            app.poll_interval = Duration::from_mins(5);
             app.auto_update = true;
 
             save(&app).unwrap();
@@ -516,7 +523,7 @@ mod tests {
             assert_eq!(loaded.filter, "api");
             assert_eq!(loaded.selected, vec!["bill-api", "menu-api"]);
             assert_eq!(loaded.cursor, Some("mr-yum".into()));
-            assert_eq!(loaded.poll_interval, Some(Duration::from_secs(300)));
+            assert_eq!(loaded.poll_interval, Some(Duration::from_mins(5)));
             assert!(loaded.auto_update);
         });
     }
@@ -633,7 +640,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, "{\"poll\": 300}").unwrap();
             let loaded = load();
-            assert_eq!(loaded.poll_interval, Some(Duration::from_secs(300)));
+            assert_eq!(loaded.poll_interval, Some(Duration::from_mins(5)));
         });
     }
 }

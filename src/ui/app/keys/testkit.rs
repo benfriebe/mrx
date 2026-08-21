@@ -5,18 +5,19 @@
 use crate::config::Repo;
 use crate::executor::StepResult;
 use crate::summarize::Shape;
-use crate::ui::app::probe::RepoState;
+use crate::ui::app::probe::{Changes, RepoState};
 use crate::ui::app::state::{App, RunStatus};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 fn repo(name: &str) -> Repo {
     Repo {
         name: name.to_string(),
-        path: PathBuf::from(format!("/nonexistent/{}", name)),
+        path: PathBuf::from(format!("/nonexistent/{name}")),
         clone_url: None,
-        keys: Default::default(),
+        keys: BTreeMap::default(),
     }
 }
 
@@ -41,7 +42,7 @@ pub(super) fn probed(index: usize, branch: &str) -> RepoState {
         ahead: 0,
         behind: 0,
         changed: 0,
-        changes: Default::default(),
+        changes: Changes::default(),
         present: true,
         timed_out: false,
         fetched: false,
@@ -52,11 +53,15 @@ pub(super) fn probed(index: usize, branch: &str) -> RepoState {
 /// A finished run on `index` with a `lines`-long transcript, so the output
 /// pane has somewhere to scroll.
 pub(super) fn ran(app: &mut App, index: usize, lines: usize) {
+    let mut stdout = String::new();
+    for i in 1..=lines {
+        let _ = writeln!(stdout, "line {i}");
+    }
     app.run_results[index] = Some(RunStatus::Finished {
         steps: vec![StepResult {
             label: "git pull".into(),
             shape: Shape::Generic,
-            stdout: (1..=lines).map(|i| format!("line {i}\n")).collect(),
+            stdout,
             stderr: String::new(),
             code: 0,
         }],

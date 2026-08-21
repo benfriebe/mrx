@@ -32,7 +32,7 @@ pub fn summarize(shape: Shape, stdout: &str, stderr: &str, exit_code: i32) -> St
             .or_else(|| error_line(stdout))
             .or_else(|| first_meaningful_line(stderr))
             .or_else(|| first_meaningful_line(stdout))
-            .unwrap_or_else(|| format!("exit code {}", exit_code));
+            .unwrap_or_else(|| format!("exit code {exit_code}"));
         return msg;
     }
 
@@ -80,7 +80,7 @@ pub fn changed_nothing(steps: &[StepResult], exit_code: i32) -> bool {
 }
 
 fn summarize_pull(stdout: &str, stderr: &str) -> String {
-    let combined = format!("{}\n{}", stdout, stderr);
+    let combined = format!("{stdout}\n{stderr}");
     if combined.contains("Already up to date") || combined.contains("Already up-to-date") {
         return "already up to date".into();
     }
@@ -182,7 +182,7 @@ fn summarize_diff(stdout: &str) -> String {
 }
 
 fn summarize_push(stdout: &str, stderr: &str) -> String {
-    let combined = format!("{}\n{}", stdout, stderr);
+    let combined = format!("{stdout}\n{stderr}");
     if combined.contains("Everything up-to-date") {
         return "up to date".into();
     }
@@ -233,7 +233,7 @@ fn summarize_generic(stdout: &str, stderr: &str) -> String {
 /// or `post_update` produced it, and those are fixed in different places.
 pub fn with_step(step: Option<&str>, summary: String) -> String {
     match step.filter(|s| !s.is_empty()) {
-        Some(step) => format!("{}: {}", step, summary),
+        Some(step) => format!("{step}: {summary}"),
         None => summary,
     }
 }
@@ -273,7 +273,7 @@ fn truncate(line: &str) -> String {
         return line.to_string();
     }
     let head: String = line.chars().take(MAX - 3).collect();
-    format!("{}...", head)
+    format!("{head}...")
 }
 
 #[cfg(test)]

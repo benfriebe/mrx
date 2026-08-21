@@ -41,7 +41,7 @@ pub fn sidebar_width(width: u16, content: u16) -> u16 {
 
 /// Whether a pointer at `column` is over the output pane in whichever
 /// layout `width` selects; click, drag, and scroll all resolve through
-/// this so they can't disagree with what draw_detail painted.
+/// this so they can't disagree with what `draw_detail` painted.
 pub fn pointer_over_output(width: u16, content: u16, column: u16) -> bool {
     match layout_for_width(width) {
         DetailLayout::FullScreen => true,
@@ -121,12 +121,16 @@ fn lines(steps: &[StepResult], last_is_running: bool) -> Vec<DetailLine> {
 /// something that is not this app: an editor, a pager, a paste. Escapes are
 /// stripped, as for [`DetailLine::text`].
 pub fn transcript(steps: &[StepResult]) -> String {
+    // Aliased against this module's `std::io::Write`; writing into a `String`
+    // never fails, hence the discarded result.
+    use std::fmt::Write as _;
+
     let mut text = String::new();
     for (i, step) in steps.iter().enumerate() {
         if i > 0 {
             text.push('\n');
         }
-        text.push_str(&format!("$ {}  (exit {})\n", step.label, step.code));
+        let _ = writeln!(text, "$ {}  (exit {})", step.label, step.code);
         text.push_str(&ansi::strip(&step.stdout));
         text.push_str(&ansi::strip(&step.stderr));
     }

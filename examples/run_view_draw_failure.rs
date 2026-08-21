@@ -80,7 +80,7 @@ async fn main() {
         rx,
         1,
         &BTreeMap::new(),
-        std::env::temp_dir().join("run_view_draw_failure.mrconfig"),
+        &std::env::temp_dir().join("run_view_draw_failure.mrconfig"),
         false,
     );
 

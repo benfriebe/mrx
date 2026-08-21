@@ -44,6 +44,9 @@ const NEVER_RUN: &str = "·";
 /// needing a spawn, a terminal write, or the executor's `RunHandle` is
 /// recorded here as a flag or a target list and consumed by the run loop
 /// through the `take_*` methods.
+// These flags are independent modes rather than one mode with several values,
+// so an enum over them would enumerate combinations instead of describing them.
+#[expect(clippy::struct_excessive_bools)]
 pub struct App {
     pub repos: Vec<Repo>,
     /// Active set's display name, or `(unnamed)` for a bare config file.
@@ -353,7 +356,7 @@ impl App {
     }
 
     pub fn restore_session(&mut self, session: &Session) {
-        self.filter = session.filter.clone();
+        self.filter.clone_from(&session.filter);
         self.sort = session.sort;
         self.sort_direction = session.sort_direction;
 
@@ -442,7 +445,7 @@ mod tests {
         let mut a = app(&["bill-api", "menu-api", "mr-yum"]);
         let session = Session {
             cursor: Some("mr-yum".into()),
-            poll_interval: Some(Duration::from_secs(120)),
+            poll_interval: Some(Duration::from_mins(2)),
             auto_update: true,
             ..Default::default()
         };
@@ -450,7 +453,7 @@ mod tests {
 
         assert_eq!(a.cursor, 2);
         assert!(a.poll_enabled);
-        assert_eq!(a.poll_interval, Duration::from_secs(120));
+        assert_eq!(a.poll_interval, Duration::from_mins(2));
         assert!(a.auto_update);
     }
 
@@ -477,7 +480,7 @@ mod tests {
     #[test]
     fn a_session_that_turned_the_poll_off_outranks_a_set_that_asks_for_it() {
         let mut a = app(&["foo"]);
-        a.apply_auto_fetch(Some(Duration::from_secs(360)));
+        a.apply_auto_fetch(Some(Duration::from_mins(6)));
         assert!(a.poll_enabled, "the set asked for the poll");
 
         let session = Session {
@@ -488,7 +491,7 @@ mod tests {
         assert!(!a.poll_enabled);
         assert_eq!(
             a.poll_interval,
-            Duration::from_secs(360),
+            Duration::from_mins(6),
             "an off session says nothing about the cadence to use next time"
         );
     }
@@ -498,7 +501,7 @@ mod tests {
     #[test]
     fn a_session_with_no_poll_field_leaves_the_set_to_decide() {
         let mut a = app(&["foo"]);
-        a.apply_auto_fetch(Some(Duration::from_secs(360)));
+        a.apply_auto_fetch(Some(Duration::from_mins(6)));
         a.restore_session(&Session::default());
         assert!(a.poll_enabled);
     }

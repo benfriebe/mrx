@@ -29,8 +29,7 @@ fn require_script() {
     let ok = Command::new("script")
         .args(["-q", "/dev/null", "true"])
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     assert!(
         ok,
         "macOS ships `script` as part of the base system; its absence here \

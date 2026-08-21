@@ -54,7 +54,9 @@ impl App {
         if n == 0 {
             return;
         }
-        let next = (self.set_picker_cursor as isize + delta).clamp(0, n as isize - 1) as usize;
+        let next = (self.set_picker_cursor.cast_signed() + delta)
+            .clamp(0, n.cast_signed() - 1)
+            .cast_unsigned();
         self.set_picker_cursor = next;
     }
 

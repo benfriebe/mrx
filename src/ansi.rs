@@ -116,12 +116,11 @@ fn consume_csi(chars: &mut Peekable<Chars>) -> (String, Option<char>) {
 fn consume_osc(chars: &mut Peekable<Chars>) {
     while let Some(c) = chars.next() {
         match c {
-            '\u{7}' => return,
             '\u{1b}' if chars.peek() == Some(&'\\') => {
                 chars.next();
                 return;
             }
-            '\u{1b}' => return,
+            '\u{7}' | '\u{1b}' => return,
             _ => {}
         }
     }
@@ -212,6 +211,9 @@ fn bright_color(n: u32) -> Color {
 /// at as consumed: a `38`/`48` introducer commits its trailing parameters to
 /// describing a colour, and they must never fall through to being
 /// reinterpreted as unrelated SGR codes (a truncated `38;2;R;G` as bold/dim).
+// Colour parameters are bytes by definition, so a wider value is malformed
+// input and keeping its low byte is the deliberate choice.
+#[expect(clippy::cast_possible_truncation)]
 fn extended_color(rest: &[u32]) -> (Option<Color>, usize) {
     match rest.first() {
         Some(5) => match rest.get(1) {
@@ -292,32 +294,32 @@ fn sgr_prefix(style: &Style) -> String {
     if *style == Style::default() {
         return String::new();
     }
-    let mut codes = vec!["0".to_string()];
+    // Built up in one string rather than a joined `Vec<String>`: this runs once
+    // per line of a styled block.
+    let mut out = String::from("\u{1b}[0");
     if let Some(fg) = style.fg {
-        codes.push(color_code(fg, 30, 90, 38));
+        out.push(';');
+        out.push_str(&color_code(fg, 30, 90, 38));
     }
     if let Some(bg) = style.bg {
-        codes.push(color_code(bg, 40, 100, 48));
+        out.push(';');
+        out.push_str(&color_code(bg, 40, 100, 48));
     }
-    if style.add_modifier.contains(Modifier::BOLD) {
-        codes.push("1".to_string());
+    for (modifier, code) in [
+        (Modifier::BOLD, "1"),
+        (Modifier::DIM, "2"),
+        (Modifier::ITALIC, "3"),
+        (Modifier::UNDERLINED, "4"),
+        (Modifier::REVERSED, "7"),
+        (Modifier::CROSSED_OUT, "9"),
+    ] {
+        if style.add_modifier.contains(modifier) {
+            out.push(';');
+            out.push_str(code);
+        }
     }
-    if style.add_modifier.contains(Modifier::DIM) {
-        codes.push("2".to_string());
-    }
-    if style.add_modifier.contains(Modifier::ITALIC) {
-        codes.push("3".to_string());
-    }
-    if style.add_modifier.contains(Modifier::UNDERLINED) {
-        codes.push("4".to_string());
-    }
-    if style.add_modifier.contains(Modifier::REVERSED) {
-        codes.push("7".to_string());
-    }
-    if style.add_modifier.contains(Modifier::CROSSED_OUT) {
-        codes.push("9".to_string());
-    }
-    format!("\u{1b}[{}m", codes.join(";"))
+    out.push('m');
+    out
 }
 
 /// The SGR parameter for `color` in the slot `base`/`bright_base`/`extended`

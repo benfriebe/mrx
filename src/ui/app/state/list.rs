@@ -89,7 +89,9 @@ impl App {
             return;
         }
         let pos = visible.iter().position(|&i| i == self.cursor).unwrap_or(0);
-        let next = (pos as isize + delta).clamp(0, visible.len() as isize - 1) as usize;
+        let next = (pos.cast_signed() + delta)
+            .clamp(0, visible.len().cast_signed() - 1)
+            .cast_unsigned();
         self.cursor = visible[next];
         self.follow_cursor();
     }
@@ -97,7 +99,7 @@ impl App {
     /// Move the cursor `dir` half-pages, the same jump `Ctrl-D`/`Ctrl-U`
     /// make in the detail view, so the chord means the same thing in both.
     pub fn move_cursor_half_page(&mut self, dir: isize) {
-        self.move_cursor(dir * self.half_page() as isize);
+        self.move_cursor(dir * self.half_page().cast_signed());
     }
 
     pub fn move_to_first(&mut self) {

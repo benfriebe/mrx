@@ -138,6 +138,9 @@ pub struct RunOptions {
 }
 
 /// Open ui mode and block until the user quits.
+// Setup, loop, and teardown stay in one body: the guards here drop in reverse
+// declaration order, so splitting it would hide that sequencing, not shorten it.
+#[expect(clippy::too_many_lines)]
 pub async fn run(options: RunOptions) -> io::Result<()> {
     let RunOptions {
         repos,
@@ -229,7 +232,7 @@ pub async fn run(options: RunOptions) -> io::Result<()> {
                 let Some(ev) = ev else {
                     break;
                 };
-                let should_quit = keys::on_input(&mut app, ev);
+                let should_quit = keys::on_input(&mut app, &ev);
                 // Best-effort: a failed session write (a full disk, a
                 // read-only home) shouldn't take the app down.
                 let _ = session::save(&app);
@@ -343,7 +346,7 @@ mod tests {
     /// either side of it, and the ticker holds the period it was built with.
     #[test]
     fn a_new_interval_rephases_the_ticker_onto_it() {
-        let slower = Duration::from_secs(600);
+        let slower = Duration::from_mins(10);
         assert_eq!(
             poll_ticker_restart_delay((true, TEST_INTERVAL), (true, slower)),
             Some(slower),

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 /// [`NEVER_RUN`]. Long enough to run something, go and read it, and come
 /// back; short enough that a table left open all afternoon isn't still
 /// reporting this morning.
-pub const DEFAULT_RESULT_TTL: Duration = Duration::from_secs(6 * 60);
+pub const DEFAULT_RESULT_TTL: Duration = Duration::from_mins(6);
 
 /// What joins the header's status pieces, and so what marks the seam a
 /// narrow header is allowed to shed at.
@@ -58,8 +58,8 @@ impl LiveRun {
 #[derive(Debug, Clone)]
 pub enum RunStatus {
     Running,
-    /// The step currently in flight, named so a row reads "post_update"
-    /// instead of a fixed "running...".
+    /// The step currently in flight, named so a row reads `post_update`
+    /// instead of a fixed `running...`.
     Step {
         label: String,
     },
@@ -327,17 +327,17 @@ impl App {
     /// a failure count once there's one to show.
     fn run_status_text(&self) -> Option<String> {
         let action = self.run_action.as_ref()?;
-        let mut text = format!("{} {}/{}", action, self.run_completed, self.run_total);
-        if self.run_failed > 0 {
-            text.push_str(&format!(" · {} failed", self.run_failed));
+        let progress = format!("{action} {}/{}", self.run_completed, self.run_total);
+        if self.run_failed == 0 {
+            return Some(progress);
         }
-        Some(text)
+        Some(format!("{progress} · {} failed", self.run_failed))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::testkit::app;
+    use super::super::testkit::{ago, app};
     use super::*;
 
     #[test]
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn a_result_older_than_the_ttl_goes_back_to_never_run() {
         let mut a = app(&["foo", "bar"]);
-        a.result_ttl = Some(Duration::from_secs(60));
+        a.result_ttl = Some(Duration::from_mins(1));
         let run_id = a.begin_run();
         a.on_task(
             run_id,
@@ -446,8 +446,7 @@ mod tests {
         a.expire_results();
         assert_eq!(a.result_text(0), "not checked out");
 
-        a.result_at
-            .insert(0, Instant::now() - Duration::from_secs(61));
+        a.result_at.insert(0, ago(Duration::from_secs(61)));
         a.expire_results();
         assert_eq!(a.result_text(0), NEVER_RUN);
     }
@@ -455,11 +454,10 @@ mod tests {
     #[test]
     fn results_never_expire_while_the_run_that_made_them_is_still_going() {
         let mut a = app(&["foo", "bar"]);
-        a.result_ttl = Some(Duration::from_secs(60));
+        a.result_ttl = Some(Duration::from_mins(1));
         a.run_action = Some("update".into());
         a.run_results[0] = Some(RunStatus::Running);
-        a.result_at
-            .insert(0, Instant::now() - Duration::from_secs(600));
+        a.result_at.insert(0, ago(Duration::from_mins(10)));
         a.expire_results();
         assert!(a.run_results[0].is_some(), "a live run is not stale");
     }
@@ -469,8 +467,7 @@ mod tests {
         let mut a = app(&["foo"]);
         a.result_ttl = None;
         a.run_results[0] = Some(RunStatus::Skipped { reason: "x".into() });
-        a.result_at
-            .insert(0, Instant::now() - Duration::from_secs(9999));
+        a.result_at.insert(0, ago(Duration::from_secs(9999)));
         a.expire_results();
         assert!(a.run_results[0].is_some());
     }

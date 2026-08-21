@@ -32,9 +32,9 @@ pub async fn run(
         let Some(event) = rx.recv().await else { break };
 
         match event {
-            TaskEvent::Started { .. } | TaskEvent::Step { .. } => continue,
-            // Never emitted here: the plain path opts out of streaming.
-            TaskEvent::Output { .. } => continue,
+            // Progress has nowhere to go in a line-per-repo report, and `Output`
+            // never arrives at all: the plain path opts out of streaming.
+            TaskEvent::Started { .. } | TaskEvent::Step { .. } | TaskEvent::Output { .. } => {}
             TaskEvent::Skipped { index, reason } => {
                 done += 1;
                 println!("{:width$} | skipped: {}", repos[index].name, reason);
@@ -74,9 +74,9 @@ pub async fn run(
     }
 
     if failed > 0 {
-        eprintln!("mrx {}: {}/{} done, {} failed", action, done, total, failed);
+        eprintln!("mrx {action}: {done}/{total} done, {failed} failed");
     } else {
-        eprintln!("mrx {}: {}/{} done", action, done, total);
+        eprintln!("mrx {action}: {done}/{total} done");
     }
 
     failed == 0

@@ -24,7 +24,7 @@ pub const DEFAULT_POLL_INTERVAL: Duration = crate::config::DEFAULT_AUTO_FETCH;
 /// can represent that `Instant::now() + interval` can never overflow;
 /// `Instant::now() + Duration::from_secs(u64::MAX)` panics outright, which
 /// would crash the app at startup before a single frame draws.
-pub const MAX_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
+pub const MAX_POLL_INTERVAL: Duration = Duration::from_hours(24 * 365 * 10);
 
 /// Clamp `interval` into `[1s, MAX_POLL_INTERVAL]`, whatever its source,
 /// before it is used to build the poll timer.
@@ -134,6 +134,7 @@ pub fn format_ago(elapsed: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::app::probe::Changes;
 
     fn state(upstream: bool, ahead: u32, behind: u32, changed: usize, present: bool) -> RepoState {
         RepoState {
@@ -143,7 +144,7 @@ mod tests {
             ahead,
             behind,
             changed,
-            changes: Default::default(),
+            changes: Changes::default(),
             present,
             timed_out: false,
             fetched: false,
@@ -194,7 +195,7 @@ mod tests {
 
     #[test]
     fn format_interval_prefers_minutes_when_they_divide_evenly() {
-        assert_eq!(format_interval(Duration::from_secs(300)), "5m");
+        assert_eq!(format_interval(Duration::from_mins(5)), "5m");
         assert_eq!(format_interval(Duration::from_secs(90)), "90s");
         assert_eq!(format_interval(Duration::from_secs(0)), "0s");
     }
@@ -202,8 +203,8 @@ mod tests {
     #[test]
     fn clamp_interval_leaves_a_sane_value_untouched() {
         assert_eq!(
-            clamp_interval(Duration::from_secs(300)),
-            Duration::from_secs(300)
+            clamp_interval(Duration::from_mins(5)),
+            Duration::from_mins(5)
         );
     }
 

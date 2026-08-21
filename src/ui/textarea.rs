@@ -190,7 +190,9 @@ impl TextArea {
             .unwrap_or_else(|| column_of(&self.text[ranges[line].0..self.cursor]));
         self.goal_column = Some(column);
 
-        let target = (line as isize + delta).clamp(0, ranges.len() as isize - 1) as usize;
+        let target = (line.cast_signed() + delta)
+            .clamp(0, ranges.len().cast_signed() - 1)
+            .cast_unsigned();
         let (start, end) = ranges[target];
         self.cursor = start + byte_at_column(&self.text[start..end], column);
     }

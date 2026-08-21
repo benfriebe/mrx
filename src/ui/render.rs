@@ -2,39 +2,18 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use super::output;
-use super::state::AppState;
+use super::state::{AppState, OutputLine};
 use super::widgets::{self, Columns, RepoRow};
+
+// Row prefix is "  ▸ ✓ " (2 spaces + selector + space + icon + space) = 6 cells.
+// Two 2-space gaps separate the three columns.
+const PREFIX_W: usize = 6;
+const COL_GAP: usize = 2;
 
 pub fn draw(frame: &mut Frame, state: &AppState) {
     let area = frame.area();
 
-    // Natural widths (longest content) for each column, floored to header label width.
-    let name_nat = state
-        .repos
-        .iter()
-        .map(|r| widgets::display_width(&r.name))
-        .max()
-        .unwrap_or(0)
-        .max(widgets::display_width("REPO"));
-    let branch_nat = (0..state.total())
-        .map(|i| widgets::display_width(state.branch_label(i)))
-        .max()
-        .unwrap_or(0)
-        .max(widgets::display_width("BRANCH"));
-    let status_nat = (0..state.total())
-        .map(|i| {
-            let (_, _, summ, _) =
-                widgets::format_status(&state.statuses[i], state.tick, &state.command_name);
-            widgets::display_width(&summ)
-        })
-        .max()
-        .unwrap_or(0)
-        .max(widgets::display_width("STATUS"));
-
-    // Row prefix is "  ▸ ✓ " (2 spaces + selector + space + icon + space) = 6 cells.
-    // Two 2-space gaps separate the three columns.
-    const PREFIX_W: usize = 6;
-    const COL_GAP: usize = 2;
+    let (name_nat, branch_nat, status_nat) = natural_column_widths(state);
     let avail = (area.width as usize).saturating_sub(PREFIX_W + COL_GAP * 2);
     let (name_col, branch_col, status_col) =
         compute_column_widths(name_nat, branch_nat, status_nat, avail);
@@ -108,41 +87,12 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
 
         if state.expanded == Some(i) {
             if let Some(content_lines) = state.expanded_lines() {
-                let max_visible = list_height.saturating_sub(3).max(3);
-                let start = state
-                    .scroll_offset
-                    .min(content_lines.len().saturating_sub(1));
-                let end = (start + max_visible).min(content_lines.len());
-
-                let box_width = area.width.saturating_sub(6) as usize;
-
-                lines.push(Line::from(Span::styled(
-                    format!("    ┌{}┐", "─".repeat(box_width)),
-                    Style::default().fg(Color::DarkGray),
-                )));
-
-                for cl in &content_lines[start..end] {
-                    // The panel has no right border to overrun, so what
-                    // doesn't fit is left to the paragraph to clip.
-                    let mut spans =
-                        vec![Span::styled("    │ ", Style::default().fg(Color::DarkGray))];
-                    spans.extend(output::output_line(&cl.text, cl.stderr, "").spans);
-                    lines.push(Line::from(spans));
-                }
-
-                if content_lines.len() > max_visible {
-                    let indicator = format!(" [{}-{}/{}] ", start + 1, end, content_lines.len());
-                    let dash_len = box_width.saturating_sub(indicator.len());
-                    lines.push(Line::from(Span::styled(
-                        format!("    └{}{}┘", "─".repeat(dash_len), indicator),
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                } else {
-                    lines.push(Line::from(Span::styled(
-                        format!("    └{}┘", "─".repeat(box_width)),
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                }
+                lines.extend(expanded_panel(
+                    &content_lines,
+                    state.scroll_offset,
+                    list_height,
+                    area.width,
+                ));
             }
         }
     }
@@ -164,6 +114,73 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
+}
+
+/// Natural widths (longest content) for the REPO, BRANCH and STATUS columns,
+/// each floored at its header label's width.
+fn natural_column_widths(state: &AppState) -> (usize, usize, usize) {
+    let name = state
+        .repos
+        .iter()
+        .map(|r| widgets::display_width(&r.name))
+        .max()
+        .unwrap_or(0)
+        .max(widgets::display_width("REPO"));
+    let branch = (0..state.total())
+        .map(|i| widgets::display_width(state.branch_label(i)))
+        .max()
+        .unwrap_or(0)
+        .max(widgets::display_width("BRANCH"));
+    let status = (0..state.total())
+        .map(|i| {
+            let (_, _, summ, _) =
+                widgets::format_status(&state.statuses[i], state.tick, &state.command_name);
+            widgets::display_width(&summ)
+        })
+        .max()
+        .unwrap_or(0)
+        .max(widgets::display_width("STATUS"));
+    (name, branch, status)
+}
+
+/// The output panel drawn under an expanded row: a bordered box around the
+/// visible slice of `content_lines`, its bottom border carrying a position
+/// indicator when there is more output than fits.
+fn expanded_panel(
+    content_lines: &[OutputLine],
+    scroll_offset: usize,
+    list_height: usize,
+    area_width: u16,
+) -> Vec<Line<'static>> {
+    let border = Style::default().fg(Color::DarkGray);
+    let max_visible = list_height.saturating_sub(3).max(3);
+    let start = scroll_offset.min(content_lines.len().saturating_sub(1));
+    let end = (start + max_visible).min(content_lines.len());
+    let box_width = area_width.saturating_sub(6) as usize;
+
+    let mut lines = vec![Line::from(Span::styled(
+        format!("    ┌{}┐", "─".repeat(box_width)),
+        border,
+    ))];
+
+    for cl in &content_lines[start..end] {
+        // The panel has no right border to overrun, so what doesn't fit is
+        // left to the paragraph to clip.
+        let mut spans = vec![Span::styled("    │ ", border)];
+        spans.extend(output::output_line(&cl.text, cl.stderr, "").spans);
+        lines.push(Line::from(spans));
+    }
+
+    let bottom = if content_lines.len() > max_visible {
+        let indicator = format!(" [{}-{}/{}] ", start + 1, end, content_lines.len());
+        let dash_len = box_width.saturating_sub(indicator.len());
+        format!("    └{}{}┘", "─".repeat(dash_len), indicator)
+    } else {
+        format!("    └{}┘", "─".repeat(box_width))
+    };
+    lines.push(Line::from(Span::styled(bottom, border)));
+
+    lines
 }
 
 fn calculate_scroll(state: &AppState, list_height: usize) -> (usize, usize) {
@@ -283,7 +300,7 @@ mod tests {
     fn fits_below_floor_sum_on_narrow_viewports() {
         // avail = 10, sum of floors = 16 → must shrink unconditionally.
         let (n, b, s) = compute_column_widths(20, 30, 20, 10);
-        assert!(n + b + s <= 10, "got {} {} {}", n, b, s);
+        assert!(n + b + s <= 10, "got {n} {b} {s}");
     }
 
     #[test]

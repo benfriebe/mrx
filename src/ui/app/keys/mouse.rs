@@ -153,6 +153,12 @@ mod tests {
     use crate::ui::app::keys::testkit::{app, press};
     use crossterm::event::{Event, KeyCode, KeyModifiers};
 
+    /// [`render::LIST_HEADER_ROWS`] as a screen row: the first table row, and
+    /// the output pane's first content row.
+    fn header_row() -> u16 {
+        u16::try_from(render::LIST_HEADER_ROWS).unwrap_or(u16::MAX)
+    }
+
     #[test]
     fn a_click_on_the_cursor_row_opens_the_detail_view() {
         let mut a = app(&["foo", "bar"]);
@@ -161,10 +167,10 @@ mod tests {
         let ev = Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 5,
-            row: render::LIST_HEADER_ROWS as u16, // first table row
+            row: header_row(), // first table row
             modifiers: KeyModifiers::NONE,
         });
-        on_input(&mut a, ev);
+        on_input(&mut a, &ev);
         assert!(a.detail_open);
     }
 
@@ -185,10 +191,10 @@ mod tests {
             let ev = Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 column: 5,
-                row: render::LIST_HEADER_ROWS as u16,
+                row: header_row(),
                 modifiers: KeyModifiers::NONE,
             });
-            on_input(&mut a, ev);
+            on_input(&mut a, &ev);
             assert!(!a.detail_open);
             assert_eq!(a.cursor, 0);
         }
@@ -202,10 +208,10 @@ mod tests {
         let ev = Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 5,
-            row: render::LIST_HEADER_ROWS as u16 + 1, // second table row
+            row: header_row() + 1, // second table row
             modifiers: KeyModifiers::NONE,
         });
-        on_input(&mut a, ev);
+        on_input(&mut a, &ev);
         assert_eq!(a.cursor, 1);
         assert!(!a.detail_open);
     }
@@ -225,7 +231,7 @@ mod tests {
                 row,
                 modifiers: KeyModifiers::NONE,
             });
-            on_input(&mut a, ev);
+            on_input(&mut a, &ev);
             assert_eq!(a.cursor, 2, "row {row} moved the cursor");
             assert!(!a.detail_open, "row {row} opened the detail view");
         }
@@ -239,10 +245,10 @@ mod tests {
         let ev = Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 5,
-            row: render::LIST_HEADER_ROWS as u16,
+            row: header_row(),
             modifiers: KeyModifiers::NONE,
         });
-        on_input(&mut a, ev);
+        on_input(&mut a, &ev);
         assert_eq!(a.cursor, 0);
     }
 
@@ -284,22 +290,22 @@ mod tests {
     #[test]
     fn dragging_across_the_output_pane_selects_the_lines_it_covers() {
         let (mut a, column) = app_with_output();
-        let top = render::LIST_HEADER_ROWS as u16;
+        let top = header_row();
 
         on_input(
             &mut a,
-            mouse(MouseEventKind::Down(MouseButton::Left), column, top),
+            &mouse(MouseEventKind::Down(MouseButton::Left), column, top),
         );
         on_input(
             &mut a,
-            mouse(MouseEventKind::Drag(MouseButton::Left), column, top + 2),
+            &mouse(MouseEventKind::Drag(MouseButton::Left), column, top + 2),
         );
         assert_eq!(a.output_selection_range(), Some(0..=2));
 
         // Dragging back above the anchor selects the same way.
         on_input(
             &mut a,
-            mouse(MouseEventKind::Drag(MouseButton::Left), column, top),
+            &mouse(MouseEventKind::Drag(MouseButton::Left), column, top),
         );
         assert_eq!(a.output_selection_range(), Some(0..=0));
     }
@@ -307,14 +313,14 @@ mod tests {
     #[test]
     fn a_click_in_the_output_pane_clears_the_last_selection_rather_than_making_one() {
         let (mut a, column) = app_with_output();
-        let top = render::LIST_HEADER_ROWS as u16;
+        let top = header_row();
         on_input(
             &mut a,
-            mouse(MouseEventKind::Down(MouseButton::Left), column, top),
+            &mouse(MouseEventKind::Down(MouseButton::Left), column, top),
         );
         on_input(
             &mut a,
-            mouse(MouseEventKind::Up(MouseButton::Left), column, top),
+            &mouse(MouseEventKind::Up(MouseButton::Left), column, top),
         );
         assert!(a.output_selection_range().is_none());
         assert!(a.status_message.is_none(), "a click copies nothing");
@@ -323,20 +329,20 @@ mod tests {
     #[test]
     fn a_selection_does_not_follow_the_cursor_onto_another_repo() {
         let (mut a, column) = app_with_output();
-        let top = render::LIST_HEADER_ROWS as u16;
+        let top = header_row();
         on_input(
             &mut a,
-            mouse(MouseEventKind::Down(MouseButton::Left), column, top),
+            &mouse(MouseEventKind::Down(MouseButton::Left), column, top),
         );
         on_input(
             &mut a,
-            mouse(MouseEventKind::Drag(MouseButton::Left), column, top + 1),
+            &mouse(MouseEventKind::Drag(MouseButton::Left), column, top + 1),
         );
         assert!(a.output_selection_range().is_some());
 
         // Tab first: the press that started the drag gave the output the keys.
-        on_input(&mut a, press(KeyCode::Tab));
-        on_input(&mut a, press(KeyCode::Char('j')));
+        on_input(&mut a, &press(KeyCode::Tab));
+        on_input(&mut a, &press(KeyCode::Char('j')));
         assert!(
             a.output_selection_range().is_none(),
             "the indices only mean anything against the transcript they were taken on"
@@ -348,7 +354,7 @@ mod tests {
     #[test]
     fn clicking_a_pane_hands_it_the_keys() {
         let (mut a, column) = app_with_output();
-        let top = render::LIST_HEADER_ROWS as u16;
+        let top = header_row();
         assert_eq!(
             a.focus,
             Pane::List,
@@ -357,13 +363,13 @@ mod tests {
 
         on_input(
             &mut a,
-            mouse(MouseEventKind::Down(MouseButton::Left), column, top),
+            &mouse(MouseEventKind::Down(MouseButton::Left), column, top),
         );
         assert_eq!(a.focus, Pane::Output);
 
         on_input(
             &mut a,
-            mouse(MouseEventKind::Down(MouseButton::Left), 2, top),
+            &mouse(MouseEventKind::Down(MouseButton::Left), 2, top),
         );
         assert_eq!(a.focus, Pane::List);
     }
@@ -373,10 +379,10 @@ mod tests {
     #[test]
     fn clicking_past_the_end_of_the_output_still_focuses_it() {
         let (mut a, column) = app_with_output();
-        let below = render::LIST_HEADER_ROWS as u16 + 8;
+        let below = header_row() + 8;
         on_input(
             &mut a,
-            mouse(MouseEventKind::Down(MouseButton::Left), column, below),
+            &mouse(MouseEventKind::Down(MouseButton::Left), column, below),
         );
         assert_eq!(a.focus, Pane::Output);
         assert!(
@@ -390,11 +396,7 @@ mod tests {
         let (mut a, _) = app_with_output();
         on_input(
             &mut a,
-            mouse(
-                MouseEventKind::Drag(MouseButton::Left),
-                2,
-                render::LIST_HEADER_ROWS as u16,
-            ),
+            &mouse(MouseEventKind::Drag(MouseButton::Left), 2, header_row()),
         );
         assert!(a.output_selection_range().is_none());
         assert!(a.status_message.is_some());
@@ -409,7 +411,7 @@ mod tests {
             row: 5,
             modifiers: KeyModifiers::NONE,
         });
-        on_input(&mut a, ev);
+        on_input(&mut a, &ev);
         assert!(a.cursor > 0);
     }
 
@@ -422,18 +424,18 @@ mod tests {
             row: 0,
             modifiers: KeyModifiers::NONE,
         });
-        on_input(&mut a, ev);
+        on_input(&mut a, &ev);
         assert!(a.status_message.is_some());
         assert!(a.drag_hint_shown);
 
-        on_input(&mut a, press(KeyCode::Char(' '))); // any other key clears it
+        on_input(&mut a, &press(KeyCode::Char(' '))); // any other key clears it
         let ev2 = Event::Mouse(MouseEvent {
             kind: MouseEventKind::Drag(MouseButton::Left),
             column: 0,
             row: 0,
             modifiers: KeyModifiers::NONE,
         });
-        on_input(&mut a, ev2);
+        on_input(&mut a, &ev2);
         assert!(
             a.status_message.is_none(),
             "the hint is shown once, not every drag"
@@ -445,10 +447,19 @@ mod tests {
     #[test]
     fn the_drag_hint_survives_the_rest_of_the_gesture() {
         let mut a = app(&["foo", "bar"]);
-        on_input(&mut a, mouse(MouseEventKind::Down(MouseButton::Left), 4, 6));
-        on_input(&mut a, mouse(MouseEventKind::Drag(MouseButton::Left), 5, 6));
-        on_input(&mut a, mouse(MouseEventKind::Drag(MouseButton::Left), 6, 6));
-        on_input(&mut a, mouse(MouseEventKind::Up(MouseButton::Left), 6, 6));
+        on_input(
+            &mut a,
+            &mouse(MouseEventKind::Down(MouseButton::Left), 4, 6),
+        );
+        on_input(
+            &mut a,
+            &mouse(MouseEventKind::Drag(MouseButton::Left), 5, 6),
+        );
+        on_input(
+            &mut a,
+            &mouse(MouseEventKind::Drag(MouseButton::Left), 6, 6),
+        );
+        on_input(&mut a, &mouse(MouseEventKind::Up(MouseButton::Left), 6, 6));
         assert!(
             a.status_message.is_some(),
             "the release wiped the hint before it could be painted"
@@ -458,11 +469,14 @@ mod tests {
     #[test]
     fn pointer_motion_after_a_swallowed_drag_leaves_the_hint_up() {
         let mut a = app(&["foo", "bar"]);
-        on_input(&mut a, mouse(MouseEventKind::Drag(MouseButton::Left), 5, 6));
+        on_input(
+            &mut a,
+            &mouse(MouseEventKind::Drag(MouseButton::Left), 5, 6),
+        );
         assert!(a.status_message.is_some());
 
-        on_input(&mut a, mouse(MouseEventKind::Moved, 7, 8));
-        on_input(&mut a, mouse(MouseEventKind::Moved, 9, 8));
+        on_input(&mut a, &mouse(MouseEventKind::Moved, 7, 8));
+        on_input(&mut a, &mouse(MouseEventKind::Moved, 9, 8));
         assert!(
             a.status_message.is_some(),
             "passive pointer motion is not a user action and must not clear the status line"
@@ -474,12 +488,18 @@ mod tests {
     #[test]
     fn a_second_swallowed_drag_does_not_set_the_hint_again() {
         let mut a = app(&["foo", "bar"]);
-        on_input(&mut a, mouse(MouseEventKind::Drag(MouseButton::Left), 5, 6));
+        on_input(
+            &mut a,
+            &mouse(MouseEventKind::Drag(MouseButton::Left), 5, 6),
+        );
         assert!(a.status_message.is_some());
         assert!(a.drag_hint_shown);
 
         a.status_message = None;
-        on_input(&mut a, mouse(MouseEventKind::Drag(MouseButton::Left), 6, 6));
+        on_input(
+            &mut a,
+            &mouse(MouseEventKind::Drag(MouseButton::Left), 6, 6),
+        );
         assert!(a.status_message.is_none());
     }
 }

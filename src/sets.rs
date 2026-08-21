@@ -1,6 +1,7 @@
 //! Named repo sets. A set is just a config file with a name, so one binary and
 //! one habit can cover several unrelated repo lists.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// The set used when neither `-s` nor `$MRX_SET` names one.
@@ -44,7 +45,7 @@ pub fn legacy_config() -> Option<PathBuf> {
 /// Every set found on disk, sorted by name. A name found in both locations is
 /// reported once, at the path `resolve` would pick.
 pub fn discover() -> Vec<(String, PathBuf)> {
-    let mut found: std::collections::BTreeMap<String, PathBuf> = Default::default();
+    let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
 
     if let Some(home) = dirs::home_dir() {
         if let Ok(entries) = std::fs::read_dir(&home) {

@@ -39,3 +39,33 @@ debug = "line-tables-only"
 [profile.release]
 lto = true
 strip = true
+
+# Apollo's Rust handbook, chapter 2.5: the lint set lives with the package so
+# an editor, a bare `cargo clippy` and CI all see the same one.
+#
+# Groups take a negative priority so the individual entries below can override
+# them; cargo applies higher-priority lints last.
+[lints.rust]
+future-incompatible = "warn"
+nonstandard-style = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -2 }
+pedantic = { level = "warn", priority = -1 }
+
+# The handbook's table of lints worth enforcing past `all`. The first two are
+# nursery, so they need naming rather than a group.
+redundant_clone = "deny"
+needless_collect = "deny"
+large_enum_variant = "deny"
+unnecessary_wraps = "deny"
+
+# mrx is a binary. These three document a public API nobody can import, and
+# `#[must_use]` on every accessor buys noise rather than a caught bug.
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# Doc comments here open with the sentence that explains the item, not with a
+# summary line and the explanation after it.
+too_long_first_doc_paragraph = "allow"

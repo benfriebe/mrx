@@ -3,7 +3,7 @@
 use crossterm::event::KeyCode;
 use std::collections::BTreeMap;
 use std::io;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -23,7 +23,7 @@ pub fn run(
     mut rx: mpsc::UnboundedReceiver<TaskEvent>,
     jobs: usize,
     defaults: &BTreeMap<String, String>,
-    config_path: PathBuf,
+    config_path: &Path,
     exit_on_done: bool,
 ) -> io::Result<bool> {
     super::install_panic_hook();
@@ -45,7 +45,7 @@ pub fn run(
             apply_event(&mut state, &evt);
         }
         while let Ok(probed) = probe_rx.try_recv() {
-            state.on_probe(probed.generation, probed.state);
+            state.on_probe(probed.generation, &probed.state);
         }
 
         state.all_done = state.done_count() == state.total();
@@ -86,7 +86,7 @@ pub fn run(
                             KeyCode::Enter => state.toggle_expand(),
                             KeyCode::Home | KeyCode::Char('g') => state.selected = 0,
                             KeyCode::End | KeyCode::Char('G') => {
-                                state.selected = state.total().saturating_sub(1)
+                                state.selected = state.total().saturating_sub(1);
                             }
                             KeyCode::Char('r') if state.all_done => {
                                 let ops = state
@@ -98,7 +98,7 @@ pub fn run(
                                     &state.repos,
                                     ops,
                                     jobs,
-                                    config_path.clone(),
+                                    config_path.to_path_buf(),
                                 );
                                 state.reset_for_rerun();
                                 spawn_probe_for_all(&mut state, jobs, &probe_tx);
@@ -145,11 +145,10 @@ fn apply_event(state: &mut AppState, event: &TaskEvent) {
         TaskEvent::Started { index } => {
             state.statuses[*index] = RepoStatus::Running;
         }
-        // Which step is live doesn't have anywhere to show yet in this view;
-        // the row keeps its fixed "pulling..."-style text until Finished.
-        TaskEvent::Step { .. } => {}
-        // Never emitted here: the one-shot view opts out of streaming.
-        TaskEvent::Output { .. } => {}
+        // Neither reaches the row: which step is live has nowhere to show yet,
+        // so the row keeps its fixed "pulling..."-style text until Finished,
+        // and this view opts out of streaming, so Output is never emitted.
+        TaskEvent::Step { .. } | TaskEvent::Output { .. } => {}
         TaskEvent::Finished {
             index,
             steps,

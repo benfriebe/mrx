@@ -107,7 +107,7 @@ pub fn spawn_probe(
     repos: &[Repo],
     which: Vec<usize>,
     max_jobs: usize,
-    tx: mpsc::UnboundedSender<RepoState>,
+    tx: &mpsc::UnboundedSender<RepoState>,
 ) {
     let semaphore = Arc::new(Semaphore::new(max_jobs));
     for index in which {
@@ -340,7 +340,7 @@ pub fn spawn_probe_generation(
     generation: u64,
     tx: mpsc::UnboundedSender<Probed>,
 ) {
-    spawn_probe(repos, which, max_jobs, generation_tagged(generation, tx));
+    spawn_probe(repos, which, max_jobs, &generation_tagged(generation, tx));
 }
 
 #[cfg(test)]

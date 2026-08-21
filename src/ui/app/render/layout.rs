@@ -12,7 +12,7 @@ use crate::ui::widgets::display_width;
 /// [`LIST_HEADER_ROWS`]) plus a bottom separator, status line, and (while
 /// `/` is capturing text) the filter line.
 pub(crate) fn chrome_rows(app: &App) -> usize {
-    LIST_HEADER_ROWS + FOOTER_ROWS as usize + if app.filtering { 1 } else { 0 }
+    LIST_HEADER_ROWS + FOOTER_ROWS as usize + usize::from(app.filtering)
 }
 
 pub(crate) fn list_height(app: &App, area_height: u16) -> usize {

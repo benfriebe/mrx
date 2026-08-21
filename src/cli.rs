@@ -18,6 +18,9 @@ fn parse_jobs(s: &str) -> Result<usize, String> {
     name = "mrx",
     about = "Multi Repo eXtreme: parallel multi-repo operations with TUI"
 )]
+// One bool per command-line switch, so the count is clap's flag list rather
+// than a state machine that two-variant enums would express better.
+#[expect(clippy::struct_excessive_bools)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -34,7 +37,7 @@ pub struct Cli {
     #[arg(short = 'c', long, global = true)]
     pub config: Option<PathBuf>,
 
-    /// Named repo set: ~/.config/mrx/NAME.mrconfig [env: MRX_SET]
+    /// Named repo set: ~/.config/mrx/NAME.mrconfig [env: `MRX_SET`]
     #[arg(short = 's', long, global = true)]
     pub set: Option<String>,
 
@@ -147,7 +150,7 @@ impl Command {
             Command::List | Command::Ls => "list",
             Command::Sets => "sets",
             Command::Ui => "ui",
-            Command::Custom(args) => args.first().map(String::as_str).unwrap_or(""),
+            Command::Custom(args) => args.first().map_or("", String::as_str),
         }
     }
 
@@ -189,8 +192,8 @@ mod tests {
     fn result_ttl_accepts_seconds_minutes_and_hours() {
         assert_eq!(parse_duration("90"), Ok(Duration::from_secs(90)));
         assert_eq!(parse_duration("90s"), Ok(Duration::from_secs(90)));
-        assert_eq!(parse_duration("6m"), Ok(Duration::from_secs(360)));
-        assert_eq!(parse_duration("1h"), Ok(Duration::from_secs(3600)));
+        assert_eq!(parse_duration("6m"), Ok(Duration::from_mins(6)));
+        assert_eq!(parse_duration("1h"), Ok(Duration::from_hours(1)));
     }
 
     /// The distinction `parse_duration` documents, from clap's side.

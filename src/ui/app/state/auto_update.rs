@@ -176,7 +176,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testkit::{app, probed};
+    use super::super::testkit::{ago, app, probed};
     use super::*;
     use crate::executor::TaskEvent;
     use crate::ui::app::probe::RepoState;
@@ -187,9 +187,9 @@ mod tests {
         let mut a = app(&["foo"]);
         assert!(!a.poll_enabled, "off unless something says otherwise");
 
-        a.apply_auto_fetch(Some(Duration::from_secs(120)));
+        a.apply_auto_fetch(Some(Duration::from_mins(2)));
         assert!(a.poll_enabled);
-        assert_eq!(a.poll_interval, Duration::from_secs(120));
+        assert_eq!(a.poll_interval, Duration::from_mins(2));
 
         a.apply_auto_fetch(Some(Duration::ZERO));
         assert!(!a.poll_enabled, "off is a value, not an absence");
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn turning_auto_fetch_off_takes_auto_update_with_it() {
         let mut a = app(&["foo"]);
-        a.apply_auto_fetch(Some(Duration::from_secs(120)));
+        a.apply_auto_fetch(Some(Duration::from_mins(2)));
         a.auto_update = true;
 
         a.apply_auto_fetch(Some(Duration::ZERO));
@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn the_opening_fetch_waits_for_the_opening_probe_to_land() {
         let mut a = app(&["foo", "bar"]);
-        a.apply_auto_fetch(Some(Duration::from_secs(360)));
+        a.apply_auto_fetch(Some(Duration::from_mins(6)));
         a.arm_boot_fetch();
 
         let generation = a.begin_probe(&[0, 1]);
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn a_set_that_already_has_sync_answers_waits_for_its_first_interval() {
         let mut a = app(&["foo"]);
-        a.apply_auto_fetch(Some(Duration::from_secs(360)));
+        a.apply_auto_fetch(Some(Duration::from_mins(6)));
         a.fetched_repos.insert(0);
         a.arm_boot_fetch();
 
@@ -260,7 +260,7 @@ mod tests {
         a.on_poll_due();
         assert_eq!(a.last_check_text().as_deref(), Some("checked 0s ago"));
 
-        a.last_poll_at = Some(Instant::now() - Duration::from_secs(150));
+        a.last_poll_at = Some(ago(Duration::from_secs(150)));
         assert_eq!(a.last_check_text().as_deref(), Some("checked 2m ago"));
     }
 
@@ -482,7 +482,7 @@ mod tests {
     fn poll_status_text_shows_auto_only_once_auto_update_is_on_too() {
         let mut a = app(&["foo"]);
         a.poll_enabled = true;
-        a.poll_interval = Duration::from_secs(300);
+        a.poll_interval = Duration::from_mins(5);
         assert_eq!(a.poll_status_text().as_deref(), Some("poll 5m"));
 
         a.auto_update = true;

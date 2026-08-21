@@ -140,8 +140,7 @@ impl App {
         let repo_name = self
             .repos
             .get(self.cursor)
-            .map(|r| r.name.as_str())
-            .unwrap_or("repo");
+            .map_or("repo", |r| r.name.as_str());
         self.status_message = Some(detail::copy_or_save(&text, repo_name, "selection"));
     }
 
@@ -179,7 +178,7 @@ impl App {
             Some(&scroll) => scroll,
             None => self.detail_view_scroll(total, height),
         };
-        let moved = (from as isize + delta).max(0) as usize;
+        let moved = (from.cast_signed() + delta).max(0).cast_unsigned();
         self.detail_scroll
             .insert(self.cursor, detail::clamp_scroll(moved, total, height));
     }
@@ -196,12 +195,12 @@ impl App {
     }
 
     pub fn detail_scroll_down(&mut self) {
-        let step = self.half_page() as isize;
+        let step = self.half_page().cast_signed();
         self.detail_scroll_by(step);
     }
 
     pub fn detail_scroll_up(&mut self) {
-        let step = -(self.half_page() as isize);
+        let step = -self.half_page().cast_signed();
         self.detail_scroll_by(step);
     }
 
@@ -229,8 +228,7 @@ impl App {
         let repo_name = self
             .repos
             .get(self.cursor)
-            .map(|r| r.name.as_str())
-            .unwrap_or("repo");
+            .map_or("repo", |r| r.name.as_str());
         self.status_message = Some(detail::copy_or_save(&text, repo_name, &step.label));
     }
 }
@@ -307,6 +305,9 @@ mod tests {
                 steps: vec![StepResult {
                     label: "update".into(),
                     shape: summarize::Shape::Generic,
+                    // A fixture can afford a `format!` per line, and the
+                    // `fold` the lint asks for instead reads worse.
+                    #[expect(clippy::format_collect)]
                     stdout: (1..=lines).map(|i| format!("line {i}\n")).collect(),
                     stderr: String::new(),
                     code: 0,

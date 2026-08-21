@@ -310,7 +310,7 @@ mod tests {
             "sort SYNC ↓",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .collect()
     }
 
