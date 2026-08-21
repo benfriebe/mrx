@@ -94,7 +94,9 @@ impl App {
                 self.reconcile_repos(repos, defaults, (jobs, auto_fetch), entry.path);
             }
             Err(e) => {
-                self.status_message = Some(format!("could not switch sets: {e}"));
+                // The reason without the path: the user picked this set by
+                // name a keystroke ago, and the status line has one row.
+                self.status_message = Some(format!("could not switch sets: {}", e.kind));
             }
         }
     }
@@ -120,7 +122,7 @@ impl App {
                 self.reconcile_repos(repos, defaults, (jobs, auto_fetch), config_path);
             }
             Err(e) => {
-                self.status_message = Some(format!("could not reload config: {e}"));
+                self.status_message = Some(format!("could not reload config: {}", e.kind));
             }
         }
     }

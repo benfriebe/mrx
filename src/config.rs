@@ -44,6 +44,43 @@ pub struct Config {
 /// session that turns it on by hand agree.
 pub const DEFAULT_AUTO_FETCH: Duration = Duration::from_mins(6);
 
+/// A config that could not be loaded: which file, and what was wrong with it.
+///
+/// The two are separate fields because the callers want different amounts of
+/// them. The one-shot CLI prints the whole thing, since the path is the only
+/// clue to which config it read. ui mode has a single status line and already
+/// knows which config it asked for, so it shows [`kind`](Self::kind) alone
+/// rather than spending most of that line on a path the user chose.
+#[derive(Debug, thiserror::Error)]
+#[error("{}: {kind}", path.display())]
+pub struct ConfigError {
+    pub path: PathBuf,
+    #[source]
+    pub kind: ConfigErrorKind,
+}
+
+impl ConfigError {
+    fn new(path: &Path, kind: ConfigErrorKind) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            kind,
+        }
+    }
+}
+
+/// What was wrong with a config, phrased to read after its path.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigErrorKind {
+    #[error("cannot be read: {0}")]
+    Read(#[source] std::io::Error),
+    #[error("cannot be parsed: {0}")]
+    Parse(String),
+    #[error("jobs must be a whole number of at least 1, got '{0}'")]
+    Jobs(String),
+    #[error("auto_fetch must be on, off, or an interval like 6m; {0}")]
+    AutoFetch(String),
+}
+
 /// How many jobs to run at once: `-j` beats `[DEFAULT] jobs`, which beats one
 /// per CPU capped at 8, since these are git processes spending most of their
 /// time on the network rather than the CPU.
@@ -57,16 +94,15 @@ pub fn max_jobs(flag: Option<usize>, from_config: Option<usize>) -> usize {
 fn parse_jobs(
     defaults: &BTreeMap<String, String>,
     config_path: &Path,
-) -> Result<Option<usize>, String> {
+) -> Result<Option<usize>, ConfigError> {
     let Some(raw) = defaults.get("jobs") else {
         return Ok(None);
     };
     match raw.trim().parse::<usize>() {
         Ok(n) if n >= 1 => Ok(Some(n)),
-        _ => Err(format!(
-            "{}: jobs must be a whole number of at least 1, got '{}'",
-            config_path.display(),
-            raw.trim()
+        _ => Err(ConfigError::new(
+            config_path,
+            ConfigErrorKind::Jobs(raw.trim().to_string()),
         )),
     }
 }
@@ -77,7 +113,7 @@ fn parse_jobs(
 fn parse_auto_fetch(
     defaults: &BTreeMap<String, String>,
     config_path: &Path,
-) -> Result<Option<Duration>, String> {
+) -> Result<Option<Duration>, ConfigError> {
     let Some(raw) = defaults.get("auto_fetch") else {
         return Ok(None);
     };
@@ -85,13 +121,8 @@ fn parse_auto_fetch(
     if raw.eq_ignore_ascii_case("on") {
         return Ok(Some(DEFAULT_AUTO_FETCH));
     }
-    let interval = crate::cli::parse_duration(raw).map_err(|e| {
-        format!(
-            "{}: auto_fetch must be on, off, or an interval like 6m; {}",
-            config_path.display(),
-            e
-        )
-    })?;
+    let interval = crate::cli::parse_duration(raw)
+        .map_err(|e| ConfigError::new(config_path, ConfigErrorKind::AutoFetch(e)))?;
     Ok(Some(interval))
 }
 
@@ -130,7 +161,7 @@ pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
 ///
 /// A missing config file is not an error: it yields an empty `Config`. Only
 /// an unreadable or unparseable file yields `Err`.
-pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Config, String> {
+pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Config, ConfigError> {
     let fallback_base = || {
         config_path
             .parent()
@@ -149,7 +180,7 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
             });
         }
         Err(e) => {
-            return Err(format!("cannot read {}: {}", config_path.display(), e));
+            return Err(ConfigError::new(config_path, ConfigErrorKind::Read(e)));
         }
     };
 
@@ -163,7 +194,7 @@ pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Confi
     // `;` and `#` comments still work.
     ini.set_inline_comment_symbols(Some(&[]));
     if let Err(e) = ini.read(content) {
-        return Err(format!("cannot parse {}: {}", config_path.display(), e));
+        return Err(ConfigError::new(config_path, ConfigErrorKind::Parse(e)));
     }
 
     let mut sections: Vec<(String, BTreeMap<String, String>)> = Vec::new();
@@ -433,7 +464,10 @@ mod tests {
         let Err(error) = try_load(&cfg, None) else {
             panic!("an unusable interval is refused");
         };
-        assert!(error.contains("auto_fetch"), "got {error:?}");
+        assert!(
+            matches!(error.kind, ConfigErrorKind::AutoFetch(_)),
+            "got {error:?}"
+        );
     }
 
     #[test]
@@ -445,7 +479,7 @@ mod tests {
                 Err(e) => e,
                 Ok(c) => panic!("jobs = {bad:?} should not load, got {:?}", c.jobs),
             };
-            assert!(err.contains("jobs"), "error should name the key: {err}");
+            assert!(matches!(err.kind, ConfigErrorKind::Jobs(_)), "got {err:?}");
         }
     }
 
@@ -513,10 +547,25 @@ mod tests {
         let Err(err) = try_load(&cfg, None) else {
             panic!("an unparseable config must be an Err")
         };
+        assert!(matches!(err.kind, ConfigErrorKind::Parse(_)), "got {err:?}");
+        assert_eq!(err.path, cfg);
+    }
+
+    /// `load` prints the error and nothing else, so the rendered form has to
+    /// carry the path the structured form keeps in a field.
+    #[test]
+    fn a_config_error_still_names_its_file_when_printed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = write_config(dir.path(), "[DEFAULT]\njobs = lots\n\n[a]\n");
+        let Err(err) = try_load(&cfg, None) else {
+            panic!("an unusable jobs value is refused")
+        };
+        let rendered = err.to_string();
         assert!(
-            err.contains(&cfg.display().to_string()),
-            "error should name the file: {err}"
+            rendered.contains(&cfg.display().to_string()),
+            "should name the file: {rendered}"
         );
+        assert!(rendered.contains("jobs"), "should name the key: {rendered}");
     }
 
     #[test]
@@ -528,10 +577,8 @@ mod tests {
         let Err(err) = try_load(&cfg, None) else {
             panic!("an unreadable config must be an Err")
         };
-        assert!(
-            err.contains(&cfg.display().to_string()),
-            "error should name the file: {err}"
-        );
+        assert!(matches!(err.kind, ConfigErrorKind::Read(_)), "got {err:?}");
+        assert_eq!(err.path, cfg);
     }
 
     #[test]
