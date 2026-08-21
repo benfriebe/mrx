@@ -6,7 +6,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use super::detail::{self, DetailLayout};
-use super::state::{App, Pane, Sort};
+use super::state::{App, Pane, Sort, SEGMENT_SEP};
 use crate::ui::widgets::{display_width, truncate};
 
 mod detail_pane;
@@ -161,14 +161,56 @@ fn header_title(app: &App, split: bool) -> String {
     )
 }
 
+/// Marks the status pieces a header too narrow for all of them left off.
+const STATUS_ELLIPSIS: &str = "…";
+
 fn header_line(app: &App, width: usize, split: bool) -> Line<'static> {
     let title = header_title(app, split);
+    // What is left once the title and the status's own trailing margin are
+    // paid for, which is the room `styled_two_column_line` will have.
+    let budget = width
+        .saturating_sub(display_width(&title))
+        .saturating_sub(LEAD_IN.len() + COL_GAP);
     styled_two_column_line(
         &title,
-        &app.header_right_text(),
+        &fitted_status(&app.header_right_segments(), budget),
         width,
         title_style(app, Pane::List, split),
     )
+}
+
+/// The longest run of `segments`, in order, that fits in `budget` cells, with
+/// an ellipsis where the rest would have been. A piece is kept whole or not at
+/// all: half of "checked 5m ago" is a different claim, not a shorter one.
+///
+/// The alternative, and what this replaced, is all or nothing, which threw a
+/// whole header's worth of room away to save two words off the end.
+fn fitted_status(segments: &[String], budget: usize) -> String {
+    let whole = segments.join(SEGMENT_SEP);
+    if display_width(&whole) <= budget {
+        return whole;
+    }
+    // The marker's own room comes out of the budget before anything is kept.
+    let budget = budget.saturating_sub(display_width(SEGMENT_SEP) + display_width(STATUS_ELLIPSIS));
+    let mut kept: Vec<&str> = Vec::new();
+    let mut spent = 0;
+    for segment in segments {
+        let sep = if kept.is_empty() {
+            0
+        } else {
+            display_width(SEGMENT_SEP)
+        };
+        let cost = sep + display_width(segment);
+        if spent + cost > budget {
+            break;
+        }
+        spent += cost;
+        kept.push(segment);
+    }
+    if kept.is_empty() {
+        return String::new();
+    }
+    format!("{}{SEGMENT_SEP}{STATUS_ELLIPSIS}", kept.join(SEGMENT_SEP))
 }
 
 /// Whether this pane has the keys: a bar in the margin where the other pane
@@ -257,6 +299,78 @@ mod tests {
         let header = flatten(&header_line(&a, width, true));
         assert!(header.contains("a-rather-long-set-name"), "got {header:?}");
         assert!(!header.contains("1 repo"), "got {header:?}");
+    }
+
+    /// A full status line, in the order the header builds it.
+    fn status_segments() -> Vec<String> {
+        [
+            "40 repos",
+            "poll 6m · auto",
+            "checked 1m ago",
+            "sort SYNC ↓",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    /// The header used to be all or nothing: one column short of the whole
+    /// status dropped every word of it and left the room blank.
+    #[test]
+    fn a_header_one_column_short_keeps_what_fits_and_marks_the_rest() {
+        let segments = status_segments();
+        let whole = segments.join(SEGMENT_SEP);
+        assert_eq!(fitted_status(&segments, display_width(&whole)), whole);
+
+        let fitted = fitted_status(&segments, display_width(&whole) - 1);
+        assert!(
+            fitted.starts_with("40 repos · poll 6m · auto"),
+            "got {fitted:?}"
+        );
+        assert!(fitted.ends_with(STATUS_ELLIPSIS), "got {fitted:?}");
+        assert!(!fitted.contains("sort"), "got {fitted:?}");
+    }
+
+    #[test]
+    fn a_header_with_room_for_one_piece_keeps_the_count() {
+        let fitted = fitted_status(&status_segments(), 16);
+        assert_eq!(fitted, format!("40 repos{SEGMENT_SEP}{STATUS_ELLIPSIS}"));
+    }
+
+    /// Half of "checked 1m ago" is a different claim, not a shorter one.
+    #[test]
+    fn a_header_with_no_room_for_a_whole_piece_says_nothing() {
+        assert_eq!(fitted_status(&status_segments(), 6), "");
+    }
+
+    #[test]
+    fn a_fitted_status_never_overflows_the_room_it_was_given() {
+        let segments = status_segments();
+        for budget in 0..60 {
+            let fitted = fitted_status(&segments, budget);
+            assert!(
+                display_width(&fitted) <= budget,
+                "budget {budget} drew {} cells: {fitted:?}",
+                display_width(&fitted)
+            );
+        }
+    }
+
+    /// The budget `header_line` works out has to match what
+    /// `styled_two_column_line` actually has room for, or the line overflows
+    /// and ratatui clips it wherever it lands.
+    #[test]
+    fn the_header_line_never_overflows_the_width_it_was_given() {
+        let mut a = app(vec![repo("bill-api"), repo("crew")]);
+        a.poll_enabled = true;
+        for width in 0..90 {
+            let text = flatten(&header_line(&a, width, false));
+            assert!(
+                display_width(&text) <= width,
+                "width {width} drew {} cells: {text:?}",
+                display_width(&text)
+            );
+        }
     }
 
     /// Only the split gives the counts up. A full-width list has the room,

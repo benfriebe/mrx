@@ -29,7 +29,7 @@ mod testkit;
 pub use detail_view::{OutputSelection, Pane};
 pub use foreground::{Foreground, Suspend};
 pub use probing::{sync_width, ProbeDisplay};
-pub use run::{LiveRun, RunStatus, DEFAULT_RESULT_TTL};
+pub use run::{LiveRun, RunStatus, DEFAULT_RESULT_TTL, SEGMENT_SEP};
 pub use run_request::{PendingRun, RunRequest};
 pub use set_picker::SetEntry;
 pub use sort::{Direction, Sort};

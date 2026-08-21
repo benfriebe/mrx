@@ -42,8 +42,8 @@ screen instead and `Esc` is the only way back.
 - `Enter` on a row whose output is already on screen hands the keys to the output too,
   since the row is no longer the question.
 - The sidebar shrink-wraps its own columns, capped at a third of the frame. The set
-  counts that ride beside the header title in the full-width list are dropped rather
-  than paid for: everything the sidebar does not need belongs to the output.
+  counts that ride beside the header title are shed to whatever fits rather than paid
+  for in width: everything the sidebar does not need belongs to the output.
 - The line under the detail title says how the run ended (`2 steps · exit 0`,
   `running git pull`, `skipped`) and, when the output is longer than the pane, which
   slice of it you are looking at (`41-60 of 312`). There is no scrollbar, so without
@@ -129,6 +129,11 @@ the next probe.
   to minutes and then hours as it ages. The unit on screen is the rate the number moves
   at, so a figure that has not changed is still true rather than stuck. It reports when
   mrx last asked, not when every answer came back: a cycle still fetching already counts.
+- A header too narrow for the whole status sheds it from the right, one whole piece at
+  a time, and marks the rest with `…`: `40 repos · poll 6m · auto · …`. The order is
+  what to keep, not what to read first, so the two most easily spared go first. The
+  sort label restates the arrow already on the column header, and a stale check shows
+  up as counts that stop moving.
 
 ### Asking for the poll from the config
 

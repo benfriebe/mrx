@@ -12,6 +12,10 @@ use std::time::{Duration, Instant};
 /// reporting this morning.
 pub const DEFAULT_RESULT_TTL: Duration = Duration::from_secs(6 * 60);
 
+/// What joins the header's status pieces, and so what marks the seam a
+/// narrow header is allowed to shed at.
+pub const SEGMENT_SEP: &str = " · ";
+
 /// A run's output as it arrives, before `Finished` delivers the whole
 /// thing. Each entry is one step, in the order the chain runs them, holding
 /// only the lines seen so far.
@@ -281,10 +285,23 @@ impl App {
     /// here, not only in the status bar, since "4 of 42 repos" with no
     /// explanation otherwise looks like a broken config.
     pub fn header_right_text(&self) -> String {
+        self.header_right_segments().join(SEGMENT_SEP)
+    }
+
+    /// The same text as the pieces it is built from, ordered by how much a
+    /// narrow header should want to keep them: what a header cannot fit it
+    /// sheds from the end, one whole piece at a time.
+    ///
+    /// The order is not arbitrary. A count answers "what am I looking at",
+    /// a selection changes what the next run does, and the poll's cadence is
+    /// static. The two on the end restate something already on screen: the
+    /// SYNC column carries its own sort arrow, and a stale check shows up as
+    /// counts that stop moving.
+    pub fn header_right_segments(&self) -> Vec<String> {
         if let Some(run) = self.run_status_text() {
-            return run;
+            return vec![run];
         }
-        let mut text = if self.filter.is_empty() {
+        let mut parts = vec![if self.filter.is_empty() {
             format!("{} repos", self.repos.len())
         } else {
             format!(
@@ -292,22 +309,18 @@ impl App {
                 self.visible_indices().len(),
                 self.repos.len()
             )
-        };
+        }];
         // An empty selection already means every visible repo, and calling
         // that "42 selected" would make the two states indistinguishable.
         if !self.selected.is_empty() {
-            text.push_str(&format!(" · {} selected", self.selected.len()));
+            parts.push(format!("{} selected", self.selected.len()));
         }
-        if let Some(poll) = self.poll_status_text() {
-            text.push_str(&format!(" · {poll}"));
-        }
-        if let Some(checked) = self.last_check_text() {
-            text.push_str(&format!(" · {checked}"));
-        }
+        parts.extend(self.poll_status_text());
+        parts.extend(self.last_check_text());
         if !self.sorted_by_default() {
-            text.push_str(&format!(" · {}", self.sort_label()));
+            parts.push(self.sort_label());
         }
-        text
+        parts
     }
 
     /// The live run's summary for the header: action name, done/total, and
