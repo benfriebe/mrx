@@ -96,13 +96,26 @@ impl App {
         self.run_completed = 0;
         self.run_failed = 0;
         for &index in &targets {
-            if let Some(slot) = self.run_results.get_mut(index) {
-                *slot = None;
-            }
-            self.result_at.remove(&index);
+            self.forget_run(index);
         }
         self.run_targets = targets;
         run_id
+    }
+
+    /// Drop everything the last run left behind for one repo.
+    ///
+    /// The scroll pin belongs to the transcript it was scrolled against, so it
+    /// has to go with it: leaving it behind opens the next run's output at an
+    /// offset into output that no longer exists, instead of following its own
+    /// tail. `live` is not cleared here because it never survives to be: every
+    /// caller is gated on no run being in flight, and `on_task` drops each
+    /// index as it finishes.
+    fn forget_run(&mut self, index: usize) {
+        if let Some(slot) = self.run_results.get_mut(index) {
+            *slot = None;
+        }
+        self.result_at.remove(&index);
+        self.detail_scroll.remove(&index);
     }
 
     /// Apply one executor event, unless it belongs to a run a later one has
@@ -190,11 +203,7 @@ impl App {
             .map(|(&index, _)| index)
             .collect();
         for index in stale {
-            self.result_at.remove(&index);
-            self.detail_scroll.remove(&index);
-            if let Some(slot) = self.run_results.get_mut(index) {
-                *slot = None;
-            }
+            self.forget_run(index);
         }
     }
 
@@ -652,5 +661,23 @@ mod tests {
         a.request_quit();
         a.cancel_quit();
         assert!(!a.quit_pending);
+    }
+    /// The pin belongs to the transcript it was scrolled against. Keeping it
+    /// across a re-run opened the new output partway down instead of at the
+    /// tail it is still arriving on.
+    #[test]
+    fn a_rerun_drops_the_scroll_pin_the_last_transcript_left() {
+        let mut a = app(&["foo", "bar"]);
+        a.detail_scroll.insert(0, 4);
+        a.detail_scroll.insert(1, 7);
+
+        a.begin_named_run("update".into(), vec![0]);
+
+        assert_eq!(a.detail_scroll.get(&0), None, "the target keeps its pin");
+        assert_eq!(
+            a.detail_scroll.get(&1),
+            Some(&7),
+            "a row this run is not acting on keeps its own"
+        );
     }
 }

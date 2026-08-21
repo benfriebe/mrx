@@ -160,7 +160,10 @@ impl App {
         self.probing.clear();
         self.fetched_repos.clear();
         self.fetch_baseline.clear();
+        // A new repo list renumbers every index, so all three per-run maps go
+        // together rather than the two that would have been noticed.
         self.run_results = vec![None; n];
+        self.result_at.clear();
         self.detail_scroll.clear();
 
         self.selected = self.indices_matching(|n| selected_names.contains(n));
