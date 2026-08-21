@@ -9,6 +9,25 @@ use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Semaphore};
 
+/// One event from a live run, about one of its targets.
+///
+/// The stream is a grammar rather than a bag of events, and its consumers fold
+/// it on that basis:
+///
+/// - Every target index reports exactly one terminal event: a lone `Skipped`,
+///   or a `Finished` closing a chain that opened with `Started`. This holds
+///   unconditionally, an index naming no repo included, since counting
+///   terminal events is how a consumer knows the run is over.
+/// - Within a chain, each step sends its `Step`, then any `Output` it
+///   produces, before the next step's `Step`. Ordering is per index only:
+///   targets run concurrently and their events interleave.
+/// - `Output.step` is the zero-based ordinal of the step that produced the
+///   line, so it lines up with the `Step` events already sent for that index.
+///   A consumer indexing a per-step list by it drops anything that doesn't.
+/// - A chain stops at the first step to exit non-zero, so the last entry in
+///   `Finished.steps` is the one that decided the outcome.
+/// - `Finished.steps` supersedes whatever was streamed for that index.
+/// - `stream: false` in [`spawn_run`] removes every `Output` and nothing else.
 #[derive(Debug, Clone)]
 pub enum TaskEvent {
     Started {
@@ -136,6 +155,16 @@ pub fn spawn_run(
 
     for (index, op) in targets {
         let Some(repo) = repos.get(index) else {
+            // A caller bug, not a user-facing condition, but it still reports:
+            // dropping the target silently would leave every consumer waiting
+            // on a terminal event that never comes.
+            let _ = tx.send(RunEvent {
+                run_id,
+                kind: TaskEvent::Skipped {
+                    index,
+                    reason: "unknown repo".into(),
+                },
+            });
             continue;
         };
         let tx = tx.clone();
@@ -482,14 +511,19 @@ mod tests {
             .collect()
     }
 
-    fn noop_at(dir: &std::path::Path, action: &str) -> Operation {
+    /// A shell step, labelled by its action and running `cmd`.
+    fn step_at(dir: &std::path::Path, action: &str, cmd: &str) -> Operation {
         Operation::Shell {
-            cmd: "true".into(),
+            cmd: cmd.into(),
             work_dir: dir.to_path_buf(),
             action: action.into(),
             args: vec![],
             env: vec![],
         }
+    }
+
+    fn noop_at(dir: &std::path::Path, action: &str) -> Operation {
+        step_at(dir, action, "true")
     }
 
     #[tokio::test]
@@ -649,13 +683,7 @@ mod tests {
     }
 
     fn shell_at(dir: &std::path::Path, cmd: &str) -> Operation {
-        Operation::Shell {
-            cmd: cmd.into(),
-            work_dir: dir.to_path_buf(),
-            action: "noop".into(),
-            args: vec![],
-            env: vec![],
-        }
+        step_at(dir, "noop", cmd)
     }
 
     /// Cancelling stops everything still queued behind the job limit, but a
@@ -823,5 +851,167 @@ mod tests {
         )
         .await;
         assert_eq!(out.stdout.trim(), "1 color.ui=always");
+    }
+
+    /// Every event of one run, in arrival order. Draining to close is what
+    /// proves the run ended: the channel only closes once the last spawned
+    /// task has dropped its sender.
+    async fn collect(
+        repos: &[Repo],
+        targets: Vec<(usize, Operation)>,
+        stream: bool,
+    ) -> Vec<TaskEvent> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_run(repos, targets, 4, PathBuf::from("/dev/null"), tx, 1, stream);
+        let mut events = Vec::new();
+        while let Some(evt) = rx.recv().await {
+            events.push(evt.kind);
+        }
+        events
+    }
+
+    fn event_index(event: &TaskEvent) -> usize {
+        match event {
+            TaskEvent::Started { index }
+            | TaskEvent::Step { index, .. }
+            | TaskEvent::Output { index, .. }
+            | TaskEvent::Finished { index, .. }
+            | TaskEvent::Skipped { index, .. } => *index,
+        }
+    }
+
+    fn for_index(events: &[TaskEvent], index: usize) -> Vec<&TaskEvent> {
+        events.iter().filter(|e| event_index(e) == index).collect()
+    }
+
+    /// One target's chain, checked against the grammar and reduced to the step
+    /// labels in order and the lines streamed under each of them.
+    fn walk_chain(events: &[&TaskEvent]) -> (Vec<String>, Vec<Vec<String>>) {
+        let (first, rest) = events.split_first().expect("a target reports something");
+        assert!(
+            matches!(first, TaskEvent::Started { .. }),
+            "a chain opens with Started, got {first:?}"
+        );
+        let (last, middle) = rest.split_last().expect("a chain ends with Finished");
+        assert!(
+            matches!(last, TaskEvent::Finished { .. }),
+            "a chain ends with Finished, got {last:?}"
+        );
+
+        let mut labels: Vec<String> = Vec::new();
+        let mut lines: Vec<Vec<String>> = Vec::new();
+        for event in middle {
+            match event {
+                TaskEvent::Step { label, .. } => {
+                    labels.push(label.clone());
+                    lines.push(Vec::new());
+                }
+                TaskEvent::Output { step, line, .. } => {
+                    assert_eq!(
+                        *step + 1,
+                        labels.len(),
+                        "Output.step must be the ordinal of the Step events already sent"
+                    );
+                    lines[*step].push(line.clone());
+                }
+                other => panic!("nothing else belongs mid-chain, got {other:?}"),
+            }
+        }
+        (labels, lines)
+    }
+
+    /// Every shape of target in one run: a planned skip, a three-step chain, a
+    /// chain whose middle step fails, and an index past the end of the repos.
+    fn mixed_targets(dir: &std::path::Path) -> Vec<(usize, Operation)> {
+        vec![
+            (
+                0,
+                Operation::Skip {
+                    reason: "no update action defined".into(),
+                },
+            ),
+            (
+                1,
+                Operation::Sequence(vec![
+                    step_at(dir, "one", "echo one"),
+                    step_at(dir, "two", "echo two"),
+                    step_at(dir, "three", "echo three"),
+                ]),
+            ),
+            (
+                2,
+                Operation::Sequence(vec![
+                    step_at(dir, "first", "echo fine"),
+                    step_at(dir, "boom", "echo broke >&2; exit 3"),
+                    step_at(dir, "never", "echo never"),
+                ]),
+            ),
+            (9, step_at(dir, "ghost", "true")),
+        ]
+    }
+
+    /// The grammar documented on [`TaskEvent`], end to end over a run holding
+    /// every case at once.
+    #[tokio::test]
+    async fn a_run_reports_the_documented_grammar_for_every_target_it_was_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let repos = repos(&["r0", "r1", "r2"], dir.path());
+        let events = collect(&repos, mixed_targets(dir.path()), true).await;
+
+        let mut terminal: Vec<usize> = events
+            .iter()
+            .filter(|e| matches!(e, TaskEvent::Finished { .. } | TaskEvent::Skipped { .. }))
+            .map(event_index)
+            .collect();
+        terminal.sort_unstable();
+        assert_eq!(
+            terminal,
+            vec![0, 1, 2, 9],
+            "every target reports exactly once terminally, index 9 naming no repo included"
+        );
+
+        match for_index(&events, 0).as_slice() {
+            [TaskEvent::Skipped { reason, .. }] => assert_eq!(reason, "no update action defined"),
+            other => panic!("a skip is the whole of that target's stream, got {other:?}"),
+        }
+        match for_index(&events, 9).as_slice() {
+            [TaskEvent::Skipped { reason, .. }] => assert_eq!(reason, "unknown repo"),
+            other => panic!("an index naming no repo still reports, got {other:?}"),
+        }
+
+        let (labels, lines) = walk_chain(&for_index(&events, 1));
+        assert_eq!(labels, ["one", "two", "three"]);
+        assert_eq!(
+            lines,
+            [["one"], ["two"], ["three"]],
+            "each line lands under the step that produced it"
+        );
+
+        let failing = for_index(&events, 2);
+        let (labels, _) = walk_chain(&failing);
+        assert_eq!(
+            labels,
+            ["first", "boom"],
+            "the chain stops at the first non-zero exit"
+        );
+        match failing.last() {
+            Some(TaskEvent::Finished {
+                steps, exit_code, ..
+            }) => {
+                assert_eq!(*exit_code, 3);
+                assert_eq!(steps.len(), 2, "the step that never ran leaves no result");
+            }
+            other => panic!("expected Finished, got {other:?}"),
+        }
+
+        // The same run unstreamed: the grammar is unchanged apart from Output.
+        let quiet = collect(&repos, mixed_targets(dir.path()), false).await;
+        assert!(
+            !quiet.iter().any(|e| matches!(e, TaskEvent::Output { .. })),
+            "stream: false removes every Output event"
+        );
+        let (labels, lines) = walk_chain(&for_index(&quiet, 1));
+        assert_eq!(labels, ["one", "two", "three"]);
+        assert!(lines.iter().all(Vec::is_empty));
     }
 }

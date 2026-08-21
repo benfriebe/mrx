@@ -12,6 +12,13 @@ use tokio::sync::mpsc;
 /// Longest repo name to pad to. Past this, alignment costs more than it buys.
 const MAX_LABEL: usize = 28;
 
+/// The repo a target index names. The executor reports on every target it was
+/// given, an index naming no repo included, so this still has to print a line:
+/// counting it is what keeps the run from ending a repo short.
+fn label(repos: &[Repo], index: usize) -> &str {
+    repos.get(index).map_or("?", |r| r.name.as_str())
+}
+
 pub async fn run(
     repos: Vec<Repo>,
     action: &str,
@@ -37,7 +44,7 @@ pub async fn run(
             TaskEvent::Started { .. } | TaskEvent::Step { .. } | TaskEvent::Output { .. } => {}
             TaskEvent::Skipped { index, reason } => {
                 done += 1;
-                println!("{:width$} | skipped: {}", repos[index].name, reason);
+                println!("{:width$} | skipped: {}", label(&repos, index), reason);
             }
             TaskEvent::Finished {
                 index,
@@ -47,12 +54,14 @@ pub async fn run(
                 done += 1;
                 let summary = summarize::summarize_steps(&steps, exit_code);
                 if exit_code == 0 {
-                    println!("{:width$} | {}", repos[index].name, summary);
+                    println!("{:width$} | {}", label(&repos, index), summary);
                 } else {
                     failed += 1;
                     println!(
                         "{:width$} | FAILED ({}): {}",
-                        repos[index].name, exit_code, summary
+                        label(&repos, index),
+                        exit_code,
+                        summary
                     );
                     // Enough detail to diagnose without re-running, stripped
                     // because this path is routinely redirected to a file. A

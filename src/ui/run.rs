@@ -140,10 +140,15 @@ fn spawn_probe_for_all(state: &mut AppState, jobs: usize, tx: &mpsc::UnboundedSe
     probe::spawn_probe_generation(&state.repos, targets, jobs, generation, tx.clone());
 }
 
+/// Apply one event to the row it names. The executor reports on every target
+/// it was given, so an index naming no row is dropped here rather than
+/// panicking: `all_done` counts the rows, which a stray event cannot stall.
 fn apply_event(state: &mut AppState, event: &TaskEvent) {
     match event {
         TaskEvent::Started { index } => {
-            state.statuses[*index] = RepoStatus::Running;
+            if let Some(row) = state.statuses.get_mut(*index) {
+                *row = RepoStatus::Running;
+            }
         }
         // Neither reaches the row: which step is live has nowhere to show yet,
         // so the row keeps its fixed "pulling..."-style text until Finished,
@@ -157,17 +162,21 @@ fn apply_event(state: &mut AppState, event: &TaskEvent) {
             let summary = summarize::summarize_steps(steps, *exit_code);
             let stdout: String = steps.iter().map(|s| s.stdout.as_str()).collect();
             let stderr: String = steps.iter().map(|s| s.stderr.as_str()).collect();
-            state.statuses[*index] = RepoStatus::Done {
-                summary,
-                stdout,
-                stderr,
-                exit_code: *exit_code,
-            };
+            if let Some(row) = state.statuses.get_mut(*index) {
+                *row = RepoStatus::Done {
+                    summary,
+                    stdout,
+                    stderr,
+                    exit_code: *exit_code,
+                };
+            }
         }
         TaskEvent::Skipped { index, reason } => {
-            state.statuses[*index] = RepoStatus::Skipped {
-                reason: reason.clone(),
-            };
+            if let Some(row) = state.statuses.get_mut(*index) {
+                *row = RepoStatus::Skipped {
+                    reason: reason.clone(),
+                };
+            }
         }
     }
 }
