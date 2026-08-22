@@ -403,6 +403,22 @@ mod tests {
         );
     }
 
+    /// Width crops the same way height does, one step removed: the overlay is
+    /// as wide as its widest label and its widest note, and anything past the
+    /// terminal wraps to a second row rather than truncating, pushing the
+    /// notes off the bottom.
+    #[test]
+    fn the_help_overlay_fits_a_terminal_no_wider_than_eighty_columns() {
+        let mut a = app(vec![repo("bill-api")]);
+        a.help_open = true;
+        let rows = frame_rows(&a, 80, 30);
+        let last = keymap::NOTES.last().unwrap().trim();
+        assert!(
+            rows.iter().any(|line| line.contains(last)),
+            "a wrapped line pushed the last note off the bottom: {rows:#?}"
+        );
+    }
+
     /// The menu is the only place the column keys are written down, so a
     /// column missing from it is a column nothing can reach.
     #[test]

@@ -42,8 +42,8 @@ The default mode: the table of repos, no overlay open.
 | `o` | Open the cursor row's repo in `$EDITOR` (`vi` if unset) | overlay |
 | `Enter` | Open the detail view for the cursor row | hinted |
 | `tab` | Open the set picker | hinted |
-| `F` | Toggle the freshness poll, overriding `[DEFAULT] auto_fetch` | overlay |
-| `Ctrl-A` | Toggle auto-update: run `update` on what the poll finds behind | overlay |
+| `F` | Turn the freshness poll on or off, overriding `[DEFAULT] auto_fetch`. Turning it off turns auto-update off with it | overlay |
+| `Ctrl-A` | Toggle auto-update: run `update` on what the poll finds behind. Turning it on turns the poll on with it | overlay |
 | `Ctrl-R` | Reload the active config in place | overlay |
 | `m` | Toggle mouse capture | overlay |
 | `?` | Open the keymap overlay | hinted |

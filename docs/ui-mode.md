@@ -112,19 +112,24 @@ Anything that fetches counts, not just mrx. The probe reads `FETCH_HEAD`'s times
 so running `update` on a repo, or pulling it in another terminal, settles its count on
 the next probe.
 
-- `F` toggles a freshness poll: `git fetch --quiet` across the set on an interval, six
-  minutes by default, suspended rather than queued while a run is live.
+- `F` turns a freshness poll on and off: `git fetch --quiet` across the set on an
+  interval, six minutes by default, suspended rather than queued while a run is live.
 - `Ctrl-A` layers an opt-in auto-update on top: whatever a cycle finds behind gets an
   ordinary `update` run, the set's own body and hooks included, reported in RESULT
   exactly as pressing `u` would be. It targets only a repo that is checked out, tracks
   an upstream, is behind, is not ahead, and has no working-tree changes, so an `update`
   that does considerably more than a fast-forward still has no local work in front of
   it. Anything else is left alone and counted in the status line.
-- `Ctrl-A` refuses to turn on while the poll itself is off, since it has nothing to
-  act on without one.
-- Both are off by default, and both show in the header the moment either is on
-  (`poll 6m`, `poll 6m · auto`). A mode that touches working trees on a timer has no
-  business being invisible.
+- `Ctrl-A` turns the poll on with it rather than refusing while it is off: auto-update
+  is the poll plus what it does with the result, so asking for the second is asking for
+  the first. Turning auto-update back off leaves the poll where it is, which makes `F`
+  the only way to stop fetching.
+- The header always says which of the three states it is in (`poll off`, `poll 6m`,
+  `poll 6m · auto`), including under a live run, where the rest of the status gives way
+  to the run's own progress. Off is stated rather than left blank: `F` toggles, so a
+  header that says nothing makes the key a guess, and a set whose `auto_fetch` already
+  turned the poll on reads exactly like one that did not. A mode that touches working
+  trees on a timer has no business being invisible.
 - Once a cycle has gone out the header also says when, as `checked 40s ago`, rolled up
   to minutes and then hours as it ages. The unit on screen is the rate the number moves
   at, so a figure that has not changed is still true rather than stuck. It reports when
@@ -148,16 +153,20 @@ like a working config.
   what was last chosen, and that includes an explicit off: `F` has to mean something a
   restart cannot undo. A set switch re-reads the config instead, the session having
   belonged to the set being left behind.
-- A set opened with auto-fetch on and nothing fetched yet runs one cycle immediately
-  rather than waiting out the first interval, which would leave every `↓` blank for six
-  minutes and read as "up to date". It waits for the opening probe to land first, so the
-  table fills from the fast local read before the network one starts.
+- A set opened with the poll on and sync answers older than one interval runs one cycle
+  immediately rather than waiting the interval out, which would leave every `↓` on the
+  numbers a previous session left behind and read as "up to date". Reopening inside the
+  interval does not, since the poll itself would not have. A set switched into has
+  nothing checked at all, so it always does. It waits for the opening probe to land
+  first, so the table fills from the fast local read before the network one starts.
 - Changing sets to one with a different interval re-phases the timer onto it.
 
 ## The persisted session
 
-The set, filter, selection, cursor, sort order, both poll settings, and which repos have
-been seen to fetch (so a `↓` count survives a restart) are written to `$XDG_STATE_HOME/mrx/ui.json`
+The set, filter, selection, cursor, sort order, both poll settings, when the last poll
+cycle went out (so the boot fetch can tell how stale the answers on screen are), and
+which repos have been seen to fetch (so a `↓` count survives a restart) are written to
+`$XDG_STATE_HOME/mrx/ui.json`
 (`~/.local/state/mrx/ui.json` by default) as they change, and restored the next time
 `mrx ui` opens.
 

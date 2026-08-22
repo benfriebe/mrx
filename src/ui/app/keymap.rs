@@ -59,8 +59,8 @@ pub const LIST_KEYS: &[Binding] = &[
     Binding::overlay_only("S", "sort the table"),
     Binding::overlay_only("r", "run a command"),
     Binding::overlay_only("o", "open in $EDITOR"),
-    Binding::overlay_only("F", "freshness poll"),
-    Binding::overlay_only("^a", "auto-update"),
+    Binding::overlay_only("F", "poll on/off"),
+    Binding::overlay_only("^a", "auto-update (turns poll on)"),
     Binding::overlay_only("^r", "reload config"),
     Binding::overlay_only("m", "mouse capture"),
 ];
