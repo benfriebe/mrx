@@ -45,9 +45,10 @@ screen instead and `Esc` is the only way back.
   counts that ride beside the header title are shed to whatever fits rather than paid
   for in width: everything the sidebar does not need belongs to the output.
 - The line under the detail title says how the run ended (`2 steps · exit 0`,
-  `running git pull`, `skipped`) and, when the output is longer than the pane, which
-  slice of it you are looking at (`41-60 of 312`). There is no scrollbar, so without
-  that line a long transcript gives no clue how much is above or below.
+  `running git pull`, `skipped`). Output longer than the pane gets a scrollbar down
+  its right edge: the thumb is proportional to the slice on screen, and reaches an
+  end of the track only at that end of the transcript. Output that fits gets no bar,
+  so the column is only ever spent saying something.
 - Output arrives as it is produced, so a long update can be read while it runs. A step
   still going is marked `…` instead of a tick, and the view follows the tail until you
   scroll. Each step is its own labelled section rather than one scrollback, and the
