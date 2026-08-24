@@ -441,21 +441,32 @@ mod tests {
         );
     }
 
-    /// `XDG_CONFIG_HOME` is process-global; tests that point it at their own
+    fn restore(key: &str, previous: Option<std::ffi::OsString>) {
+        match previous {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    /// The environment is process-global; tests that point it at their own
     /// tempdir still need to serialise against each other.
+    ///
+    /// `MRX_SET` is cleared alongside it because these tests ask what happens
+    /// when nothing names a set, and clap reads that variable into `--set`. A
+    /// developer who exports it for their own use would otherwise fail them.
     fn with_config_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
         use std::sync::{Mutex, PoisonError};
         static LOCK: Mutex<()> = Mutex::new(());
         let _guard = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
 
         let dir = tempfile::tempdir().unwrap();
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        let previous_config_home = std::env::var_os("XDG_CONFIG_HOME");
+        let previous_set = std::env::var_os("MRX_SET");
         std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        std::env::remove_var("MRX_SET");
         let result = f(dir.path());
-        match previous {
-            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-            None => std::env::remove_var("XDG_CONFIG_HOME"),
-        }
+        restore("XDG_CONFIG_HOME", previous_config_home);
+        restore("MRX_SET", previous_set);
         result
     }
 
