@@ -12,24 +12,20 @@ use tokio::sync::mpsc;
 /// large enough not to spin.
 const GATE_POLL_INTERVAL: Duration = Duration::from_millis(30);
 
-/// Lets the run loop stop the input thread from reading stdin while
-/// `$EDITOR` owns the terminal, so mrx and the editor are never both blocked
-/// on the same tty at once, and stop it for good on the way out so it isn't
-/// still competing for keystrokes with the shell mrx just handed the tty
-/// back to.
+/// Stops the input thread reading stdin while `$EDITOR` owns the terminal, and
+/// stops it for good on the way out so it isn't still competing for keystrokes
+/// with the shell mrx just handed the tty back to.
 ///
-/// `crossterm::read()` can't be interrupted once it's blocked in a syscall,
-/// so the thread never calls it unless the gate is open. Closing the gate is
-/// not enough on its own: the thread may have already passed its open check
-/// and be mid `poll`/`read`, and would still send that stray event. `park`
-/// closes the gate and blocks until the thread reports it has reached the
-/// paused branch with no read in flight.
+/// `crossterm::read()` can't be interrupted once blocked in a syscall, so the
+/// thread never calls it unless the gate is open. Closing the gate is not
+/// enough on its own, since the thread may already be mid `poll`/`read` and
+/// would still send that stray event; `park` closes it and blocks until the
+/// thread reports the paused branch with no read in flight.
 ///
-/// That acknowledgment is tagged with a generation rather than a plain flag:
-/// a flag set once and never cleared would let a later `park` return
-/// instantly on an earlier pause's leftover. A thread whose loop has ended (a
-/// read error, stdin closing) can never acknowledge again, so `park` also
-/// returns once the thread reports it has exited.
+/// The acknowledgment carries a generation, so a later `park` cannot return
+/// instantly on an earlier pause's leftover. `park` also returns once the
+/// thread reports it has exited, which is the only answer left after a read
+/// error or stdin closing.
 #[derive(Clone)]
 pub(super) struct InputGate {
     state: Arc<Mutex<GateState>>,
@@ -120,12 +116,10 @@ impl InputGate {
 }
 
 /// crossterm's `read()` blocks, so input gets its own thread rather than the
-/// `event-stream` feature and a futures dependency. The thread never blocks
-/// for longer than [`GATE_POLL_INTERVAL`] at a time, so it can notice the
-/// returned [`InputGate`] closing (for `$EDITOR`) or being asked to stop (on
-/// quit) instead of parking in a read that could race a child process, or
-/// the just-restored shell, for the same keystrokes. The join handle is how
-/// [`run`] waits for the thread to stop before handing the tty back.
+/// `event-stream` feature and a futures dependency. It never blocks for longer
+/// than [`GATE_POLL_INTERVAL`] at a time, so it notices the returned
+/// [`InputGate`] closing or being asked to stop. The join handle is how [`run`]
+/// waits for it before handing the tty back.
 pub(super) fn input_thread() -> (
     mpsc::UnboundedReceiver<Event>,
     InputGate,
@@ -172,15 +166,13 @@ pub(super) fn input_thread() -> (
     (rx, gate, handle)
 }
 
-/// Stops and joins the input thread on every way out of [`run`]: the normal
-/// quit, and every early `?` return from a draw, mouse-capture, or editor
-/// failure. An unjoined thread keeps polling stdin for up to
-/// [`GATE_POLL_INTERVAL`] after the terminal is handed back, competing with
-/// the shell for the user's next keystroke.
+/// Stops and joins the input thread on every way out of [`run`], the early `?`
+/// returns included. An unjoined thread keeps polling stdin for up to
+/// [`GATE_POLL_INTERVAL`] after the terminal is handed back.
 ///
-/// Declared after `TerminalGuard` in [`run`] so it drops first: reversed,
-/// the terminal would already be back in the caller's hands while this
-/// thread could still be mid `poll`/`read` racing it for input.
+/// Declared after `TerminalGuard` in [`run`] so it drops first: reversed, the
+/// thread could still be mid `poll`/`read` with the terminal already back in
+/// the caller's hands.
 pub(super) struct InputThreadGuard {
     pub(super) gate: InputGate,
     pub(super) handle: Option<std::thread::JoinHandle<()>>,

@@ -170,10 +170,7 @@ fn header_line(app: &App, width: usize, split: bool) -> Line<'static> {
 
 /// The longest run of `segments`, in order, that fits in `budget` cells, with
 /// an ellipsis where the rest would have been. A piece is kept whole or not at
-/// all: half of "checked 5m ago" is a different claim, not a shorter one.
-///
-/// The alternative, and what this replaced, is all or nothing, which threw a
-/// whole header's worth of room away to save two words off the end.
+/// all, since half of "checked 5m ago" is a different claim.
 fn fitted_status(segments: &[String], budget: usize) -> String {
     let whole = segments.join(SEGMENT_SEP);
     if display_width(&whole) <= budget {
@@ -270,11 +267,10 @@ mod tests {
     use super::*;
     use crate::ui::app::detail;
 
-    /// The counts are the half `styled_two_column_line` drops first, so the
-    /// sidebar buys room for its title and lets them go. Reserving their width
-    /// here would spend the output pane's columns on the least important text
-    /// on screen, and the cap can take those columns back off the header
-    /// anyway, leaving the width bought and the counts gone.
+    /// The counts are what `styled_two_column_line` drops first, so the sidebar
+    /// buys room for its title and lets them go. Reserving their width here can
+    /// leave the width bought and the counts gone anyway, once the cap takes
+    /// those columns back.
     #[test]
     fn the_sidebar_keeps_its_title_and_lets_the_counts_go() {
         let mut a = app(vec![repo("ab")]);

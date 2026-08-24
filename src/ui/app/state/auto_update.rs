@@ -42,16 +42,13 @@ impl App {
         }
     }
 
-    /// Owe an opening fetch when the poll is on and what is on screen is not
-    /// a fresh answer. `checked_ago` is how long ago the last cycle ran, and
-    /// `None` is nothing having run against this repo list at all: a first
-    /// run, or a set just switched into.
+    /// Owe an opening fetch when the poll is on and what is on screen is not a
+    /// fresh answer. `checked_ago` is how long ago the last cycle ran; `None`
+    /// is nothing having run against this repo list at all.
     ///
     /// Anything older than one interval is what the poll would already have
-    /// refreshed had the app stayed open, so this is the poll catching up
-    /// rather than a cycle of its own. Without it a boot shows the distances
-    /// a previous session left behind, which read as "up to date" rather than
-    /// "last asked on Tuesday".
+    /// refreshed had the app stayed open. Without it a boot shows the distances
+    /// a previous session left behind, which read as "up to date".
     ///
     /// Called once the poll's settings have settled, config and session both.
     pub fn arm_boot_fetch(&mut self, checked_ago: Option<Duration>) {
@@ -94,10 +91,9 @@ impl App {
     }
 
     /// `Ctrl-A`: turn auto-update on or off. Turning it on turns the poll on
-    /// with it rather than refusing: auto-update is the poll plus what it
-    /// does with the result, so asking for the second is asking for the
-    /// first. Turning it off leaves the poll where it is.
-    /// See [`AUTO_UPDATE_ACTION`] for what it runs.
+    /// with it, since auto-update is the poll plus what it does with the
+    /// result; turning it off leaves the poll where it is. See
+    /// [`AUTO_UPDATE_ACTION`] for what it runs.
     pub fn toggle_auto_update(&mut self) {
         self.auto_update = !self.auto_update;
         if self.auto_update {
@@ -171,10 +167,9 @@ impl App {
 
     /// The header's `poll 5m` / `poll 5m · auto` / `poll off`.
     ///
-    /// Off is stated rather than left blank. `F` toggles, so a header that
-    /// says nothing makes the key a guess, and a set whose `auto_fetch`
-    /// already turned the poll on then reads exactly like one that did not:
-    /// the first press turns it off.
+    /// Off is stated rather than left blank, since `F` toggles and a blank
+    /// header makes the key a guess: a set whose `auto_fetch` turned the poll
+    /// on would read the same as one that did not.
     pub fn poll_status_text(&self) -> String {
         if !self.poll_enabled {
             return "poll off".into();

@@ -47,11 +47,9 @@ impl App {
             .count()
     }
 
-    /// How many of `targets` have no probe result at all yet: right after
-    /// startup, a set switch, or a config reload, every repo starts this
-    /// way. Treated the same as dirty for the confirmation in
-    /// [`request_run`](Self::request_run), since a repo the app hasn't
-    /// looked at could be dirty.
+    /// How many of `targets` have no probe result yet, which is every repo right
+    /// after startup, a set switch or a config reload. Treated as dirty for the
+    /// confirmation in [`request_run`](Self::request_run).
     pub fn unprobed_count(&self, targets: &[usize]) -> usize {
         targets
             .iter()
@@ -59,12 +57,10 @@ impl App {
             .count()
     }
 
-    /// Ask to run `action_name` over the effective selection. Goes straight
-    /// to `run_requested` when nothing in the target selection is dirty or
-    /// unprobed, or when `force` is set; otherwise waits on confirmation.
-    /// Refused by [`mutation_blocker`](Self::mutation_blocker), since two
-    /// runs sharing a repo would drive `git` against it through two
-    /// different semaphores at once.
+    /// Ask to run `action_name` over the effective selection. Goes straight to
+    /// `run_requested` when nothing in it is dirty or unprobed, or when `force`
+    /// is set; otherwise waits on confirmation. Refused by
+    /// [`mutation_blocker`](Self::mutation_blocker).
     pub fn request_run(&mut self, action_name: &str) {
         debug_assert!(
             self.actions.iter().any(|a| a.name == action_name),
@@ -82,10 +78,8 @@ impl App {
     }
 
     /// Run `action_name` over exactly `targets`, with no confirmation step.
-    /// Auto-update's way in: its targets are its own, not the selection's,
-    /// and there is nobody at the keyboard to answer a prompt. Skipping the
-    /// prompt costs nothing either way, since every target has already been
-    /// probed clean.
+    /// Auto-update's way in: its targets are its own, nobody is at the keyboard
+    /// to answer a prompt, and every target has already probed clean.
     pub(super) fn request_run_over(&mut self, action_name: &str, targets: Vec<usize>) {
         if self.refuse_if_mutation_blocked("start a run") {
             return;

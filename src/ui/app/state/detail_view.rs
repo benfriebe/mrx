@@ -103,13 +103,11 @@ impl App {
             .then(|| selection.anchor.min(selection.head)..=selection.anchor.max(selection.head))
     }
 
-    /// Copy what the drag selected, on the button coming back up. While
-    /// mouse capture is on the terminal hands drags to mrx instead of
-    /// selecting text with them, so the app owes the user a selection of its
-    /// own.
+    /// Copy what the drag selected, on the button coming back up. Mouse capture
+    /// hands drags to mrx instead of selecting text with them, so the app owes
+    /// the user a selection of its own.
     ///
-    /// A press that never moved is a click, and a click clears the last
-    /// selection rather than making a one-line one out of nothing.
+    /// A press that never moved is a click, and clears the last selection.
     pub fn finish_output_selection(&mut self) {
         let Some(selection) = self.output_selection.as_ref() else {
             return;
@@ -155,27 +153,24 @@ impl App {
         self.focus = Pane::Output;
     }
 
-    /// Half a screen page for `Ctrl-D`/`Ctrl-U`, floored at one line so a
-    /// very short terminal still scrolls. Approximate: it reads the last
-    /// known frame height rather than the exact viewport, which is close
-    /// enough for a "half page" key.
+    /// Half a screen page for `Ctrl-D`/`Ctrl-U`, floored at one line so a very
+    /// short terminal still scrolls. Reads the last known frame height rather
+    /// than the exact viewport, which is close enough for a "half page" key.
     ///
     /// The row count is the output pane's own, off the same layout it is drawn
-    /// from, so the key cannot scroll by a chrome height the pane no longer
-    /// has. The list asks about its own pane rather than borrowing this one.
+    /// from. The list asks about its own pane rather than borrowing this one.
     pub(super) fn half_page(&self) -> usize {
         render::half_page(render::Panes::last_known(self).detail_rows)
     }
 
     /// Move the cursor row's detail scroll by `delta` lines, bounded at both
-    /// ends of the transcript. The bound has to be applied here and not only
-    /// where the pane is drawn: an offset stored past the end is a distance
-    /// the reader then has to scroll back through before anything moves.
+    /// ends of the transcript. The bound applies here as well as at draw time,
+    /// so a stored offset never sits past the end, which the reader would have
+    /// to scroll back through before anything moved.
     ///
-    /// The first scroll of a row measures from what is on screen, not from
-    /// line 0: an unscrolled transcript is showing its tail, so measuring
-    /// from 0 would jump to the top of a 4000-line log instead of a half
-    /// page up from where the reader is.
+    /// The first scroll of a row measures from what is on screen: an unscrolled
+    /// transcript is showing its tail, so measuring from line 0 would jump to
+    /// the top of a 4000-line log.
     pub fn detail_scroll_by(&mut self, delta: isize) {
         let (total, height) = self.detail_extent();
         let from = match self.detail_scroll.get(&self.cursor) {
@@ -188,10 +183,9 @@ impl App {
     }
 
     /// The cursor row's transcript length and the height the output pane
-    /// draws it in, so a scroll and the frame it lands on cannot disagree
-    /// about where the end is. Resolved against the last known terminal
-    /// height rather than the exact viewport, the same approximation
-    /// [`half_page`](Self::half_page) makes.
+    /// draws it in, so a scroll and the frame it lands on cannot disagree about
+    /// where the end is. Approximated the same way
+    /// [`half_page`](Self::half_page) approximates.
     fn detail_extent(&self) -> (usize, usize) {
         let total = self.transcript_lines().map_or(0, |lines| lines.len());
         let height = render::Panes::last_known(self).detail_rows;
@@ -244,11 +238,10 @@ mod tests {
     use crate::executor::{StepResult, TaskEvent};
     use crate::summarize;
 
-    /// `half_page` used to subtract its own chrome height, a literal 6 that
-    /// happened to equal `LIST_HEADER_ROWS + FOOTER_ROWS`. It now reads the
-    /// output pane's own row count, which `render::layout` pins against a
-    /// real draw, so what is left to check here is that the key steps by half
-    /// of that pane rather than half of the table beside it.
+    /// `half_page` reads the output pane's own row count, which
+    /// `render::layout` pins against a real draw, so what is left to check here
+    /// is that the key steps by half of that pane rather than half of the table
+    /// beside it.
     #[test]
     fn a_half_page_is_half_the_rows_the_pane_actually_draws() {
         let mut a = app(&["foo"]);

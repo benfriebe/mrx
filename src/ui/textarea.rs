@@ -1,10 +1,9 @@
-//! A multi-line text buffer with readline-style editing, for the overlays
-//! that take typed input rather than a single keystroke.
+//! A multi-line text buffer with readline-style editing, for the overlays that
+//! take typed input rather than a single keystroke.
 //!
 //! Holds the text and the cursor and nothing else: no widget, no area, no
-//! terminal. [`TextArea::on_key`] applies the editing keys and declines
-//! everything else, so a host overlay keeps its own exits and can bind the
-//! keys the buffer leaves free.
+//! terminal. [`TextArea::on_key`] applies the editing keys and declines the
+//! rest, so a host overlay keeps its own exits.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::UnicodeWidthChar;
@@ -79,9 +78,8 @@ impl TextArea {
 
     /// Apply `key` if it is an editing key, reporting whether it was one.
     ///
-    /// Forward-delete is bound to `Delete` alone, not to readline's `ctrl-d`:
-    /// a host needs one free chord to end input with, and that is the chord
-    /// every shell already ends input with.
+    /// Forward-delete is bound to `Delete` alone, leaving readline's `ctrl-d`
+    /// free for a host to end input with.
     pub fn on_key(&mut self, key: KeyEvent) -> bool {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);

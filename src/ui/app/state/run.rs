@@ -81,14 +81,13 @@ impl App {
     }
 
     /// Begin a named run over `targets`: bumps the run id, resets the live
-    /// counters the header reads, and drops each target's previous result,
-    /// so the caller only has to plan and spawn the operations themselves.
+    /// counters the header reads, and drops each target's previous result, so
+    /// the caller only has to plan and spawn the operations.
     ///
     /// A target carrying the last run's result reads as already reported in,
-    /// which [`cancel_counts`](Self::cancel_counts) would then count as
-    /// neither queued nor finishing. Only the targets are cleared: a row this
-    /// run is not acting on keeps its outcome until
-    /// [`expire_results`](Self::expire_results) retires it.
+    /// which [`cancel_counts`](Self::cancel_counts) would count as neither
+    /// queued nor finishing. Rows this run is not acting on keep their outcome
+    /// until [`expire_results`](Self::expire_results) retires it.
     pub fn begin_named_run(&mut self, action: String, targets: Vec<usize>) -> u64 {
         let run_id = self.begin_run();
         self.run_action = Some(action);
@@ -104,12 +103,11 @@ impl App {
 
     /// Drop everything the last run left behind for one repo.
     ///
-    /// The scroll pin belongs to the transcript it was scrolled against, so it
-    /// has to go with it: leaving it behind opens the next run's output at an
-    /// offset into output that no longer exists, instead of following its own
-    /// tail. `live` is not cleared here because it never survives to be: every
-    /// caller is gated on no run being in flight, and `on_task` drops each
-    /// index as it finishes.
+    /// The scroll pin goes with the transcript it was scrolled against, or the
+    /// next run's output opens at an offset that no longer exists instead of
+    /// following its own tail. `live` needs no clearing: every caller is gated
+    /// on no run being in flight, and `on_task` drops each index as it
+    /// finishes.
     fn forget_run(&mut self, index: usize) {
         if let Some(slot) = self.run_results.get_mut(index) {
             *slot = None;
@@ -211,13 +209,12 @@ impl App {
         self.post_run_targets.take()
     }
 
-    /// `Esc`: ask the live run to stop queueing new work. A no-op when
-    /// nothing is running, so it's safe to bind unconditionally.
+    /// `Esc`: ask the live run to stop queueing new work. A no-op when nothing
+    /// is running, so it is safe to bind unconditionally.
     ///
     /// `Command::output().await` has no kill, so a repo already past its
-    /// semaphore permit keeps running to completion; only a repo still
-    /// waiting behind it turns into a skip. Both counts are a snapshot as of
-    /// the keypress, not a promise that stays accurate as events arrive.
+    /// semaphore permit runs to completion and only one still waiting turns
+    /// into a skip. Both counts are a snapshot as of the keypress.
     pub fn request_cancel(&mut self) {
         if self.run_action.is_none() {
             return;
@@ -290,22 +287,20 @@ impl App {
 
     /// The header's right-hand text: the live run's summary while one is
     /// running, otherwise the selection count, with the poll's state and a
-    /// restored filter's match count layered on. A restored filter is shown
-    /// here, not only in the status bar, since "4 of 42 repos" with no
-    /// explanation otherwise looks like a broken config.
+    /// restored filter's match count layered on. The filter is named here as
+    /// well as in the status bar, since "4 of 42 repos" alone looks like a
+    /// broken config.
     pub fn header_right_text(&self) -> String {
         self.header_right_segments().join(SEGMENT_SEP)
     }
 
     /// The same text as the pieces it is built from, ordered by how much a
-    /// narrow header should want to keep them: what a header cannot fit it
-    /// sheds from the end, one whole piece at a time.
+    /// narrow header should want to keep them: what it cannot fit it sheds from
+    /// the end, one whole piece at a time.
     ///
-    /// The order is not arbitrary. A count answers "what am I looking at",
-    /// a selection changes what the next run does, and the poll's cadence is
-    /// static. The two on the end restate something already on screen: the
-    /// SYNC column carries its own sort arrow, and a stale check shows up as
-    /// counts that stop moving.
+    /// The two on the end restate something already on screen, which is why
+    /// they go first: the SYNC column carries its own sort arrow, and a stale
+    /// check shows up as counts that stop moving.
     pub fn header_right_segments(&self) -> Vec<String> {
         if let Some(run) = self.run_status_text() {
             // The poll keeps its place under a run rather than being shed

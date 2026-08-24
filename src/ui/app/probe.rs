@@ -1,10 +1,8 @@
 //! Background repo probe: one `git status --porcelain=v2 --branch` per repo,
-//! bounded by the same job limit as a run so a refresh can't swamp a machine
-//! that is already mid-update. The probe never fetches: ahead/behind and
-//! dirtiness are only ever as fresh as the last time something else did. It
-//! does read `FETCH_HEAD`'s timestamp, which is how it notices when that
-//! something else was an `update` action or another terminal rather than
-//! mrx's own poll.
+//! bounded by the same job limit as a run. The probe never fetches, so
+//! ahead/behind and dirtiness are only as fresh as the last time something else
+//! did. It reads `FETCH_HEAD`'s timestamp to notice when that something else
+//! was an `update` action or another terminal.
 
 use crate::config::Repo;
 use std::path::{Path, PathBuf};
@@ -65,11 +63,10 @@ pub struct RepoState {
     /// fetches. Fetches fail per repo (offline, VPN, auth), so this is not a
     /// session-wide fact.
     pub fetched: bool,
-    /// When `FETCH_HEAD` was last written, or `None` for a repo that has
-    /// never fetched. Git rewrites it on every successful fetch, so a value
-    /// newer than the last probe's is evidence that the remote-tracking refs
-    /// were refreshed by *something*: an `update` action, a `git pull` in
-    /// another terminal, or mrx's own poll.
+    /// When `FETCH_HEAD` was last written, or `None` for a repo that has never
+    /// fetched. Git rewrites it on every successful fetch, so a value newer
+    /// than the last probe's means the remote-tracking refs were refreshed by
+    /// something.
     pub fetch_head: Option<SystemTime>,
 }
 
@@ -100,11 +97,9 @@ impl RepoState {
     }
 }
 
-/// Which per-repo cycle a fan-out runs.
-///
-/// The two differ in what one repo costs and what it does, and in nothing
-/// else: same job limit, same timeout-becomes-an-unknown-row rule, same
-/// generation tagging. So they share the fan-out and vary here.
+/// Which per-repo cycle a fan-out runs. The two share the job limit, the
+/// timeout-becomes-an-unknown-row rule and the generation tagging, so they
+/// share the fan-out and vary here.
 #[derive(Clone, Copy)]
 pub enum Cycle {
     /// The status parse alone, off whatever the last fetch left behind.
@@ -136,9 +131,8 @@ impl Cycle {
 /// `max_jobs`.
 ///
 /// Results arrive on `tx` as each repo finishes, not in index order, so the
-/// first frame can paint long before the slowest one is back. Each carries
-/// `generation`, so mashing `r` or switching sets twice quickly cannot leave
-/// one cycle's results painted over a newer one's.
+/// first frame paints before the slowest one is back. Each carries
+/// `generation`, so an older cycle's results cannot paint over a newer one's.
 pub fn spawn_cycle(
     repos: &[Repo],
     which: Vec<usize>,
@@ -289,12 +283,9 @@ pub fn branch_text(state: &RepoState) -> String {
     state.branch.clone().unwrap_or_else(|| "(detached)".into())
 }
 
-/// The working tree alone, phrased by [`summarize::working_tree`] so an `s`
-/// run's RESULT and this column cannot word one repo differently. What is
-/// local here is the counting: a probe reads porcelain v2, where a run reads
-/// `git status --short`. The building block [`dirty_text`] and the detail
-/// sidebar's briefer column share, so it layers on no ahead/behind or
-/// timeout/absent handling of its own.
+/// The working tree alone, phrased by [`summarize::working_tree`]. The building
+/// block [`dirty_text`] and the detail sidebar's briefer column share, so it
+/// adds no ahead/behind or timeout/absent handling of its own.
 fn working_tree_text(state: &RepoState) -> String {
     crate::summarize::working_tree(
         state.changes.modified,
@@ -321,10 +312,9 @@ pub fn dirty_text(state: &RepoState) -> String {
 /// nothing to measure against: no upstream, or a probe that never got far
 /// enough to read one.
 ///
-/// The behind count is withheld until this specific repo has fetched, and
-/// reported as zero until it does. It compares against the local
-/// remote-tracking ref, so a stale one would render "not asked recently"
-/// identically to "up to date"; silence, not a `↓0`, is how the row says so.
+/// Behind is reported as zero until this repo itself has fetched. It compares
+/// against the local remote-tracking ref, so a stale one would render "not
+/// asked recently" as "up to date".
 pub fn sync_counts(state: &RepoState, repo_has_fetched: bool) -> Option<(u32, u32)> {
     if state.timed_out || !state.present || state.upstream.is_none() {
         return None;

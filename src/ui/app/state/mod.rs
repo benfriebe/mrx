@@ -42,10 +42,9 @@ const NEVER_RUN: &str = "·";
 
 /// Everything ui mode draws, plus the requests it hands back to the run loop.
 ///
-/// State holds no runtime handle and does no I/O of its own, so anything
-/// needing a spawn, a terminal write, or the executor's `RunHandle` is
-/// recorded here as a flag or a target list and consumed by the run loop
-/// through the `take_*` methods.
+/// State holds no runtime handle and does no I/O, so anything needing a spawn,
+/// a terminal write, or the executor's `RunHandle` is recorded as a flag or a
+/// target list and consumed by the run loop through the `take_*` methods.
 // The flags stay independent because the layered modes reopen what they
 // covered; [`Mode`] is the derived answer to which of them owns the input.
 #[expect(clippy::struct_excessive_bools)]
@@ -88,19 +87,15 @@ pub struct App {
     /// Global indices of repos known to have fetched this session, either
     /// because a poll cycle's own `git fetch` succeeded for them or because
     /// their `FETCH_HEAD` moved since [`fetch_baseline`](Self::fetch_baseline)
-    /// was taken. Until a given repo is in here, its behind column reads
-    /// unknown rather than claiming to be current; a repo whose own fetch
-    /// keeps failing (offline, VPN, auth) must not borrow another repo's
-    /// success just because they polled in the same cycle. Sticky per repo,
-    /// so a later fetch-less reprobe doesn't downgrade a repo that has
-    /// genuinely fetched before.
+    /// was taken. Until a repo is in here its behind column reads unknown, so a
+    /// repo whose own fetch keeps failing cannot borrow another's success.
+    /// Sticky per repo, so a later fetch-less reprobe does not downgrade it.
     pub fetched_repos: BTreeSet<usize>,
-    /// Each repo's `FETCH_HEAD` timestamp as of the first probe that saw it,
-    /// so a later probe can tell a fetch that happened since from one that
+    /// Each repo's `FETCH_HEAD` timestamp as of the first probe that saw it, so
+    /// a later probe can tell a fetch that happened since from one that
     /// happened days ago. Absent means never probed; `None` means probed and
-    /// it had never fetched. This is what credits a fetch mrx did not
-    /// perform: an `update` action pulls, and the re-probe that follows sees
-    /// the newer timestamp.
+    /// never fetched. This is what credits a fetch mrx did not perform, such as
+    /// the pull inside an `update`.
     pub fetch_baseline: BTreeMap<usize, Option<SystemTime>>,
     /// Set by the `R` key.
     /// Bumped every time a run starts; an executor event tagged with an
@@ -346,11 +341,9 @@ impl App {
     }
 
     /// Apply a persisted session on top of a freshly built app. Filter and
-    /// selection are matched by repo name so a config edit doesn't misdirect
-    /// them onto the wrong row, and a name the current repo list doesn't
-    /// have is dropped silently: a config edit is not an error. `set_label`
-    /// is left untouched, since `main.rs` already decided which config to
-    /// load before this ever runs.
+    /// selection match by repo name so a config edit cannot misdirect them onto
+    /// the wrong row, and a name the repo list no longer has drops silently.
+    /// `set_label` is left alone: `main.rs` already chose the config.
     pub fn restore_session(&mut self, session: &Session) {
         self.filter.clone_from(&session.filter);
         self.sort = session.sort;
@@ -388,13 +381,11 @@ impl App {
         self.auto_update = session.auto_update && self.poll_enabled;
     }
 
-    /// Whichever mutating operation currently owns the repos on disk, if
-    /// any. A run (including the one auto-update starts), a set switch, a
-    /// config reload, and an editor suspension all either write to a working
-    /// tree or replace the repo list out from under indices another of them
-    /// is still using, so at most one may be underway at a time. Callers
-    /// must check at the moment they commit, not only when they open a
-    /// modal: another one can start in the gap between the two.
+    /// Whichever mutating operation currently owns the repos on disk, if any. A
+    /// run, a set switch, a config reload and an editor suspension each write to
+    /// a working tree or replace the repo list out from under indices another is
+    /// still using, so at most one may be underway. Callers must check at the
+    /// moment they commit, since another can start while a modal sits open.
     fn mutation_blocker(&self) -> Option<&'static str> {
         self.run_action
             .is_some()

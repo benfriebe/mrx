@@ -24,13 +24,11 @@ impl App {
         self.palette_open = false;
     }
 
-    /// Actions matching the palette's filter, in the same order `discover`
-    /// returned them, then the run-command prompt and the selection commands.
+    /// Actions matching the palette's filter, in the order `discover` returned
+    /// them, then the run-command prompt and the selection commands.
     ///
-    /// Every runnable entry's count is re-scoped to the current selection by
-    /// [`targets_defining`](Self::targets_defining): `discover` counts the
-    /// whole set, which is not the question being asked at the moment someone
-    /// is picking what to run.
+    /// [`targets_defining`](Self::targets_defining) re-scopes each count to the
+    /// current selection, since `discover` counts the whole set.
     pub fn palette_visible(&self) -> Vec<Action> {
         let targets = self.effective_selection();
         let all = self

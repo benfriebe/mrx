@@ -12,12 +12,9 @@ use ratatui::layout::Rect;
 
 /// Where everything in one frame sits, worked out once.
 ///
-/// The pointer has no `Frame` to ask, so it used to rebuild the layout from
-/// the terminal size with its own arithmetic, and the scroll keys did it a
-/// third time. Three of those derivations agreed with the renderer only
-/// because `(h - footer) - header` and `h - header - footer` are the same
-/// number, and one agreed only because a mode combination happens to be
-/// unreachable. Everything now reads the rects and row counts from here.
+/// The pointer has no `Frame` to ask and the scroll keys have none either, so
+/// both used to rebuild the layout from the terminal size with their own
+/// arithmetic. Everything reads the rects and row counts from here instead.
 pub(crate) struct Panes {
     /// The repo table, full width or as the split's sidebar. `None` while the
     /// detail view has the whole frame.
@@ -165,15 +162,12 @@ pub(super) fn sidebar_column_widths(app: &App, avail: usize) -> (usize, usize) {
     (name, state)
 }
 
-/// How wide the sidebar wants to be: its prefix and two columns at the
-/// widths their text actually needs, and never narrower than its own title.
+/// How wide the sidebar wants to be: its prefix and two columns at the widths
+/// their text needs, and never narrower than its own title.
 ///
-/// The counts beside that title are deliberately not part of the demand.
-/// They are the first thing [`styled_two_column_line`] sheds, and a sidebar
-/// wide enough to keep them is one spending the output pane's columns on the
-/// least important text on screen, often to no purpose: [`detail::sidebar_width`]
-/// caps this at a third of the frame, which can land under what the counts
-/// needed anyway, dropping them and keeping the width.
+/// The counts beside that title are not part of the demand. They are the first
+/// thing [`styled_two_column_line`] sheds, and [`detail::sidebar_width`] caps
+/// this at a third of the frame anyway, which can drop them and keep the width.
 pub(crate) fn sidebar_natural_width(app: &App) -> u16 {
     let columns = PREFIX_W + natural_name_width(app) + COL_GAP + natural_state_width(app);
     let title = display_width(&header_title(app, true)) + LEAD_IN.len();
@@ -208,10 +202,9 @@ fn natural_state_width(app: &App) -> usize {
 }
 
 /// Column widths for the repo table: NAME, BRANCH, STATE and SYNC each get
-/// their natural width up to a share of `avail`; RESULT takes the rest, being
-/// the column whose text is usually worth reading in full.
+/// their natural width up to a share of `avail`; RESULT takes the rest.
 ///
-/// SYNC is never capped. It is already as narrow as the counts on screen allow,
+/// SYNC is never capped: it is already as narrow as the counts on screen allow,
 /// and squeezing it would truncate a number into a different number.
 pub(super) fn column_widths(app: &App, avail: usize) -> (usize, usize, usize, usize, usize) {
     let name_nat = app
@@ -459,11 +452,9 @@ mod tests {
         }
     }
 
-    /// The filter line is chrome only the full-width table draws, but click
-    /// resolution used to subtract it in the split too, where the sidebar has
-    /// no such line. That cost the sidebar its last clickable row, and was
-    /// unreachable only because the dispatcher happens to check `filtering`
-    /// before `detail_open`.
+    /// Click resolution used to subtract the filter line in the split too,
+    /// where the sidebar has no such line, costing the sidebar its last
+    /// clickable row.
     #[test]
     fn the_split_sidebar_pays_for_no_filter_line() {
         let mut a = app(vec![repo("bill-api"), repo("crew")]);

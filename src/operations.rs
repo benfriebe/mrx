@@ -82,9 +82,9 @@ fn resolve_body<'a>(
 
 /// Every config key visible to this repo, as `MR_<KEY>` pairs.
 ///
-/// Passing `branch` and friends as environment rather than interpolating them into
-/// the command string means a branch name can never break out of the shell word it
-/// sits in. Keys that can't spell an environment variable name are dropped.
+/// Passed as environment rather than interpolated into the command string, so a
+/// branch name cannot break out of its shell word. Keys that can't spell an
+/// environment variable name are dropped.
 fn config_env(repo: &Repo, defaults: &BTreeMap<String, String>) -> Vec<(String, String)> {
     let mut env: BTreeMap<&str, &str> = BTreeMap::new();
     for (k, v) in defaults.iter().chain(repo.keys.iter()) {

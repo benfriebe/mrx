@@ -16,11 +16,10 @@ use tokio::process::Command;
 /// into the poll start at the same cadence.
 pub const DEFAULT_POLL_INTERVAL: Duration = crate::config::DEFAULT_AUTO_FETCH;
 
-/// Upper bound on a poll interval from any external source (a hand-edited
-/// or corrupted `ui.json`, chiefly). Far enough below the range `Instant`
-/// can represent that `Instant::now() + interval` can never overflow;
-/// `Instant::now() + Duration::from_secs(u64::MAX)` panics outright, which
-/// would crash the app at startup before a single frame draws.
+/// Upper bound on a poll interval from any external source (chiefly a
+/// hand-edited or corrupted `ui.json`). Far enough below the range `Instant`
+/// can represent that `Instant::now() + interval` cannot overflow, which panics
+/// and would crash the app at startup before a frame draws.
 pub const MAX_POLL_INTERVAL: Duration = Duration::from_hours(24 * 365 * 10);
 
 /// Clamp `interval` into `[1s, MAX_POLL_INTERVAL]`, whatever its source,
@@ -46,11 +45,10 @@ pub fn can_fast_forward(s: &RepoState) -> bool {
         && s.changed == 0 // dirty: even a clean ff can surprise you mid-edit
 }
 
-/// Fetch, then read state back exactly the way a plain probe would. A fetch
-/// that fails (offline, no remote, auth) must not stop the status read that
-/// follows, since a stale local view is still worth showing, and the result
-/// carries whether this repo's own fetch succeeded so it can't inherit the
-/// freshness of another repo polled in the same cycle.
+/// Fetch, then read state back exactly the way a plain probe would. A failed
+/// fetch (offline, no remote, auth) still lets the status read run, since a
+/// stale local view is worth showing, and the result carries whether this
+/// repo's own fetch succeeded.
 pub(super) async fn poll_one(index: usize, path: &Path) -> RepoState {
     let fetched = if path.is_dir() {
         matches!(

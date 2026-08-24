@@ -9,23 +9,20 @@ use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Semaphore};
 
-/// One event from a live run, about one of its targets.
-///
-/// The stream is a grammar rather than a bag of events, and its consumers fold
-/// it on that basis:
+/// One event from a live run, about one of its targets. The stream is a
+/// grammar, and consumers fold it on that basis:
 ///
 /// - Every target index reports exactly one terminal event: a lone `Skipped`,
-///   or a `Finished` closing a chain that opened with `Started`. This holds
-///   unconditionally, an index naming no repo included, since counting
-///   terminal events is how a consumer knows the run is over.
+///   or a `Finished` closing a chain that opened with `Started`. Counting
+///   terminal events is how a consumer knows the run is over, so this holds
+///   even for an index naming no repo.
 /// - Within a chain, each step sends its `Step`, then any `Output` it
 ///   produces, before the next step's `Step`. Ordering is per index only:
 ///   targets run concurrently and their events interleave.
 /// - `Output.step` is the zero-based ordinal of the step that produced the
-///   line, so it lines up with the `Step` events already sent for that index.
-///   A consumer indexing a per-step list by it drops anything that doesn't.
+///   line, matching the `Step` events already sent for that index.
 /// - A chain stops at the first step to exit non-zero, so the last entry in
-///   `Finished.steps` is the one that decided the outcome.
+///   `Finished.steps` decided the outcome.
 /// - `Finished.steps` supersedes whatever was streamed for that index.
 /// - `stream: false` in [`spawn_run`] removes every `Output` and nothing else.
 #[derive(Debug, Clone)]
@@ -128,13 +125,12 @@ impl StepSink {
 }
 
 /// Spawn a run over `targets`, pairs of global repo index and planned
-/// operation. Events carry the global index so a subset run attributes
-/// output to the right repo, and are tagged with `run_id` so a cancelled
-/// run's in-flight events don't paint over a newer one's.
+/// operation. Events carry the global index so a subset run attributes output
+/// to the right repo, and a `run_id` so a cancelled run's in-flight events
+/// cannot paint over a newer one's.
 ///
-/// `stream` adds a [`TaskEvent::Output`] per line as it is produced. A caller
-/// that only prints at the end passes `false` rather than filtering thousands
-/// of events it will never look at.
+/// `stream` adds a [`TaskEvent::Output`] per line as it is produced; a caller
+/// that only prints at the end passes `false`.
 // `tx` is taken by value because the drop matters: the spawned tasks each hold
 // a clone, so this binding going out of scope is what leaves them as the only
 // senders and lets the channel close when the last one finishes. Borrowing it
@@ -259,8 +255,7 @@ pub fn spawn_run(
 /// Run everything and hand back a receiver that closes once the run is done.
 ///
 /// It cannot share ui mode's sender: `render_plain.rs` loops until the channel
-/// closes, which needs every sender dropped, and ui mode holds one for its
-/// whole life.
+/// closes, and ui mode holds a sender for its whole life.
 pub fn execute_all(
     repos: &[Repo],
     operations: Vec<Operation>,
@@ -282,11 +277,10 @@ pub fn execute_all(
     rx
 }
 
-/// The `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` slot our forced `color.ui` entry
-/// should claim, computed from whatever `GIT_CONFIG_COUNT` the child will
-/// already see: it has to land past the user's own slots, or their entries at
-/// index 0 would be silently overwritten. Anything that doesn't parse as a
-/// count (missing, empty, non-numeric) is treated as no prior config.
+/// The `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` slot the forced `color.ui` entry
+/// claims: past whatever `GIT_CONFIG_COUNT` the child will already see, so the
+/// user's own entries are not overwritten. A count that doesn't parse (missing,
+/// empty, non-numeric) counts as no prior config.
 fn next_git_config_slot(existing_count: Option<&str>) -> usize {
     existing_count.and_then(|s| s.parse().ok()).unwrap_or(0)
 }

@@ -26,11 +26,9 @@ pub enum Source {
 }
 
 /// One runnable action: its name, where it comes from, and how many repos in
-/// the current set actually define it. `repos` alongside `source` is what
-/// makes an unfamiliar name trustworthy: a per-repo action is one only some
-/// of the set can run, and the count says how many. The palette narrows it to
-/// the current selection before drawing it, since that is the number that
-/// answers "what will this do".
+/// the current set define it. The count is what makes an unfamiliar per-repo
+/// name readable. The palette re-scopes it to the current selection before
+/// drawing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Action {
     pub name: String,
@@ -44,10 +42,9 @@ pub struct Action {
 const BUILTIN_VERBS: &[&str] = &["update", "status", "diff", "push", "fetch", "checkout"];
 
 /// Every runnable action for a config: the built-in verbs, plus every key
-/// visible in `[DEFAULT]` or any repo section, minus `post_` hooks (run as
-/// part of the action they follow, not on their own) and the built-ins
-/// themselves. `RESERVED_KEYS` (`base`, `skip`) never reach here: `config::load`
-/// already strips them.
+/// visible in `[DEFAULT]` or any repo section, minus `post_` hooks (run as part
+/// of the action they follow) and the built-ins themselves. `config::load`
+/// already strips `RESERVED_KEYS` (`base`, `skip`).
 pub fn discover(repos: &[Repo], defaults: &BTreeMap<String, String>) -> Vec<Action> {
     let mut actions: Vec<Action> = BUILTIN_VERBS
         .iter()

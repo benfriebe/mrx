@@ -1,8 +1,7 @@
 //! Line-per-repo output for runs with nobody watching.
 //!
-//! The alternate screen the TUI draws into only corrupts a log file, and there is
-//! no one there to press `q`, so a non-TTY run comes here instead. Returns true
-//! when every repo succeeded, matching `ui::run::run`.
+//! The alternate screen only corrupts a log file, so a non-TTY run comes here
+//! instead. Returns true when every repo succeeded, matching `ui::run::run`.
 
 use crate::config::Repo;
 use crate::executor::TaskEvent;

@@ -71,9 +71,9 @@ pub struct Cli {
 /// A short duration for `--result-ttl`: a bare number of seconds, `90s`,
 /// `6m`, `1h`, or `off`/`0`.
 ///
-/// `off` parses to [`Duration::ZERO`], not `None`: clap reads `None` as "the
-/// flag was not passed", which falls back to the default instead of turning
-/// expiry off. `main.rs` maps the zero back to "never expire".
+/// `off` parses to [`Duration::ZERO`] because clap reads `None` as "flag not
+/// passed" and would fall back to the default. `main.rs` maps the zero back to
+/// "never expire".
 pub(crate) fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
     if s.eq_ignore_ascii_case("off") {

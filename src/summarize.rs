@@ -17,11 +17,10 @@ pub enum Shape {
 
 /// Whether a step left the repo as it found it.
 ///
-/// Decided by the summariser that phrases the step, rather than read back off
-/// the phrase afterwards, so the wording and the conclusion cannot disagree
-/// about one step. They did: a config-defined body is summarised by its own
-/// output, so `echo done`, or a linter printing `clean`, used to be filed as
-/// having changed nothing.
+/// Decided by the summariser that phrases the step rather than read back off
+/// the phrase, so the wording and the conclusion cannot disagree. Reading it
+/// back filed `echo done`, or a linter printing `clean`, as having changed
+/// nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Quiet,
@@ -53,9 +52,8 @@ impl Summary {
 /// Summarise one step's output into a short, shape-aware description.
 ///
 /// `stdout`/`stderr` may carry ANSI escapes (forced on so ui mode can show
-/// colour), so this strips them once, up front. Every prefix match, substring
-/// match, and char-counted truncation below assumes plain text; the
-/// shape-specific parsers rely on that rather than stripping again.
+/// colour), so this strips them once up front. Everything below, the
+/// shape-specific parsers included, assumes plain text.
 pub fn summarize(shape: Shape, stdout: &str, stderr: &str, exit_code: i32) -> String {
     summarize_full(shape, stdout, stderr, exit_code).text
 }
@@ -90,10 +88,8 @@ fn summarize_full(shape: Shape, stdout: &str, stderr: &str, exit_code: i32) -> S
 
 /// Summarise a finished run from its steps.
 ///
-/// The chain stops at the first failing step, so the last step present always
-/// decided the outcome: its shape and output are what the row shows.
-/// Concatenating every step's output instead would summarise a `post_update`
-/// that ran after a no-op pull as "already up to date".
+/// The chain stops at the first failing step, so the last step present decided
+/// the outcome, and its shape and output are what the row shows.
 pub fn summarize_steps(steps: &[StepResult], exit_code: i32) -> String {
     let Some(last) = steps.last() else {
         return "done".into();
@@ -149,10 +145,10 @@ enum Change {
 /// total when everything in it falls outside the three buckets (unmerged,
 /// ignored).
 ///
-/// Shared with the STATE column, which counts the same changes off porcelain
-/// v2 rather than off `git status --short`. Only the parsing differs, so only
-/// the parsing is written twice: one phrasing means the column and an `s`
-/// run's RESULT cannot describe one repo differently.
+/// The STATE column shares this phrasing, counting the same changes off
+/// porcelain v2 rather than `git status --short`. Only the parsing is written
+/// twice, so the column and an `s` run's RESULT cannot word one repo
+/// differently.
 pub fn working_tree(modified: usize, untracked: usize, deleted: usize, total: usize) -> String {
     if total == 0 {
         return "clean".into();
@@ -200,10 +196,8 @@ fn summarize_status(stdout: &str) -> Summary {
 }
 
 /// Which bucket a short-format line falls in, read from both status columns
-/// (staged, then unstaged) rather than one fixed prefix, so a file that was
-/// staged and then edited again (`MM`) counts as modified instead of falling
-/// through to the untyped "changed" total. A line counts once, under the
-/// first column that says anything.
+/// (staged, then unstaged) so a file staged and then edited again (`MM`) counts
+/// as modified. A line counts once, under the first column that says anything.
 fn change_kind(line: &str) -> Option<Change> {
     let mut columns = line.chars();
     let (staged, unstaged) = (columns.next()?, columns.next()?);
@@ -297,12 +291,10 @@ pub fn with_step(step: Option<&str>, summary: String) -> String {
     }
 }
 
-/// The line most likely to say why a step failed.
-///
-/// Tools that fail loudly still warn first: npm prints screenfuls of
-/// `npm warn ERESOLVE ...` before `npm error Missing script: "build"`, so the
-/// first line reports a warning as the cause. Prefer a line naming an error,
-/// never one naming a warning.
+/// The line most likely to say why a step failed: one naming an error, never
+/// one naming a warning. npm prints screenfuls of `npm warn ERESOLVE ...`
+/// before `npm error Missing script: "build"`, so taking the first line would
+/// report a warning as the cause.
 fn error_line(s: &str) -> Option<String> {
     const ERROR: [&str; 5] = ["error", "fatal:", "err!", "cannot ", "failed"];
     const WARNING: [&str; 3] = ["warn", "deprecat", "notice"];

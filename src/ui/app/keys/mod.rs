@@ -56,9 +56,8 @@ fn on_resize(app: &mut App, width: u16, height: u16) {
 /// One keystroke, classified before any mode sees it.
 ///
 /// crossterm reports Ctrl-U as `Char('u')` with the modifier set, so a mode
-/// matching `KeyCode::Char` on its own types the `u` or fires the shortcut it
-/// is bound to. Splitting the two here means a handler cannot make that
-/// mistake by omission: a chord simply never arrives as [`Plain`](Self::Plain).
+/// matching `KeyCode::Char` on its own would fire the `u` shortcut. Split here,
+/// a chord never arrives as [`Plain`](Self::Plain).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Input {
     /// A Ctrl chord, carrying the key it was struck with.
@@ -241,10 +240,9 @@ fn on_palette_key(app: &mut App, input: Input) {
 }
 
 /// Keys while the run-command prompt is open: the two the prompt itself owns,
-/// then whatever [`TextArea`](crate::ui::textarea::TextArea) makes of the
-/// rest. Ctrl-D is taken before the buffer sees it, so a body is ended by the
-/// chord that ends input everywhere else rather than by Enter, which the body
-/// needs for its own newlines.
+/// then whatever [`TextArea`](crate::ui::textarea::TextArea) makes of the rest.
+/// Ctrl-D is taken before the buffer sees it, since Enter belongs to the body's
+/// own newlines.
 fn on_run_command_key(app: &mut App, input: Input, key: KeyEvent) {
     match input {
         Input::Chord(KeyCode::Char('d')) => app.run_command_confirm(),

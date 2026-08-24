@@ -46,11 +46,9 @@ pub const DEFAULT_AUTO_FETCH: Duration = Duration::from_mins(6);
 
 /// A config that could not be loaded: which file, and what was wrong with it.
 ///
-/// The two are separate fields because the callers want different amounts of
-/// them. The one-shot CLI prints the whole thing, since the path is the only
-/// clue to which config it read. ui mode has a single status line and already
-/// knows which config it asked for, so it shows [`kind`](Self::kind) alone
-/// rather than spending most of that line on a path the user chose.
+/// Separate fields because the one-shot CLI prints both, while ui mode has one
+/// status line and already knows which config it asked for, so it shows
+/// [`kind`](Self::kind) alone.
 #[derive(Debug, thiserror::Error)]
 #[error("{}: {kind}", path.display())]
 pub struct ConfigError {
@@ -140,9 +138,8 @@ pub fn expand_tilde(s: &str) -> PathBuf {
 /// Read a config file into repos plus the `[DEFAULT]` fallbacks, exiting the
 /// process on an unreadable or unparseable file.
 ///
-/// For the one-shot CLI paths, where there is no terminal state to protect.
-/// ui mode calls [`try_load`] directly instead: exiting from inside raw mode
-/// bypasses teardown and the panic hook, leaving the terminal wrecked.
+/// For the one-shot CLI paths only. ui mode calls [`try_load`], since exiting
+/// from inside raw mode bypasses teardown and leaves the terminal wrecked.
 pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
     match try_load(config_path, dir_override) {
         Ok(config) => config,
@@ -155,12 +152,12 @@ pub fn load(config_path: &Path, dir_override: Option<&Path>) -> Config {
 
 /// Read a config file into repos plus the `[DEFAULT]` fallbacks.
 ///
-/// The base directory that section paths hang off is resolved here because it can
-/// come from the config itself: `dir_override` (`-d`) beats `[DEFAULT] base`, which
+/// The base directory section paths hang off resolves here, since it can come
+/// from the config itself: `dir_override` (`-d`) beats `[DEFAULT] base`, which
 /// beats the config file's own parent.
 ///
-/// A missing config file is not an error: it yields an empty `Config`. Only
-/// an unreadable or unparseable file yields `Err`.
+/// A missing file yields an empty `Config`; only an unreadable or unparseable
+/// one yields `Err`.
 pub fn try_load(config_path: &Path, dir_override: Option<&Path>) -> Result<Config, ConfigError> {
     let fallback_base = || {
         config_path

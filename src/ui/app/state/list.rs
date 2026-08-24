@@ -32,14 +32,13 @@ impl App {
         rows
     }
 
-    /// The repos a run would target: the explicit selection, or every
-    /// visible row when nothing is selected.
+    /// The repos a run would target: the explicit selection, or every visible
+    /// row when nothing is selected.
     ///
-    /// An explicit selection is honoured even if the active filter currently
-    /// hides every member of it, since a filter narrows what's on screen,
-    /// not what was already selected. The fallback has no such choice behind
-    /// it, so it follows the filter exactly, and a zero-match filter targets
-    /// nothing rather than reaching a repo that is no longer on screen.
+    /// An explicit selection is honoured even when the filter hides every
+    /// member of it, since a filter narrows what is on screen. The fallback has
+    /// no such choice behind it and follows the filter exactly, so a zero-match
+    /// filter targets nothing.
     pub fn effective_selection(&self) -> Vec<usize> {
         if !self.selected.is_empty() {
             return self.selected.iter().copied().collect();
@@ -73,8 +72,8 @@ impl App {
     /// Pull [`list_scroll`](Self::list_scroll) the shortest distance that
     /// puts the cursor back on screen, leaving it alone while the cursor is
     /// already within the window. Render clamps the same way, so a path that
-    /// misses this call still draws a visible cursor; it just loses the
-    /// window's memory of where the user had scrolled to.
+    /// misses this call still draws a visible cursor, just at a forgotten
+    /// scroll.
     fn follow_cursor(&mut self) {
         let visible = self.visible_indices();
         let height = render::Panes::last_known(self).list_rows;
@@ -118,12 +117,10 @@ impl App {
         self.follow_cursor();
     }
 
-    /// Toggle the cursor row's selection, then advance the cursor so
-    /// repeated presses of the key walk down the list. A no-op when the
-    /// cursor isn't on a row the filter currently shows: a zero-match filter
-    /// leaves `cursor` pointing at a hidden repo, and toggling that would
-    /// manufacture an explicit selection the user never saw on screen, which
-    /// [`effective_selection`](Self::effective_selection) then honours.
+    /// Toggle the cursor row's selection, then advance the cursor so repeated
+    /// presses walk down the list. A no-op when the cursor is not on a row the
+    /// filter shows: a zero-match filter leaves `cursor` on a hidden repo, and
+    /// toggling it would manufacture a selection the user never saw.
     pub fn toggle_selection_at_cursor(&mut self) {
         if !self.visible_indices().contains(&self.cursor) {
             return;

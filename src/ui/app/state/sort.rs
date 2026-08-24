@@ -168,9 +168,9 @@ impl App {
 
     /// Put `rows` in the order the table lists them.
     ///
-    /// Every sort here is stable and `rows` arrives in index order, which
-    /// `config::load` already made name order, so rows a column cannot
-    /// separate stay alphabetical instead of swapping between frames.
+    /// Every sort is stable and `rows` arrives in the name order `config::load`
+    /// built, so rows a column cannot separate stay alphabetical rather than
+    /// swapping between frames.
     pub(super) fn apply_sort(&self, rows: &mut [usize]) {
         let descending = self.sort_direction == Direction::Descending;
         match self.sort {
@@ -202,9 +202,8 @@ impl App {
         self.known_probe(idx).map(|state| state.changed)
     }
 
-    /// SYNC ordered behind-first, since being behind is the count you act on:
-    /// descending leads with the repos with the most to pull, and ahead only
-    /// separates rows level on that.
+    /// SYNC ordered behind-first, since being behind is the count you act on;
+    /// ahead only separates rows level on that.
     ///
     /// A row with no upstream has no distance rather than a distance of zero,
     /// so it sorts with the unprobed at the end.
@@ -222,13 +221,12 @@ impl App {
             .filter(|state| !state.timed_out)
     }
 
-    /// RESULT ranked by how much the row is asking for attention, so
-    /// descending brings the failures to the top.
+    /// RESULT ranked by how much the row is asking for attention, so descending
+    /// brings the failures to the top.
     ///
-    /// A run that succeeded is split by whether it did anything, since a set
-    /// where nothing failed is the ordinary case and "up to date" everywhere
-    /// would otherwise be one flat tie: the repos that moved are what is worth
-    /// reading, and they are what [`summarize::changed_nothing`] separates out.
+    /// A success is split by whether it did anything, via
+    /// [`summarize::changed_nothing`]: nothing failing is the ordinary case, and
+    /// "up to date" everywhere would otherwise be one flat tie.
     fn result_rank(&self, idx: usize) -> u8 {
         match self.run_results.get(idx).and_then(|r| r.as_ref()) {
             None => 0,

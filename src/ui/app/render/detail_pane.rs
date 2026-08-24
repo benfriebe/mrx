@@ -143,13 +143,11 @@ fn detail_summary(app: &App) -> String {
     }
 }
 
-/// The stretch of a `viewport`-row track the visible slice covers, or `None`
-/// when the whole transcript is on screen and a bar would only say so at the
-/// cost of a column.
+/// The track rows the visible slice covers, or `None` when the whole transcript
+/// fits and a bar would cost a column to say so.
 ///
-/// The thumb is proportional but never fills the track: some track showing is
-/// the only thing distinguishing "there is more" from "this is all of it", and
-/// a long transcript's thumb is already down to its one-row floor.
+/// The thumb never fills the track: visible track is what separates "there is
+/// more" from "this is all of it".
 fn thumb_rows(scroll: usize, total: usize, viewport: usize) -> Option<Range<usize>> {
     // A track under two rows long cannot hold both, so it draws neither.
     if viewport < 2 || total <= viewport {

@@ -1,8 +1,6 @@
 //! The keys each mode binds, in one place, so the footer hint and the `?`
-//! overlay cannot describe different keymaps.
-//!
-//! The footer shows only whole bindings, and only what fits; everything else
-//! is bound and documented, just left to the overlay.
+//! overlay cannot describe different keymaps. The footer shows only whole
+//! bindings, and only what fits; the rest is left to the overlay.
 
 use super::state::{App, Mode};
 

@@ -1,12 +1,9 @@
-//! Persisted UI state: the last set, filter, selection, cursor, sort order,
-//! and the freshness poll's own settings, written on change and read at
-//! startup so reopening the app puts you back where you left off.
+//! Persisted UI state: the last set, filter, selection, cursor, sort order and
+//! the freshness poll's settings, written on change and read at startup.
 //!
-//! No serde: the shape is a handful of scalars and two string lists, so a
-//! hand-written reader and writer is smaller than the dependency would be.
-//! Nothing on disk is ever fatal: a missing or unparseable file reads
-//! exactly like no file at all, so deleting it is a supported reset and a
-//! crash mid-write can never lock the app out.
+//! No serde: the shape is a handful of scalars and two string lists. Nothing on
+//! disk is ever fatal, so a missing or unparseable file reads like no file at
+//! all and deleting it is a supported reset.
 
 use super::poll;
 use super::state::{App, Direction, Sort};
@@ -16,10 +13,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `$XDG_STATE_HOME/mrx/ui.json`, falling back to `~/.local/state/mrx/ui.json`.
 ///
-/// Deliberately not `dirs::state_dir()`, which is `None` on macOS and
-/// Windows; this XDG-style path is wanted on every platform, so the env var
-/// is read directly and `dirs::home_dir()` only supplies the fallback home
-/// (the same shape `sets::config_dir` uses for `XDG_CONFIG_HOME`).
+/// Deliberately not `dirs::state_dir()`, which is `None` on macOS and Windows;
+/// this path is wanted on every platform, so the env var is read directly and
+/// `dirs::home_dir()` only supplies the fallback home.
 fn session_path() -> Option<PathBuf> {
     let base = match std::env::var_os("XDG_STATE_HOME") {
         Some(x) if !x.is_empty() => PathBuf::from(x),
@@ -41,11 +37,10 @@ pub struct Session {
     /// to compare it against, so without this the behind count a previous
     /// session settled would go back to reading as unknown.
     pub fetched: Vec<String>,
-    /// One field is both the setting and the on/off state, matching the
-    /// on-disk shape (a bare `"poll": 300`, no separate enabled flag).
-    /// `Some(ZERO)` is a session that turned the poll off, which has to be
-    /// distinguishable from `None`, a file that never said: the first
-    /// overrules a set's `auto_fetch`, the second leaves it to decide.
+    /// Both the setting and the on/off state, matching the on-disk shape (a
+    /// bare `"poll": 300`, no separate enabled flag). `Some(ZERO)` is a session
+    /// that turned the poll off and overrules a set's `auto_fetch`; `None` is a
+    /// file that never said, and leaves `auto_fetch` to decide.
     pub poll_interval: Option<Duration>,
     /// When the last poll cycle went out, as wall-clock time: the boot fetch
     /// asks how stale the sync answers on screen are, and the answer has to

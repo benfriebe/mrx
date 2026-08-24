@@ -32,11 +32,10 @@ impl App {
         self.maybe_complete_poll(generation);
     }
 
-    /// Whether this result's `FETCH_HEAD` is newer than the one the first
-    /// probe of the session recorded, which means something fetched the repo
-    /// meanwhile. Records the baseline on the way through, so the first
-    /// sighting is never itself treated as a fetch: mrx has no idea how old
-    /// a timestamp it has only just read for the first time is.
+    /// Whether this result's `FETCH_HEAD` is newer than the one the session's
+    /// first probe recorded, meaning something fetched the repo meanwhile.
+    /// Records the baseline on the way through, so a first sighting is never
+    /// itself treated as a fetch.
     fn fetch_head_moved(&mut self, state: &RepoState) -> bool {
         match self.fetch_baseline.entry(state.index) {
             std::collections::btree_map::Entry::Vacant(slot) => {
@@ -72,11 +71,9 @@ impl App {
         probe::sync_counts(state, self.fetched_repos.contains(&idx))
     }
 
-    /// The width of the SYNC column's two fields, each sized to the widest
-    /// count any row carries. Fixed fields are the whole point of the column:
-    /// they are what puts every ↓ at the same offset, however many digits the
-    /// ↑ beside it needs. A field no row uses is zero wide, so a set with
-    /// nothing ahead of its upstream spends no cells saying so.
+    /// The width of the SYNC column's two fields, each sized to the widest count
+    /// any row carries, so every ↓ lands at the same offset however many digits
+    /// the ↑ beside it needs. A field no row uses is zero wide.
     pub fn sync_widths(&self) -> (usize, usize) {
         let field = |count: u32| {
             if count == 0 {

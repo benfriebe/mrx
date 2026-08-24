@@ -64,15 +64,12 @@ impl App {
     /// full re-probe.
     ///
     /// Re-checks [`mutation_blocker`](Self::mutation_blocker) rather than
-    /// trusting the check [`open_set_picker`](Self::open_set_picker) made: a
-    /// run or an auto-update pass can start while the picker sits open, and
-    /// switching sets would hand its in-flight results indices belonging to
-    /// the wrong repo list.
+    /// trusting [`open_set_picker`](Self::open_set_picker)'s check, since a run
+    /// can start while the picker sits open and switching sets would hand its
+    /// in-flight results indices into the wrong repo list.
     ///
-    /// Uses [`config::try_load`] rather than `config::load`, whose
-    /// `std::process::exit` would skip teardown and the panic hook and leave
-    /// the terminal in raw mode on the alternate screen. An unreadable or
-    /// unparseable config keeps the set currently open and reports the error.
+    /// Uses [`config::try_load`], whose error keeps the current set open and
+    /// reports it; `config::load` exits the process from inside raw mode.
     pub fn confirm_set_picker(&mut self) {
         let Some(entry) = self.set_entries.get(self.set_picker_cursor).cloned() else {
             self.close_set_picker();
@@ -102,9 +99,8 @@ impl App {
     }
 
     /// `Ctrl-R`: re-read the active config from disk without changing which
-    /// config is active. Blocked by
-    /// [`mutation_blocker`](Self::mutation_blocker), and uses
-    /// [`config::try_load`] for the reason
+    /// config is active. Blocked by [`mutation_blocker`](Self::mutation_blocker),
+    /// and uses [`config::try_load`] for the reason
     /// [`confirm_set_picker`](Self::confirm_set_picker) gives.
     pub fn reload_config(&mut self) {
         if self.refuse_if_mutation_blocked("reload") {
@@ -127,14 +123,12 @@ impl App {
         }
     }
 
-    /// Replace the repo list after a config reload or set switch, carrying
-    /// the cursor and selection across by repo NAME rather than index: a
-    /// repo added above the one you're on must not silently redirect a
-    /// selection onto its neighbour, and a name the edit removed just drops
-    /// out. Every index-keyed piece of state (probes, run results, detail
-    /// scroll) starts over, since none of it means anything against a
-    /// different repo list. `jobs` is re-resolved here too, since the config
-    /// just read is entitled to its own answer.
+    /// Replace the repo list after a config reload or set switch, carrying the
+    /// cursor and selection across by repo name rather than index, so a repo
+    /// added above the one you're on cannot redirect a selection onto its
+    /// neighbour. Every index-keyed piece of state (probes, run results, detail
+    /// scroll) starts over, and `jobs` is re-resolved from the config just
+    /// read.
     fn reconcile_repos(
         &mut self,
         repos: Vec<Repo>,

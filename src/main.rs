@@ -90,14 +90,12 @@ fn ui_set_label(cli: &Cli, restored: Option<&str>) -> String {
         .unwrap_or_else(|| "(unnamed)".to_string())
 }
 
-/// The persisted session's stored set, but only when it should actually be
-/// used: nothing on the command line named one (`-s` always wins), and the
-/// stored name still resolves to a config on disk. A set removed since the
-/// last session falls back to the ordinary default rather than erroring.
+/// The persisted session's stored set, when nothing on the command line named
+/// one (`-s` always wins) and the stored name still resolves to a config on
+/// disk. A set removed since the last session falls back to the default.
 ///
-/// The name comes back with the path it resolved to, so the caller uses the
-/// answer this lookup gave rather than asking again: a set file removed
-/// between the two calls would have made the second one fail.
+/// The name comes back with the path it resolved to, so the caller does not
+/// have to look it up a second time and risk a different answer.
 fn restored_set(
     cli: &Cli,
     session: &ui::app::session::Session,
@@ -254,10 +252,9 @@ async fn main() {
 
 /// Whether `existing` already declares `[section]`.
 ///
-/// Only an unindented line counts. A section header sits at column 0, while
-/// `configparser` reads an indented line as a continuation of the value above
-/// it, so `[repos/x]` inside a multi-line command body is text rather than a
-/// registration.
+/// Only an unindented line counts: `configparser` reads an indented line as a
+/// continuation of the value above it, so `[repos/x]` inside a multi-line
+/// command body is text.
 fn has_section(existing: &str, section: &str) -> bool {
     let header = format!("[{section}]");
     existing
@@ -448,12 +445,10 @@ mod tests {
         }
     }
 
-    /// The environment is process-global; tests that point it at their own
-    /// tempdir still need to serialise against each other.
-    ///
-    /// `MRX_SET` is cleared alongside it because these tests ask what happens
-    /// when nothing names a set, and clap reads that variable into `--set`. A
-    /// developer who exports it for their own use would otherwise fail them.
+    /// The environment is process-global, so tests pointing it at their own
+    /// tempdir still serialise against each other. `MRX_SET` is cleared too:
+    /// clap reads it into `--set`, and these tests ask what happens when
+    /// nothing names one.
     fn with_config_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
         use std::sync::{Mutex, PoisonError};
         static LOCK: Mutex<()> = Mutex::new(());

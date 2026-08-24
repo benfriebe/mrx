@@ -30,11 +30,9 @@ pub fn layout_for_width(width: u16) -> DetailLayout {
     }
 }
 
-/// Sidebar width in a split layout: only as wide as the list's own content
-/// needs (`content`, from `render::sidebar_natural_width`), so the columns
-/// aren't followed by empty cells the output pane could have used. Capped at
-/// a third of the frame, so a long repo name can't crowd out the output that
-/// is the reason the split is open.
+/// Sidebar width in a split layout: as wide as the list's own content needs
+/// (`content`, from `render::sidebar_natural_width`), capped at a third of the
+/// frame so a long repo name cannot crowd out the output pane.
 pub fn sidebar_width(width: u16, content: u16) -> u16 {
     content.min(width / 3)
 }

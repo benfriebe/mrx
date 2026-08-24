@@ -103,14 +103,13 @@ fn spawn_action_run(
 const POLL_RESET_GRACE: Duration = Duration::from_millis(250);
 
 /// How long the poll ticker's next tick should be pushed out to, given the
-/// poll's state on the previous loop iteration and its state now, or `None`
-/// to leave the running ticker alone.
+/// poll's state on the previous loop iteration and now, or `None` to leave the
+/// running ticker alone.
 ///
 /// Switching on re-phases, so the first cycle after `F` is prompt. So does a
-/// new interval, which a set switch can hand over: the running ticker holds
-/// the period it was built with and would otherwise keep the old set's
-/// cadence for the rest of the session. A poll that stays on unchanged is
-/// left alone, so the startup delay [`run`] builds it with survives.
+/// new interval, which a set switch can hand over: the running ticker holds the
+/// period it was built with. A poll that stays on unchanged keeps the startup
+/// delay [`run`] built it with.
 fn poll_ticker_restart_delay(was: (bool, Duration), now: (bool, Duration)) -> Option<Duration> {
     let ((was_enabled, was_interval), (is_enabled, interval)) = (was, now);
     if !is_enabled {
@@ -334,12 +333,9 @@ mod tests {
     use super::*;
 
     /// Stands in for `app.poll_interval` in the ticker tests, which run on a
-    /// paused clock: nothing here waits in real time, so the interval only has
-    /// to stay an order of magnitude clear of [`POLL_RESET_GRACE`].
-    ///
-    /// Both ticker tests rebuild the ticker themselves, so they pin
-    /// [`poll_ticker_restart_delay`], not its call site in [`run`]: deleting
-    /// that call leaves them green.
+    /// paused clock, so it only has to stay an order of magnitude clear of
+    /// [`POLL_RESET_GRACE`]. Both tests rebuild the ticker themselves, so they
+    /// pin [`poll_ticker_restart_delay`] and not its call site in [`run`].
     const TEST_INTERVAL: Duration = Duration::from_secs(4);
 
     #[test]

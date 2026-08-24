@@ -60,13 +60,12 @@ pub fn teardown_terminal() -> io::Result<()> {
 }
 
 /// RAII guard over the terminal state ui mode enters: raw mode, the alternate
-/// screen, and mouse capture. Without it, any `?` between entering that state
-/// and the app's own teardown at the end of `run` (including a library
-/// caller's own `ui::app::run(...).await?`) skips cleanup and leaves the
-/// terminal wrecked. The panic hook remains the belt to this guard's braces.
+/// screen, and mouse capture. Without it any `?` between entering that state and
+/// teardown at the end of `run` skips cleanup and leaves the terminal wrecked.
+/// The panic hook remains the belt to this guard's braces.
 ///
-/// Undoing a step that was never entered is harmless, so this doesn't track
-/// which ones actually ran.
+/// Undoing a step that was never entered is harmless, so this does not track
+/// which ones ran.
 pub struct TerminalGuard;
 
 impl Drop for TerminalGuard {

@@ -29,17 +29,14 @@ pub(super) enum EditorOutcome {
     EditorFailed(io::Error),
 }
 
-/// `o` and `!`: suspend the alternate screen, raw mode, mouse capture (if it
-/// was on), and the input thread (via [`InputGate::park`], so it stops
-/// competing for stdin), run the program to completion, then restore all of
-/// it exactly as it was. The wait blocks: probe and run events that arrive
-/// meanwhile sit in their channels until the next draw, the same handling
-/// every other background result gets.
+/// `o` and `!`: suspend the alternate screen, raw mode, mouse capture and the
+/// input thread (via [`InputGate::park`]), run the program to completion, then
+/// restore all of it. The wait blocks, so probe and run events arriving
+/// meanwhile sit in their channels until the next draw.
 ///
-/// An `Err` return means re-entering raw mode or the alternate screen failed
-/// and the real terminal is left in whatever state that partial attempt
-/// produced; callers must not keep drawing against `terminal`. See [`run`]'s
-/// call site.
+/// An `Err` means re-entering raw mode or the alternate screen failed and the
+/// terminal is in whatever state that partial attempt produced; callers must
+/// not keep drawing against `terminal`. See [`run`]'s call site.
 pub(super) fn suspend_for(
     terminal: &mut Term,
     what: &state::Suspend,

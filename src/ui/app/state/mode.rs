@@ -3,14 +3,13 @@
 
 use super::App;
 
-/// The modes ui mode can be in, in the precedence order [`App::mode`]
-/// resolves them.
+/// The modes ui mode can be in, in the precedence order [`App::mode`] resolves
+/// them.
 ///
-/// The flags behind this are still independent, because `Help` and
-/// `QuitConfirm` layer over whatever they interrupted and hand it back on the
-/// way out; an enum over the flags themselves would have to enumerate those
-/// combinations. What is not independent is which mode the next keystroke
-/// reaches, and that is what this names.
+/// The flags behind this stay independent: `Help` and `QuitConfirm` layer over
+/// whatever they interrupted and hand it back on the way out, so an enum over
+/// the flags themselves would have to enumerate those combinations. This names
+/// which mode the next keystroke reaches.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     QuitConfirm,
@@ -42,10 +41,9 @@ impl Mode {
     ];
 
     /// Whether the pointer reaches the table. A modal draws a `Clear`ed popup
-    /// over it, so a click that resolves to a row is landing on something the
-    /// user cannot see, and the wheel would scroll a cursor they cannot
-    /// follow. The filter is not a modal: it draws inline and leaves the rows
-    /// it narrows on screen.
+    /// over it, so a click resolving to a row would land on something the user
+    /// cannot see. The filter draws inline and leaves its rows on screen, so it
+    /// does not block.
     pub fn takes_pointer(self) -> bool {
         matches!(self, Self::Filter | Self::Detail | Self::List)
     }
@@ -62,9 +60,9 @@ impl Mode {
 impl App {
     /// Which mode owns the input right now.
     ///
-    /// The order is the contract: `QuitConfirm` and `Help` come first because
-    /// they are layered over another mode that is still open underneath, and
-    /// `List` is last because it is what is left when nothing else is up.
+    /// The order is the contract: `QuitConfirm` and `Help` are layered over a
+    /// mode still open underneath, and `List` is what is left when nothing else
+    /// is up.
     pub fn mode(&self) -> Mode {
         if self.quit_pending {
             return Mode::QuitConfirm;

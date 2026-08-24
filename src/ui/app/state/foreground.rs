@@ -43,15 +43,13 @@ impl App {
     }
 
     /// `o`: open `$EDITOR` on whatever the current view is about. In the list
-    /// that is the cursor row's repo; in the detail view it is the transcript
-    /// on screen, since that is what you are looking at and the repo is one
-    /// `esc` away.
+    /// that is the cursor row's repo; in the detail view it is the transcript on
+    /// screen, with the repo one `esc` away.
     ///
-    /// A no-op with a status message when the filter hides every row, the
-    /// same as [`open_detail`](Self::open_detail). Also refused by
-    /// [`mutation_blocker`](Self::mutation_blocker): a live run or
-    /// auto-update pass keeps writing to repos in the background while the
-    /// editor has the terminal.
+    /// A no-op with a status message when the filter hides every row, the same
+    /// as [`open_detail`](Self::open_detail). Also refused by
+    /// [`mutation_blocker`](Self::mutation_blocker), since a run would keep
+    /// writing to repos while the editor has the terminal.
     pub fn request_open_editor(&mut self) {
         if self.detail_open {
             self.request_open_transcript();

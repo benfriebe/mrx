@@ -2,11 +2,9 @@
 //! runs" for us.
 //!
 //! The parser tracks one running [`Style`], applies `CSI ... m` (SGR) parameters
-//! to it left to right, and cuts a new [`Run`] each time the style actually
-//! changes. Every other escape (cursor moves, OSC titles and hyperlinks, the
-//! two-byte C1 shorthands) is recognised well enough to be swallowed whole, but
-//! never causes a run boundary. That distinction, "consumed" vs "boundary", is
-//! the one thing to keep in mind reading the rest of this file.
+//! to it left to right, and cuts a new [`Run`] each time the style changes.
+//! Every other escape (cursor moves, OSC titles and hyperlinks, the two-byte C1
+//! shorthands) is consumed without cutting a run.
 
 use std::iter::Peekable;
 use std::str::Chars;
@@ -21,11 +19,9 @@ pub struct Run {
 
 /// Splits one line into styled runs, with the escape sequences removed.
 ///
-/// SGR parameters accumulate onto a running [`Style`] instead of replacing it,
-/// so `ESC[1m` then later `ESC[32m` combine into bold-green rather than the
-/// second escape erasing the first. Every other escape sequence is stripped
-/// without ending the current run. Adjacent runs that end up with equal styles
-/// are merged, so plain text always comes back as exactly one run.
+/// SGR parameters accumulate, so `ESC[1m` then `ESC[32m` gives bold-green.
+/// Adjacent runs with equal styles are merged, so plain text comes back as
+/// exactly one run.
 pub fn parse(line: &str) -> Vec<Run> {
     let mut runs = Vec::new();
     let mut style = Style::default();
@@ -74,8 +70,8 @@ pub fn parse(line: &str) -> Vec<Run> {
 
 /// The same text with every escape sequence removed and nothing else changed.
 ///
-/// Built directly on [`parse`] (rather than a second hand-rolled scanner) so the
-/// two can never disagree about what counts as an escape sequence.
+/// Built on [`parse`] so the two cannot disagree about what counts as an
+/// escape sequence.
 pub fn strip(s: &str) -> String {
     parse(s).into_iter().map(|run| run.text).collect()
 }
@@ -84,10 +80,8 @@ pub fn strip(s: &str) -> String {
 /// in `0x20..=0x3F`, then a final byte in `0x40..=0x7E`. Returns the raw
 /// parameter text and the final byte.
 ///
-/// If the string ends, or a byte outside those ranges shows up first, the
-/// sequence is abandoned: whatever was read is dropped as an incomplete
-/// escape, but the offending byte is left for the caller to process as
-/// ordinary text rather than being eaten too.
+/// A byte outside those ranges abandons the sequence and is left unconsumed
+/// for the caller to treat as ordinary text.
 fn consume_csi(chars: &mut Peekable<Chars>) -> (String, Option<char>) {
     let mut params = String::new();
     while let Some(&c) = chars.peek() {
@@ -107,12 +101,10 @@ fn consume_csi(chars: &mut Peekable<Chars>) -> (String, Option<char>) {
 
 /// Consumes an OSC body (everything after `ESC]`) up to and including its
 /// terminator, BEL or `ESC \`. An OSC 8 hyperlink is two such sequences
-/// wrapping plain link text, so stripping only the sequences themselves
-/// (never the text between them) is what makes the link text survive.
+/// wrapping plain link text, so the link text survives the strip.
 ///
-/// A string that ends before a terminator appears is treated as fully
-/// consumed: an unterminated OSC has no well-defined end, so there is nothing
-/// left over to preserve.
+/// An unterminated OSC has no well-defined end, so a string that runs out
+/// counts as fully consumed.
 fn consume_osc(chars: &mut Peekable<Chars>) {
     while let Some(c) = chars.next() {
         match c {
@@ -204,13 +196,12 @@ fn bright_color(n: u32) -> Color {
 
 /// Parses the `5;N` (indexed) or `2;R;G;B` (truecolor) tail that follows a `38`
 /// or `48` code. Returns the resolved colour (`None` if the introducer is
-/// unrecognised or its parameters run out before the form is complete) and
-/// how many extra parameters (beyond the `38`/`48` itself) it consumed.
+/// unrecognised or its parameters run out) and how many extra parameters it
+/// consumed.
 ///
-/// A malformed or truncated sequence still reports every parameter it looked
-/// at as consumed: a `38`/`48` introducer commits its trailing parameters to
-/// describing a colour, and they must never fall through to being
-/// reinterpreted as unrelated SGR codes (a truncated `38;2;R;G` as bold/dim).
+/// A truncated sequence still reports every parameter it looked at as
+/// consumed, so a partial `38;2;R;G` cannot fall through and be read as
+/// unrelated SGR codes.
 // Colour parameters are bytes by definition, so a wider value is malformed
 // input and keeping its low byte is the deliberate choice.
 #[expect(clippy::cast_possible_truncation)]
@@ -230,16 +221,13 @@ fn extended_color(rest: &[u32]) -> (Option<Color>, usize) {
     }
 }
 
-/// Splits `text` the same way [`str::lines`] does, but re-asserts at the
-/// start of each line whatever [`Style`] was still active at the end of the
-/// previous one.
+/// Splits `text` the same way [`str::lines`] does, re-asserting at the start of
+/// each line whatever [`Style`] was active at the end of the previous one.
+/// Terminals carry SGR state across newlines; [`parse`] works one line at a
+/// time and would drop it at every boundary.
 ///
-/// A real terminal carries SGR state across newlines, but [`parse`] works one
-/// line at a time and would drop it at every boundary. Split a multi-line
-/// block with this instead of `str::lines()`.
-///
-/// When no style is carried in, nothing is prepended, so a plain line comes
-/// back byte-identical to what `str::lines()` yields.
+/// A line with no style carried in comes back byte-identical to what
+/// `str::lines()` yields.
 pub fn split_lines(text: &str) -> Vec<String> {
     let mut style = Style::default();
     let mut out = Vec::new();
@@ -284,12 +272,12 @@ fn advance_style(style: &mut Style, text: &str) {
     }
 }
 
-/// Serialises `style` back into the SGR sequence that re-establishes it from
-/// scratch: a reset followed by whichever colours and modifiers are set. The
-/// leading reset makes it absolute, so it is safe to prepend to any line.
+/// Serialises `style` into the SGR sequence that re-establishes it from
+/// scratch: a reset, then whichever colours and modifiers are set. The leading
+/// reset makes it absolute, so it is safe to prepend to any line.
 ///
-/// `Style::default()` serialises to an empty string: there is nothing to
-/// re-establish, and callers rely on that to leave unstyled lines untouched.
+/// `Style::default()` serialises to an empty string, which is what leaves
+/// unstyled lines untouched.
 fn sgr_prefix(style: &Style) -> String {
     if *style == Style::default() {
         return String::new();
